@@ -1,0 +1,40 @@
+version: '3.9'
+
+services:
+  notify-api:
+    build: .
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+    environment:
+      DATABASE_URL: postgres://notify_user:notify_password@postgres:5432/notify_db?sslmode=disable
+      SMTP_HOST: smtp
+      SMTP_PORT: 1025
+      SMTP_FROM: no-reply@gmhelper.local
+      SMTP_USERNAME: ""
+      SMTP_PASSWORD: ""
+    networks:
+      - notify-network
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: notify_user
+      POSTGRES_PASSWORD: notify_password
+      POSTGRES_DB: notify_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - notify-network
+
+networks:
+  notify-network:
+    driver: bridge
+
+volumes:
+  postgres-data:
