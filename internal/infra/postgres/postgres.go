@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"time"
 
 	_ "github.com/lib/pq"
 )
@@ -16,6 +17,11 @@ func NewPostgresDB(ctx context.Context, databaseURL string) (*PostgresDB, error)
 	if err != nil {
 		return nil, err
 	}
+
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(15 * time.Minute)
+
 	if err := db.PingContext(ctx); err != nil {
 		db.Close()
 		return nil, err
@@ -34,3 +40,4 @@ func (p *PostgresDB) Close(ctx context.Context) error {
 func (p *PostgresDB) DB() *sql.DB {
 	return p.db
 }
+

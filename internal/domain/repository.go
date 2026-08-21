@@ -5,7 +5,10 @@ import (
 	"time"
 )
 
-var ErrNotFound = errorString("not found")
+var (
+	ErrNotFound = errorString("not found")
+	ErrConflict = errorString("conflict")
+)
 
 type errorString string
 
@@ -17,8 +20,11 @@ type EmailTemplateRepository interface {
 	GetByID(ctx context.Context, id string) (*EmailTemplate, error)
 	GetByKey(ctx context.Context, templateKey string) (*EmailTemplate, error)
 	Create(ctx context.Context, template *EmailTemplate) error
+	Update(ctx context.Context, template *EmailTemplate) error
+	Delete(ctx context.Context, id string) error
 	List(ctx context.Context) ([]*EmailTemplate, error)
 }
+
 
 type NotificationCampaignRepository interface {
 	GetByID(ctx context.Context, id string) (*NotificationCampaign, error)
