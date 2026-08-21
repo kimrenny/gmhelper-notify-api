@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/gmhelper/notify-api/internal/infra/logger"
@@ -11,13 +12,14 @@ func Recovery(log logger.Logger) Middleware {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if rec := recover(); rec != nil {
-					log.Error("panic recovered", logger.String("panic", "true"))
+					log.Error("panic recovered", logger.String("panic", fmt.Sprintf("%v", rec)))
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusInternalServerError)
-					w.Write([]byte(`{"error":"internal server error"}`))
+					w.Write([]byte(`{"error":{"code":"INTERNAL_SERVER_ERROR","message":"internal server error"}}`))
 				}
 			}()
 			next.ServeHTTP(w, r)
 		})
 	}
 }
+

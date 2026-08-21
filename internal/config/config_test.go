@@ -1,0 +1,90 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestConfigLoad_Success(t *testing.T) {
+	os.Setenv("DATABASE_URL", "postgres://localhost/test")
+	os.Setenv("SMTP_HOST", "smtp.example.com")
+	os.Setenv("SMTP_FROM", "test@example.com")
+	os.Setenv("HTTP_PORT", "9090")
+	os.Setenv("SMTP_PORT", "2525")
+	defer func() {
+		os.Unsetenv("DATABASE_URL")
+		os.Unsetenv("SMTP_HOST")
+		os.Unsetenv("SMTP_FROM")
+		os.Unsetenv("HTTP_PORT")
+		os.Unsetenv("SMTP_PORT")
+	}()
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected config load success, got: %v", err)
+	}
+
+	if cfg.HTTPPort != 9090 {
+		t.Errorf("expected HTTPPort 9090, got %d", cfg.HTTPPort)
+	}
+	if cfg.SMTPPort != 2525 {
+		t.Errorf("expected SMTPPort 2525, got %d", cfg.SMTPPort)
+	}
+	if cfg.DatabaseURL != "postgres://localhost/test" {
+		t.Errorf("expected DatabaseURL 'postgres://localhost/test', got %s", cfg.DatabaseURL)
+	}
+}
+
+func TestParseAndApplyEnvFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	envPath := filepath.Join(tmpDir, ".env.test")
+	content := []byte(`
+# Test comment
+TEST_CUSTOM_VAR=hello_world
+TEST_QUOTED_VAR="quoted value"
+`)
+	if err := os.WriteFile(envPath, content, 0644); err != nil {
+		t.Fatalf("failed to write test env file: %v", err)
+	}
+	defer func() {
+		os.Unsetenv("TEST_CUSTOM_VAR")
+		os.Unsetenv("TEST_QUOTED_VAR")
+	}()
+
+	if err := parseAndApplyEnvFile(envPath); err != nil {
+		t.Fatalf("parseAndApplyEnvFile failed: %v", err)
+	}
+
+	if os.Getenv("TEST_CUSTOM_VAR") != "hello_world" {
+		t.Errorf("expected TEST_CUSTOM_VAR 'hello_world', got %s", os.Getenv("TEST_CUSTOM_VAR"))
+	}
+	if os.Getenv("TEST_QUOTED_VAR") != "quoted value" {
+		t.Errorf("expected TEST_QUOTED_VAR 'quoted value', got %s", os.Getenv("TEST_QUOTED_VAR"))
+	}
+}
+
+func TestConfigValidate_MissingRequired(t *testing.T) {
+	cfg := &Config{
+		HTTPPort: 8080,
+		SMTPPort: 587,
+	}
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error due to missing required variables, got nil")
+	}
+}
+
+func TestConfigValidate_InvalidPort(t *testing.T) {
+	cfg := &Config{
+		DatabaseURL: "postgres://localhost/test",
+		SMTPHost:    "smtp.example.com",
+		SMTPFrom:    "test@example.com",
+		HTTPPort:    70000,
+		SMTPPort:    587,
+	}
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for port > 65535, got nil")
+	}
+}
