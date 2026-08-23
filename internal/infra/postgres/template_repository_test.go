@@ -19,16 +19,16 @@ func TestEmailTemplateRepository_CreateAndGet(t *testing.T) {
 
 	repo := NewEmailTemplateRepository(db)
 	template := &domain.EmailTemplate{
-		ID:            "f7ba18f7-4c2a-4b77-8565-1e1e5d64047f",
-		TemplateKey:   "welcome_email",
-		Name:          "Welcome Email",
-		Subject:       "Welcome",
-		HTMLBody:      "<p>Hello</p>",
-		Locale:        "en-US",
-		Status:        domain.TemplateStatusActive,
-		Version:       1,
-		CreatedAt:     time.Now().UTC(),
-		UpdatedAt:     time.Now().UTC(),
+		ID:          "f7ba18f7-4c2a-4b77-8565-1e1e5d64047f",
+		TemplateKey: "welcome_email",
+		Name:        "Welcome Email",
+		Subject:     "Welcome",
+		HTMLBody:    "<p>Hello</p>",
+		Locale:      "en-US",
+		Status:      domain.TemplateStatusActive,
+		Version:     1,
+		CreatedAt:   time.Now().UTC(),
+		UpdatedAt:   time.Now().UTC(),
 	}
 
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO email_templates (id, template_key, name, subject, html_body, plain_text_body, locale, status, version, created_at, updated_at)
@@ -72,16 +72,16 @@ func TestEmailTemplateRepository_UpdateAndDelete(t *testing.T) {
 
 	repo := NewEmailTemplateRepository(db)
 	template := &domain.EmailTemplate{
-		ID:            "f7ba18f7-4c2a-4b77-8565-1e1e5d64047f",
-		TemplateKey:   "welcome_email",
-		Name:          "Welcome Email Updated",
-		Subject:       "Welcome Updated",
-		HTMLBody:      "<p>Hello updated</p>",
-		Locale:        "en-US",
-		Status:        domain.TemplateStatusActive,
-		Version:       2,
-		CreatedAt:     time.Now().UTC(),
-		UpdatedAt:     time.Now().UTC(),
+		ID:          "f7ba18f7-4c2a-4b77-8565-1e1e5d64047f",
+		TemplateKey: "welcome_email",
+		Name:        "Welcome Email Updated",
+		Subject:     "Welcome Updated",
+		HTMLBody:    "<p>Hello updated</p>",
+		Locale:      "en-US",
+		Status:      domain.TemplateStatusActive,
+		Version:     2,
+		CreatedAt:   time.Now().UTC(),
+		UpdatedAt:   time.Now().UTC(),
 	}
 
 	// 1. Update
@@ -108,4 +108,3 @@ WHERE id = $10`)).
 		t.Fatalf("unfulfilled expectations: %v", err)
 	}
 }
-

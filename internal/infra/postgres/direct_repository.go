@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gmhelper/notify-api/internal/domain"
+	"github.com/lib/pq"
 )
 
 type DirectNotificationRepository struct {
@@ -37,15 +38,64 @@ func (r *DirectNotificationRepository) Create(ctx context.Context, notification 
 	}
 	_, err := r.db.ExecContext(ctx, `
 INSERT INTO direct_notifications (id, template_id, external_user_id, recipient_email, recipient_name, notification_type, delivery_status, attempts_count, last_attempt_at, sent_at, error_message, payload, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`, notification.ID, notification.TemplateID, notification.ExternalUserID, notification.RecipientEmail, notification.RecipientName, notification.NotificationType, notification.DeliveryStatus, notification.AttemptsCount, notification.LastAttemptAt, notification.SentAt, notification.ErrorMessage, notification.Payload, notification.CreatedAt, notification.UpdatedAt)
-	return err
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+		notification.ID, notification.TemplateID, notification.ExternalUserID, notification.RecipientEmail, notification.RecipientName,
+		notification.NotificationType, notification.DeliveryStatus, notification.AttemptsCount, notification.LastAttemptAt,
+		notification.SentAt, notification.ErrorMessage, notification.Payload, notification.CreatedAt, notification.UpdatedAt)
+	if err != nil {
+		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23503" {
+			return domain.ErrNotFound
+		}
+		return err
+	}
+	return nil
+}
+
+func (r *DirectNotificationRepository) CreateWithInitialAttempt(ctx context.Context, notification *domain.DirectNotification, attempt *domain.DeliveryAttempt) error {
+	if err := notification.Validate(ctx); err != nil {
+		return err
+	}
+	if err := attempt.Validate(ctx); err != nil {
+		return err
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO direct_notifications (id, template_id, external_user_id, recipient_email, recipient_name, notification_type, delivery_status, attempts_count, last_attempt_at, sent_at, error_message, payload, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+		notification.ID, notification.TemplateID, notification.ExternalUserID, notification.RecipientEmail, notification.RecipientName,
+		notification.NotificationType, notification.DeliveryStatus, notification.AttemptsCount, notification.LastAttemptAt,
+		notification.SentAt, notification.ErrorMessage, notification.Payload, notification.CreatedAt, notification.UpdatedAt)
+	if err != nil {
+		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23503" {
+			return domain.ErrNotFound
+		}
+		return err
+	}
+
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO delivery_attempts (id, target_type, target_id, status, attempt_number, error_message, attempted_at, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		attempt.ID, attempt.TargetType, attempt.TargetID, attempt.Status, attempt.AttemptNumber,
+		attempt.ErrorMessage, attempt.AttemptedAt, attempt.CreatedAt)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 func (r *DirectNotificationRepository) ListPending(ctx context.Context) ([]*domain.DirectNotification, error) {
 	rows, err := r.db.QueryContext(ctx, `
 SELECT id, template_id, external_user_id, recipient_email, recipient_name, notification_type, delivery_status, attempts_count, last_attempt_at, sent_at, error_message, payload, created_at, updated_at
 FROM direct_notifications
-WHERE delivery_status = $1`, domain.DeliveryStatusPending)
+WHERE delivery_status = $1
+ORDER BY created_at ASC`, domain.DeliveryStatusPending)
 	if err != nil {
 		return nil, err
 	}
@@ -66,9 +116,19 @@ func (r *DirectNotificationRepository) UpdateStatus(ctx context.Context, id stri
 	if !status.IsValid() {
 		return domain.ErrInvalidEntity
 	}
-	_, err := r.db.ExecContext(ctx, `
+	res, err := r.db.ExecContext(ctx, `
 UPDATE direct_notifications
 SET delivery_status = $1, attempts_count = $2, last_attempt_at = $3, sent_at = $4, error_message = $5, updated_at = now()
 WHERE id = $6`, status, attempts, lastAttemptAt, sentAt, errorMessage, id)
-	return err
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
 }

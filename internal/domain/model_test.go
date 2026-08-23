@@ -90,3 +90,27 @@ func TestAutomationRuleValidate(t *testing.T) {
 		t.Fatalf("expected valid rule, got %v", err)
 	}
 }
+
+func TestDeliveryAttemptValidate(t *testing.T) {
+	attempt := &DeliveryAttempt{
+		ID:            "attempt-1",
+		TargetType:    DeliveryTargetDirectNotification,
+		TargetID:      "direct-1",
+		Status:        DeliveryStatusPending,
+		AttemptNumber: 1,
+		AttemptedAt:   time.Now().UTC(),
+		CreatedAt:     time.Now().UTC(),
+	}
+	if err := attempt.Validate(context.Background()); err != nil {
+		t.Fatalf("expected valid delivery attempt, got %v", err)
+	}
+}
+
+func TestDeliveryAttemptValidateInvalid(t *testing.T) {
+	attempt := &DeliveryAttempt{
+		ID: "attempt-1",
+	}
+	if err := attempt.Validate(context.Background()); err == nil {
+		t.Fatal("expected invalid delivery attempt error, got nil")
+	}
+}

@@ -25,7 +25,6 @@ type EmailTemplateRepository interface {
 	List(ctx context.Context) ([]*EmailTemplate, error)
 }
 
-
 type NotificationCampaignRepository interface {
 	GetByID(ctx context.Context, id string) (*NotificationCampaign, error)
 	Create(ctx context.Context, campaign *NotificationCampaign) error
@@ -44,12 +43,15 @@ type CampaignRecipientRepository interface {
 type DirectNotificationRepository interface {
 	GetByID(ctx context.Context, id string) (*DirectNotification, error)
 	Create(ctx context.Context, notification *DirectNotification) error
+	CreateWithInitialAttempt(ctx context.Context, notification *DirectNotification, attempt *DeliveryAttempt) error
 	ListPending(ctx context.Context) ([]*DirectNotification, error)
 	UpdateStatus(ctx context.Context, id string, status DeliveryStatus, attempts int, lastAttemptAt, sentAt *time.Time, errorMessage string) error
 }
 
 type DeliveryAttemptRepository interface {
+	GetByID(ctx context.Context, id string) (*DeliveryAttempt, error)
 	Create(ctx context.Context, attempt *DeliveryAttempt) error
+	Update(ctx context.Context, attempt *DeliveryAttempt) error
 	ListByTarget(ctx context.Context, targetType DeliveryTargetType, targetID string) ([]*DeliveryAttempt, error)
 }
 

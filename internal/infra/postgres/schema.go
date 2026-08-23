@@ -113,4 +113,3 @@ func applyMigration(ctx context.Context, db *sql.DB, version, content string) er
 
 	return nil
 }
-
