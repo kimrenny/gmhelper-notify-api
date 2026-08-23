@@ -58,6 +58,12 @@ func (m *routerMockDirectRepo) ListPending(ctx context.Context) ([]*domain.Direc
 	}, nil
 }
 
+func (m *routerMockDirectRepo) ClaimPending(ctx context.Context, limit int) ([]*domain.DirectNotification, error) {
+	return []*domain.DirectNotification{
+		{ID: "pending-notif-1", DeliveryStatus: domain.DeliveryStatusSending, AttemptsCount: 1},
+	}, nil
+}
+
 func (m *routerMockDirectRepo) UpdateStatus(ctx context.Context, id string, status domain.DeliveryStatus, attempts int, lastAttemptAt, sentAt *time.Time, errMsg string) error {
 	return nil
 }

@@ -56,6 +56,28 @@ func (m *workerMockRepo) ListPending(ctx context.Context) ([]*domain.DirectNotif
 	return res, nil
 }
 
+func (m *workerMockRepo) ClaimPending(ctx context.Context, limit int) ([]*domain.DirectNotification, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	var res []*domain.DirectNotification
+	now := time.Now().UTC()
+	for _, n := range m.notifications {
+		if n.DeliveryStatus == domain.DeliveryStatusPending {
+			n.DeliveryStatus = domain.DeliveryStatusSending
+			n.AttemptsCount++
+			n.LastAttemptAt = &now
+			res = append(res, n)
+			if limit > 0 && len(res) >= limit {
+				break
+			}
+		}
+	}
+	return res, nil
+}
+
 func (m *workerMockRepo) UpdateStatus(ctx context.Context, id string, status domain.DeliveryStatus, attempts int, lastAttemptAt, sentAt *time.Time, errMsg string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -303,5 +325,56 @@ func TestWorker_Lifecycle_InitialPassAndShutdown(t *testing.T) {
 		// Clean exit
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("worker did not exit cleanly upon context cancellation")
+	}
+}
+
+func TestWorker_ConcurrentInstances_NoDuplicateDelivery(t *testing.T) {
+	log, _ := logger.NewLogger("info")
+	directRepo := &workerMockRepo{notifications: make(map[string]*domain.DirectNotification)}
+	attemptRepo := &workerMockAttemptRepo{attempts: make(map[string]*domain.DeliveryAttempt)}
+	tplRepo := &workerMockTplRepo{templates: make(map[string]*domain.EmailTemplate)}
+	sender := &workerMockSender{failIDs: make(map[string]bool)}
+
+	deliveryService := NewDeliveryService(directRepo, attemptRepo, tplRepo, sender)
+
+	worker1 := NewWorker(directRepo, deliveryService, 20*time.Millisecond, log)
+	worker2 := NewWorker(directRepo, deliveryService, 20*time.Millisecond, log)
+
+	tpl := &domain.EmailTemplate{
+		ID:       "tpl-concurrent",
+		Subject:  "Subject",
+		HTMLBody: "<p>Body</p>",
+		Status:   domain.TemplateStatusActive,
+		Version:  1,
+	}
+	tplRepo.templates[tpl.ID] = tpl
+
+	// Seed 10 pending notifications
+	for i := 1; i <= 10; i++ {
+		id := "notif-" + string(rune('A'+i-1))
+		directRepo.notifications[id] = &domain.DirectNotification{
+			ID:               id,
+			TemplateID:       tpl.ID,
+			RecipientEmail:   id + "@example.com",
+			NotificationType: domain.NotificationTypeDirect,
+			DeliveryStatus:   domain.DeliveryStatusPending,
+		}
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		worker1.ProcessPending(context.Background())
+	}()
+	go func() {
+		defer wg.Done()
+		worker2.ProcessPending(context.Background())
+	}()
+
+	wg.Wait()
+
+	if len(sender.sentMsgs) != 10 {
+		t.Fatalf("expected exactly 10 messages sent with 0 duplicates, got %d", len(sender.sentMsgs))
 	}
 }

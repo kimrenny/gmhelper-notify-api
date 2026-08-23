@@ -323,3 +323,77 @@ func TestDeliveryService_Deliver_TemplateIssues(t *testing.T) {
 		t.Errorf("expected ErrMissingVariable, got %v", err)
 	}
 }
+
+func TestDeliveryService_DeliverClaimed_Success(t *testing.T) {
+	svc, directRepo, attemptRepo, templateRepo, sender := setupTestDeliveryService()
+
+	tpl := &domain.EmailTemplate{
+		ID:            "tpl-claimed-1",
+		TemplateKey:   "welcome",
+		Name:          "Welcome",
+		Subject:       "Hello {{name}}",
+		HTMLBody:      "<p>Welcome {{name}}</p>",
+		PlainTextBody: "Welcome {{name}}",
+		Status:        domain.TemplateStatusActive,
+		Version:       1,
+	}
+	templateRepo.templates[tpl.ID] = tpl
+
+	now := time.Now().UTC()
+	payload, _ := json.Marshal(map[string]any{"name": "Bob"})
+	notif := &domain.DirectNotification{
+		ID:             "notif-claimed-1",
+		TemplateID:     tpl.ID,
+		RecipientEmail: "bob@example.com",
+		DeliveryStatus: domain.DeliveryStatusSending,
+		AttemptsCount:  1,
+		LastAttemptAt:  &now,
+		Payload:        payload,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	directRepo.notifications[notif.ID] = notif
+
+	attempt := &domain.DeliveryAttempt{
+		ID:            "attempt-claimed-1",
+		TargetType:    domain.DeliveryTargetDirectNotification,
+		TargetID:      notif.ID,
+		Status:        domain.DeliveryStatusPending,
+		AttemptNumber: 1,
+		AttemptedAt:   now,
+		CreatedAt:     now,
+	}
+	attemptRepo.attempts[attempt.ID] = attempt
+
+	if err := svc.DeliverClaimed(context.Background(), notif); err != nil {
+		t.Fatalf("expected DeliverClaimed success, got: %v", err)
+	}
+
+	if notif.DeliveryStatus != domain.DeliveryStatusSent {
+		t.Errorf("expected status sent, got %s", notif.DeliveryStatus)
+	}
+	if attempt.Status != domain.DeliveryStatusSent {
+		t.Errorf("expected attempt status sent, got %s", attempt.Status)
+	}
+	if len(sender.sentMessages) != 1 {
+		t.Fatalf("expected 1 sent message, got %d", len(sender.sentMessages))
+	}
+}
+
+func TestDeliveryService_DeliverClaimed_InvalidStatus(t *testing.T) {
+	svc, _, _, _, _ := setupTestDeliveryService()
+
+	// 1. Nil notification
+	if err := svc.DeliverClaimed(context.Background(), nil); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput for nil notification, got %v", err)
+	}
+
+	// 2. Notification not in 'sending' state (e.g. 'pending')
+	notifPending := &domain.DirectNotification{
+		ID:             "notif-p",
+		DeliveryStatus: domain.DeliveryStatusPending,
+	}
+	if err := svc.DeliverClaimed(context.Background(), notifPending); !errors.Is(err, ErrInvalidDeliveryState) {
+		t.Errorf("expected ErrInvalidDeliveryState for pending notification in DeliverClaimed, got %v", err)
+	}
+}

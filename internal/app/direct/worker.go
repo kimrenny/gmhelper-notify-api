@@ -9,11 +9,14 @@ import (
 	"github.com/gmhelper/notify-api/internal/infra/logger"
 )
 
+const defaultBatchSize = 10
+
 // Worker periodically queries for pending direct notifications and delivers them via DeliveryService.
 type Worker struct {
 	directRepo      domain.DirectNotificationRepository
 	deliveryService *DeliveryService
 	interval        time.Duration
+	batchSize       int
 	logger          logger.Logger
 	mu              sync.Mutex
 	running         bool
@@ -30,6 +33,7 @@ func NewWorker(
 		directRepo:      directRepo,
 		deliveryService: deliveryService,
 		interval:        interval,
+		batchSize:       defaultBatchSize,
 		logger:          logger,
 	}
 }
@@ -79,34 +83,34 @@ func (w *Worker) Start(ctx context.Context) {
 	}
 }
 
-// ProcessPending queries pending notifications and processes each sequentially.
+// ProcessPending atomically claims a batch of pending notifications and processes each sequentially.
 func (w *Worker) ProcessPending(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
 
-	pending, err := w.directRepo.ListPending(ctx)
+	claimed, err := w.directRepo.ClaimPending(ctx, w.batchSize)
 	if err != nil {
 		if ctx.Err() == nil && w.logger != nil {
-			w.logger.Error("failed to query pending direct notifications in worker", logger.Error(err))
+			w.logger.Error("failed to claim pending direct notifications in worker", logger.Error(err))
 		}
 		return
 	}
 
-	if len(pending) == 0 {
+	if len(claimed) == 0 {
 		return
 	}
 
 	if w.logger != nil {
-		w.logger.Info("discovered pending direct notifications", logger.Int("count", len(pending)))
+		w.logger.Info("claimed pending direct notifications for delivery", logger.Int("count", len(claimed)))
 	}
 
-	for _, item := range pending {
+	for _, item := range claimed {
 		if ctx.Err() != nil {
 			return
 		}
 
-		if err := w.deliveryService.Deliver(ctx, item.ID); err != nil {
+		if err := w.deliveryService.DeliverClaimed(ctx, item); err != nil {
 			if w.logger != nil {
 				w.logger.Warn("failed to deliver direct notification in worker",
 					logger.String("id", item.ID),

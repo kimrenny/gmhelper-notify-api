@@ -41,6 +41,7 @@ func NewDeliveryService(
 }
 
 // Deliver delivers a pending direct notification via SMTP and records delivery outcomes.
+// Used for manual delivery where status transitions from pending -> sending -> sent/failed.
 func (s *DeliveryService) Deliver(ctx context.Context, notificationID string) error {
 	notificationID = strings.TrimSpace(notificationID)
 	if notificationID == "" {
@@ -65,7 +66,42 @@ func (s *DeliveryService) Deliver(ctx context.Context, notificationID string) er
 		return fmt.Errorf("%w: current status is '%s'", ErrInvalidDeliveryState, notification.DeliveryStatus)
 	}
 
-	// 3. Load referenced template
+	// 3. Mark notification as sending
+	now := time.Now().UTC()
+	attemptsCount := notification.AttemptsCount + 1
+	if err := s.directRepo.UpdateStatus(ctx, notification.ID, domain.DeliveryStatusSending, attemptsCount, &now, nil, ""); err != nil {
+		return fmt.Errorf("failed to update notification to sending: %w", err)
+	}
+
+	notification.DeliveryStatus = domain.DeliveryStatusSending
+	notification.AttemptsCount = attemptsCount
+	notification.LastAttemptAt = &now
+
+	return s.deliverClaimed(ctx, notification, attemptsCount, now)
+}
+
+// DeliverClaimed delivers an already claimed direct notification (already in 'sending' state).
+// Used by background workers that atomically claim pending notifications before delivery.
+func (s *DeliveryService) DeliverClaimed(ctx context.Context, notification *domain.DirectNotification) error {
+	if notification == nil {
+		return fmt.Errorf("%w: notification cannot be nil", ErrInvalidInput)
+	}
+
+	if notification.DeliveryStatus != domain.DeliveryStatusSending {
+		return fmt.Errorf("%w: expected sending status, got '%s'", ErrInvalidDeliveryState, notification.DeliveryStatus)
+	}
+
+	now := time.Now().UTC()
+	attemptsCount := notification.AttemptsCount
+	if attemptsCount <= 0 {
+		attemptsCount = 1
+	}
+
+	return s.deliverClaimed(ctx, notification, attemptsCount, now)
+}
+
+func (s *DeliveryService) deliverClaimed(ctx context.Context, notification *domain.DirectNotification, attemptsCount int, attemptTime time.Time) error {
+	// 1. Load referenced template
 	tpl, err := s.templateRepo.GetByID(ctx, notification.TemplateID)
 	if err != nil {
 		return err
@@ -74,7 +110,7 @@ func (s *DeliveryService) Deliver(ctx context.Context, notificationID string) er
 		return fmt.Errorf("%w: template '%s' is '%s'", ErrTemplateInactive, tpl.ID, tpl.Status)
 	}
 
-	// 4. Render email content
+	// 2. Render email content
 	var vars map[string]any
 	if len(notification.Payload) > 0 {
 		if err := json.Unmarshal(notification.Payload, &vars); err != nil {
@@ -87,20 +123,13 @@ func (s *DeliveryService) Deliver(ctx context.Context, notificationID string) er
 		return err
 	}
 
-	// 5. Mark notification as sending
-	now := time.Now().UTC()
-	attemptsCount := notification.AttemptsCount + 1
-	if err := s.directRepo.UpdateStatus(ctx, notification.ID, domain.DeliveryStatusSending, attemptsCount, &now, nil, ""); err != nil {
-		return fmt.Errorf("failed to update notification to sending: %w", err)
-	}
-
-	// 6. Find or initialize delivery attempt record
-	targetAttempt, err := s.findOrInitAttempt(ctx, notification.ID, attemptsCount, now)
+	// 3. Find or initialize delivery attempt record
+	targetAttempt, err := s.findOrInitAttempt(ctx, notification.ID, attemptsCount, attemptTime)
 	if err != nil {
 		return fmt.Errorf("failed to prepare delivery attempt record: %w", err)
 	}
 
-	// 7. Send email via SMTP (outside any database transaction)
+	// 4. Send email via SMTP (outside any database transaction)
 	msg := &email.Message{
 		To:            notification.RecipientEmail,
 		Subject:       rendered.Subject,
@@ -110,7 +139,7 @@ func (s *DeliveryService) Deliver(ctx context.Context, notificationID string) er
 
 	sendErr := s.sender.Send(ctx, msg)
 
-	// 8. Persist delivery outcome
+	// 5. Persist delivery outcome
 	if sendErr == nil {
 		sentAt := time.Now().UTC()
 		if err := s.directRepo.UpdateStatus(ctx, notification.ID, domain.DeliveryStatusSent, attemptsCount, &sentAt, &sentAt, ""); err != nil {

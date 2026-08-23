@@ -132,6 +132,58 @@ ORDER BY created_at ASC`, domain.DeliveryStatusPending)
 	return notifications, rows.Err()
 }
 
+func (r *DirectNotificationRepository) ClaimPending(ctx context.Context, limit int) ([]*domain.DirectNotification, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+
+	query := `
+WITH claimed AS (
+	SELECT id
+	FROM direct_notifications
+	WHERE delivery_status = $1
+	ORDER BY created_at ASC
+	FOR UPDATE SKIP LOCKED
+	LIMIT $2
+)
+UPDATE direct_notifications d
+SET delivery_status = $3,
+    attempts_count = d.attempts_count + 1,
+    last_attempt_at = now(),
+    updated_at = now()
+FROM claimed
+WHERE d.id = claimed.id
+RETURNING d.id, d.template_id, d.external_user_id, d.recipient_email, d.recipient_name,
+          d.notification_type, d.delivery_status, d.attempts_count, d.last_attempt_at,
+          d.sent_at, d.error_message, d.payload, d.created_at, d.updated_at`
+
+	rows, err := r.db.QueryContext(ctx, query, domain.DeliveryStatusPending, limit, domain.DeliveryStatusSending)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	notifications := []*domain.DirectNotification{}
+	for rows.Next() {
+		notification := &domain.DirectNotification{}
+		var rawPayload []byte
+		if err := rows.Scan(
+			&notification.ID, &notification.TemplateID, &notification.ExternalUserID,
+			&notification.RecipientEmail, &notification.RecipientName, &notification.NotificationType,
+			&notification.DeliveryStatus, &notification.AttemptsCount, &notification.LastAttemptAt,
+			&notification.SentAt, &notification.ErrorMessage, &rawPayload,
+			&notification.CreatedAt, &notification.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if len(rawPayload) > 0 {
+			notification.Payload = json.RawMessage(rawPayload)
+		}
+		notifications = append(notifications, notification)
+	}
+	return notifications, rows.Err()
+}
+
 func (r *DirectNotificationRepository) UpdateStatus(ctx context.Context, id string, status domain.DeliveryStatus, attempts int, lastAttemptAt, sentAt *time.Time, errorMessage string) error {
 	if !status.IsValid() {
 		return domain.ErrInvalidEntity

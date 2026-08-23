@@ -242,3 +242,67 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`)).
 		t.Fatalf("unfulfilled expectations: %v", err)
 	}
 }
+
+func TestDirectNotificationRepository_ClaimPending(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	repo := NewDirectNotificationRepository(db)
+	now := time.Now().UTC()
+
+	rows := sqlmock.NewRows([]string{
+		"id", "template_id", "external_user_id", "recipient_email", "recipient_name", "notification_type",
+		"delivery_status", "attempts_count", "last_attempt_at", "sent_at", "error_message", "payload", "created_at", "updated_at",
+	}).AddRow(
+		"claimed-id-1", "template-1", "user-1", "recipient@example.com", "Recipient",
+		domain.NotificationTypeDirect, domain.DeliveryStatusSending, 1, &now,
+		nil, "", []byte(`{"key":"value"}`), now, now,
+	)
+
+	mock.ExpectQuery(regexp.QuoteMeta(`
+WITH claimed AS (
+	SELECT id
+	FROM direct_notifications
+	WHERE delivery_status = $1
+	ORDER BY created_at ASC
+	FOR UPDATE SKIP LOCKED
+	LIMIT $2
+)
+UPDATE direct_notifications d
+SET delivery_status = $3,
+    attempts_count = d.attempts_count + 1,
+    last_attempt_at = now(),
+    updated_at = now()
+FROM claimed
+WHERE d.id = claimed.id
+RETURNING d.id, d.template_id, d.external_user_id, d.recipient_email, d.recipient_name,
+          d.notification_type, d.delivery_status, d.attempts_count, d.last_attempt_at,
+          d.sent_at, d.error_message, d.payload, d.created_at, d.updated_at`)).
+		WithArgs(domain.DeliveryStatusPending, 5, domain.DeliveryStatusSending).
+		WillReturnRows(rows)
+
+	claimed, err := repo.ClaimPending(context.Background(), 5)
+	if err != nil {
+		t.Fatalf("expected ClaimPending success, got: %v", err)
+	}
+
+	if len(claimed) != 1 {
+		t.Fatalf("expected 1 claimed notification, got %d", len(claimed))
+	}
+	if claimed[0].ID != "claimed-id-1" {
+		t.Errorf("expected ID claimed-id-1, got %s", claimed[0].ID)
+	}
+	if claimed[0].DeliveryStatus != domain.DeliveryStatusSending {
+		t.Errorf("expected status sending, got %s", claimed[0].DeliveryStatus)
+	}
+	if claimed[0].AttemptsCount != 1 {
+		t.Errorf("expected attempts_count 1, got %d", claimed[0].AttemptsCount)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unfulfilled expectations: %v", err)
+	}
+}
