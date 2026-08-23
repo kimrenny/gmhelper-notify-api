@@ -306,3 +306,73 @@ RETURNING d.id, d.template_id, d.external_user_id, d.recipient_email, d.recipien
 		t.Fatalf("unfulfilled expectations: %v", err)
 	}
 }
+
+func TestDirectNotificationRepository_RecoverStaleSending(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	repo := NewDirectNotificationRepository(db)
+
+	// 1. Negative / zero olderThan returns error
+	if _, err := repo.RecoverStaleSending(context.Background(), 0); err == nil {
+		t.Fatal("expected error for zero duration, got nil")
+	}
+	if _, err := repo.RecoverStaleSending(context.Background(), -1*time.Minute); err == nil {
+		t.Fatal("expected error for negative duration, got nil")
+	}
+
+	// 2. Successful recovery
+	staleTimeout := 5 * time.Minute
+	mock.ExpectQuery(regexp.QuoteMeta(`
+WITH stale_notifications AS (
+	SELECT id
+	FROM direct_notifications
+	WHERE delivery_status = $1
+	  AND last_attempt_at IS NOT NULL
+	  AND last_attempt_at < now() - ($2 * interval '1 microsecond')
+	FOR UPDATE SKIP LOCKED
+),
+recovered_attempts AS (
+	UPDATE delivery_attempts a
+	SET status = $3,
+	    error_message = 'delivery attempt timed out and was recovered'
+	FROM stale_notifications s
+	WHERE a.target_type = $4
+	  AND a.target_id = s.id
+	  AND (a.status = $1 OR a.status = $5)
+),
+updated_notifications AS (
+	UPDATE direct_notifications d
+	SET delivery_status = $5,
+	    error_message = 'delivery claim timed out and was recovered',
+	    updated_at = now()
+	FROM stale_notifications s
+	WHERE d.id = s.id
+	RETURNING d.id
+)
+SELECT count(*) FROM updated_notifications`)).
+		WithArgs(
+			domain.DeliveryStatusSending,
+			staleTimeout.Microseconds(),
+			domain.DeliveryStatusFailed,
+			domain.DeliveryTargetDirectNotification,
+			domain.DeliveryStatusPending,
+		).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+
+	recovered, err := repo.RecoverStaleSending(context.Background(), staleTimeout)
+	if err != nil {
+		t.Fatalf("expected RecoverStaleSending success, got: %v", err)
+	}
+
+	if recovered != 2 {
+		t.Errorf("expected 2 recovered notifications, got %d", recovered)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unfulfilled expectations: %v", err)
+	}
+}

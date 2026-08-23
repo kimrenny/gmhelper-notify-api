@@ -78,6 +78,24 @@ func (m *workerMockRepo) ClaimPending(ctx context.Context, limit int) ([]*domain
 	return res, nil
 }
 
+func (m *workerMockRepo) RecoverStaleSending(ctx context.Context, olderThan time.Duration) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.listErr != nil {
+		return 0, m.listErr
+	}
+	var count int64
+	cutoff := time.Now().UTC().Add(-olderThan)
+	for _, n := range m.notifications {
+		if n.DeliveryStatus == domain.DeliveryStatusSending && n.LastAttemptAt != nil && n.LastAttemptAt.Before(cutoff) {
+			n.DeliveryStatus = domain.DeliveryStatusPending
+			n.ErrorMessage = "delivery claim timed out and was recovered"
+			count++
+		}
+	}
+	return count, nil
+}
+
 func (m *workerMockRepo) UpdateStatus(ctx context.Context, id string, status domain.DeliveryStatus, attempts int, lastAttemptAt, sentAt *time.Time, errMsg string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -116,7 +134,7 @@ func setupWorkerTest() (*Worker, *workerMockRepo, *workerMockAttemptRepo, *worke
 	sender := &workerMockSender{failIDs: make(map[string]bool)}
 
 	deliveryService := NewDeliveryService(directRepo, attemptRepo, tplRepo, sender)
-	worker := NewWorker(directRepo, deliveryService, 50*time.Millisecond, log)
+	worker := NewWorker(directRepo, deliveryService, 50*time.Millisecond, 5*time.Minute, log)
 
 	return worker, directRepo, attemptRepo, tplRepo, sender
 }
@@ -337,8 +355,8 @@ func TestWorker_ConcurrentInstances_NoDuplicateDelivery(t *testing.T) {
 
 	deliveryService := NewDeliveryService(directRepo, attemptRepo, tplRepo, sender)
 
-	worker1 := NewWorker(directRepo, deliveryService, 20*time.Millisecond, log)
-	worker2 := NewWorker(directRepo, deliveryService, 20*time.Millisecond, log)
+	worker1 := NewWorker(directRepo, deliveryService, 20*time.Millisecond, 5*time.Minute, log)
+	worker2 := NewWorker(directRepo, deliveryService, 20*time.Millisecond, 5*time.Minute, log)
 
 	tpl := &domain.EmailTemplate{
 		ID:       "tpl-concurrent",
@@ -376,5 +394,88 @@ func TestWorker_ConcurrentInstances_NoDuplicateDelivery(t *testing.T) {
 
 	if len(sender.sentMsgs) != 10 {
 		t.Fatalf("expected exactly 10 messages sent with 0 duplicates, got %d", len(sender.sentMsgs))
+	}
+}
+
+func TestWorker_StaleRecovery_Delivered(t *testing.T) {
+	worker, directRepo, attemptRepo, tplRepo, sender := setupWorkerTest()
+
+	tpl := &domain.EmailTemplate{
+		ID:       "tpl-stale",
+		Subject:  "Stale Recovered",
+		HTMLBody: "<p>Stale Recovered</p>",
+		Status:   domain.TemplateStatusActive,
+		Version:  1,
+	}
+	tplRepo.templates[tpl.ID] = tpl
+
+	// Stuck in sending with last_attempt_at 10 minutes ago (stale timeout is 5m)
+	tenMinsAgo := time.Now().UTC().Add(-10 * time.Minute)
+	notifStale := &domain.DirectNotification{
+		ID:               "notif-stale-1",
+		TemplateID:       tpl.ID,
+		RecipientEmail:   "stale@example.com",
+		NotificationType: domain.NotificationTypeDirect,
+		DeliveryStatus:   domain.DeliveryStatusSending,
+		AttemptsCount:    1,
+		LastAttemptAt:    &tenMinsAgo,
+	}
+	directRepo.notifications[notifStale.ID] = notifStale
+
+	attempt := &domain.DeliveryAttempt{
+		ID:            "attempt-stale-1",
+		TargetType:    domain.DeliveryTargetDirectNotification,
+		TargetID:      notifStale.ID,
+		Status:        domain.DeliveryStatusPending,
+		AttemptNumber: 1,
+		AttemptedAt:   tenMinsAgo,
+	}
+	attemptRepo.attempts[attempt.ID] = attempt
+
+	// Execute single worker cycle
+	worker.ProcessPending(context.Background())
+
+	// Stale notification should have been recovered -> claimed -> delivered to sent
+	if notifStale.DeliveryStatus != domain.DeliveryStatusSent {
+		t.Errorf("expected recovered stale notification to be sent, got %s", notifStale.DeliveryStatus)
+	}
+	if len(sender.sentMsgs) != 1 {
+		t.Fatalf("expected 1 sent message, got %d", len(sender.sentMsgs))
+	}
+}
+
+func TestWorker_StaleRecovery_FreshNotRecovered(t *testing.T) {
+	worker, directRepo, _, tplRepo, sender := setupWorkerTest()
+
+	tpl := &domain.EmailTemplate{
+		ID:       "tpl-fresh",
+		Subject:  "Fresh In Flight",
+		HTMLBody: "<p>Fresh In Flight</p>",
+		Status:   domain.TemplateStatusActive,
+		Version:  1,
+	}
+	tplRepo.templates[tpl.ID] = tpl
+
+	// In sending with last_attempt_at 10 seconds ago (fresh, under 5m)
+	tenSecsAgo := time.Now().UTC().Add(-10 * time.Second)
+	notifFresh := &domain.DirectNotification{
+		ID:               "notif-fresh-1",
+		TemplateID:       tpl.ID,
+		RecipientEmail:   "fresh@example.com",
+		NotificationType: domain.NotificationTypeDirect,
+		DeliveryStatus:   domain.DeliveryStatusSending,
+		AttemptsCount:    1,
+		LastAttemptAt:    &tenSecsAgo,
+	}
+	directRepo.notifications[notifFresh.ID] = notifFresh
+
+	worker.ProcessPending(context.Background())
+
+	// Fresh in-flight notification must remain in 'sending' state untouched
+	if notifFresh.DeliveryStatus != domain.DeliveryStatusSending {
+		t.Errorf("expected fresh notification to remain in sending, got %s", notifFresh.DeliveryStatus)
+	}
+	if len(sender.sentMsgs) != 0 {
+		t.Errorf("expected 0 sent messages for fresh in-flight notification, got %d", len(sender.sentMsgs))
 	}
 }

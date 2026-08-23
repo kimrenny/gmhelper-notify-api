@@ -82,6 +82,19 @@ func (m *mockDirectRepo) ClaimPending(ctx context.Context, limit int) ([]*domain
 	return list, nil
 }
 
+func (m *mockDirectRepo) RecoverStaleSending(ctx context.Context, olderThan time.Duration) (int64, error) {
+	var count int64
+	cutoff := time.Now().UTC().Add(-olderThan)
+	for _, n := range m.notifications {
+		if n.DeliveryStatus == domain.DeliveryStatusSending && n.LastAttemptAt != nil && n.LastAttemptAt.Before(cutoff) {
+			n.DeliveryStatus = domain.DeliveryStatusPending
+			n.ErrorMessage = "delivery claim timed out and was recovered"
+			count++
+		}
+	}
+	return count, nil
+}
+
 func (m *mockDirectRepo) UpdateStatus(ctx context.Context, id string, status domain.DeliveryStatus, attempts int, lastAttemptAt, sentAt *time.Time, errorMessage string) error {
 	n, ok := m.notifications[id]
 	if !ok {

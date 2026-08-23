@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/gmhelper/notify-api/internal/domain"
@@ -182,6 +183,57 @@ RETURNING d.id, d.template_id, d.external_user_id, d.recipient_email, d.recipien
 		notifications = append(notifications, notification)
 	}
 	return notifications, rows.Err()
+}
+
+func (r *DirectNotificationRepository) RecoverStaleSending(ctx context.Context, olderThan time.Duration) (int64, error) {
+	if olderThan <= 0 {
+		return 0, fmt.Errorf("olderThan duration must be positive: %v", olderThan)
+	}
+
+	query := `
+WITH stale_notifications AS (
+	SELECT id
+	FROM direct_notifications
+	WHERE delivery_status = $1
+	  AND last_attempt_at IS NOT NULL
+	  AND last_attempt_at < now() - ($2 * interval '1 microsecond')
+	FOR UPDATE SKIP LOCKED
+),
+recovered_attempts AS (
+	UPDATE delivery_attempts a
+	SET status = $3,
+	    error_message = 'delivery attempt timed out and was recovered'
+	FROM stale_notifications s
+	WHERE a.target_type = $4
+	  AND a.target_id = s.id
+	  AND (a.status = $1 OR a.status = $5)
+),
+updated_notifications AS (
+	UPDATE direct_notifications d
+	SET delivery_status = $5,
+	    error_message = 'delivery claim timed out and was recovered',
+	    updated_at = now()
+	FROM stale_notifications s
+	WHERE d.id = s.id
+	RETURNING d.id
+)
+SELECT count(*) FROM updated_notifications`
+
+	var count int64
+	err := r.db.QueryRowContext(
+		ctx,
+		query,
+		domain.DeliveryStatusSending,            // $1: sending
+		olderThan.Microseconds(),                // $2: microseconds
+		domain.DeliveryStatusFailed,             // $3: failed for interrupted attempts
+		domain.DeliveryTargetDirectNotification, // $4: target_type
+		domain.DeliveryStatusPending,            // $5: pending
+	).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+
+	return count, nil
 }
 
 func (r *DirectNotificationRepository) UpdateStatus(ctx context.Context, id string, status domain.DeliveryStatus, attempts int, lastAttemptAt, sentAt *time.Time, errorMessage string) error {

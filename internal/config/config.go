@@ -25,6 +25,7 @@ type Config struct {
 	AuthSecret         string
 	WorkerEnabled      bool
 	WorkerInterval     time.Duration
+	WorkerStaleTimeout time.Duration
 }
 
 func Load() (*Config, error) {
@@ -58,6 +59,11 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	workerStaleTimeout, err := parseDurationEnv("NOTIFY_WORKER_STALE_TIMEOUT", 5*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+
 	cfg := &Config{
 		Env:                envOrDefault("APP_ENV", "development"),
 		HTTPHost:           envOrDefault("HTTP_HOST", "0.0.0.0"),
@@ -75,6 +81,7 @@ func Load() (*Config, error) {
 		AuthSecret:         envOrDefault("NOTIFY_AUTH_SECRET", "gmhelper-secret-key-change-in-production"),
 		WorkerEnabled:      parseBoolEnv("NOTIFY_WORKER_ENABLED", true),
 		WorkerInterval:     workerInterval,
+		WorkerStaleTimeout: workerStaleTimeout,
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -155,6 +162,9 @@ func (c *Config) Validate() error {
 	}
 	if c.WorkerEnabled && c.WorkerInterval <= 0 {
 		return fmt.Errorf("NOTIFY_WORKER_INTERVAL must be a positive duration when worker is enabled")
+	}
+	if c.WorkerEnabled && c.WorkerStaleTimeout <= 0 {
+		return fmt.Errorf("NOTIFY_WORKER_STALE_TIMEOUT must be a positive duration when worker is enabled")
 	}
 	return nil
 }

@@ -10,12 +10,14 @@ import (
 )
 
 const defaultBatchSize = 10
+const defaultStaleTimeout = 5 * time.Minute
 
 // Worker periodically queries for pending direct notifications and delivers them via DeliveryService.
 type Worker struct {
 	directRepo      domain.DirectNotificationRepository
 	deliveryService *DeliveryService
 	interval        time.Duration
+	staleTimeout    time.Duration
 	batchSize       int
 	logger          logger.Logger
 	mu              sync.Mutex
@@ -27,12 +29,17 @@ func NewWorker(
 	directRepo domain.DirectNotificationRepository,
 	deliveryService *DeliveryService,
 	interval time.Duration,
+	staleTimeout time.Duration,
 	logger logger.Logger,
 ) *Worker {
+	if staleTimeout <= 0 {
+		staleTimeout = defaultStaleTimeout
+	}
 	return &Worker{
 		directRepo:      directRepo,
 		deliveryService: deliveryService,
 		interval:        interval,
+		staleTimeout:    staleTimeout,
 		batchSize:       defaultBatchSize,
 		logger:          logger,
 	}
@@ -63,6 +70,7 @@ func (w *Worker) Start(ctx context.Context) {
 	if w.logger != nil {
 		w.logger.Info("direct notification background worker started",
 			logger.Duration("interval", w.interval),
+			logger.Duration("staleTimeout", w.staleTimeout),
 		)
 	}
 
@@ -83,12 +91,25 @@ func (w *Worker) Start(ctx context.Context) {
 	}
 }
 
-// ProcessPending atomically claims a batch of pending notifications and processes each sequentially.
+// ProcessPending atomically recovers stale notifications, claims pending batch, and processes each sequentially.
 func (w *Worker) ProcessPending(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
 
+	// 1. Recover stale 'sending' notifications back to 'pending' before claiming
+	if w.staleTimeout > 0 {
+		recoveredCount, err := w.directRepo.RecoverStaleSending(ctx, w.staleTimeout)
+		if err != nil {
+			if ctx.Err() == nil && w.logger != nil {
+				w.logger.Warn("failed to recover stale sending direct notifications in worker", logger.Error(err))
+			}
+		} else if recoveredCount > 0 && w.logger != nil {
+			w.logger.Info("recovered stale sending direct notifications", logger.Int64("count", recoveredCount))
+		}
+	}
+
+	// 2. Atomically claim pending notifications
 	claimed, err := w.directRepo.ClaimPending(ctx, w.batchSize)
 	if err != nil {
 		if ctx.Err() == nil && w.logger != nil {

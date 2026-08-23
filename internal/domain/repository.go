@@ -46,6 +46,7 @@ type DirectNotificationRepository interface {
 	CreateWithInitialAttempt(ctx context.Context, notification *DirectNotification, attempt *DeliveryAttempt) error
 	ListPending(ctx context.Context) ([]*DirectNotification, error)
 	ClaimPending(ctx context.Context, limit int) ([]*DirectNotification, error)
+	RecoverStaleSending(ctx context.Context, olderThan time.Duration) (int64, error)
 	UpdateStatus(ctx context.Context, id string, status DeliveryStatus, attempts int, lastAttemptAt, sentAt *time.Time, errorMessage string) error
 }
 

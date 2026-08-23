@@ -88,7 +88,7 @@ func main() {
 	// Direct notification background delivery worker
 	var workerWg sync.WaitGroup
 	if cfg.WorkerEnabled {
-		worker := direct.NewWorker(directRepo, deliveryService, cfg.WorkerInterval, log)
+		worker := direct.NewWorker(directRepo, deliveryService, cfg.WorkerInterval, cfg.WorkerStaleTimeout, log)
 		workerWg.Add(1)
 		go func() {
 			defer workerWg.Done()

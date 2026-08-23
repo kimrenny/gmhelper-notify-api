@@ -64,6 +64,10 @@ func (m *routerMockDirectRepo) ClaimPending(ctx context.Context, limit int) ([]*
 	}, nil
 }
 
+func (m *routerMockDirectRepo) RecoverStaleSending(ctx context.Context, olderThan time.Duration) (int64, error) {
+	return 0, nil
+}
+
 func (m *routerMockDirectRepo) UpdateStatus(ctx context.Context, id string, status domain.DeliveryStatus, attempts int, lastAttemptAt, sentAt *time.Time, errMsg string) error {
 	return nil
 }
