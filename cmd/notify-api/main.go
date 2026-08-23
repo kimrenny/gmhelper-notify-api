@@ -71,7 +71,7 @@ func main() {
 	smtpSender := smtp.NewClient(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom)
 
 	directService := direct.NewService(templateRepo, directRepo)
-	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, templateRepo, smtpSender)
+	deliveryService := direct.NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, templateRepo, smtpSender, cfg.WorkerMaxAttempts)
 	directHandler := handlers.NewDirectNotificationHandler(directService, deliveryService, log)
 
 	jwtVerifier := auth.NewJWTVerifier(cfg.AuthSecret, cfg.AuthIssuer, cfg.AuthAudience)
@@ -88,7 +88,7 @@ func main() {
 	// Direct notification background delivery worker
 	var workerWg sync.WaitGroup
 	if cfg.WorkerEnabled {
-		worker := direct.NewWorker(directRepo, deliveryService, cfg.WorkerInterval, cfg.WorkerStaleTimeout, log)
+		worker := direct.NewWorker(directRepo, deliveryService, cfg.WorkerInterval, cfg.WorkerStaleTimeout, cfg.WorkerMaxAttempts, log)
 		workerWg.Add(1)
 		go func() {
 			defer workerWg.Done()

@@ -65,11 +65,11 @@ func (m *mockDirectRepo) ListPending(ctx context.Context) ([]*domain.DirectNotif
 	return list, nil
 }
 
-func (m *mockDirectRepo) ClaimPending(ctx context.Context, limit int) ([]*domain.DirectNotification, error) {
+func (m *mockDirectRepo) ClaimPending(ctx context.Context, limit int, maxAttempts int) ([]*domain.DirectNotification, error) {
 	var list []*domain.DirectNotification
 	now := time.Now().UTC()
 	for _, n := range m.notifications {
-		if n.DeliveryStatus == domain.DeliveryStatusPending {
+		if n.DeliveryStatus == domain.DeliveryStatusPending && (maxAttempts <= 0 || n.AttemptsCount < maxAttempts) {
 			n.DeliveryStatus = domain.DeliveryStatusSending
 			n.AttemptsCount++
 			n.LastAttemptAt = &now
@@ -82,13 +82,18 @@ func (m *mockDirectRepo) ClaimPending(ctx context.Context, limit int) ([]*domain
 	return list, nil
 }
 
-func (m *mockDirectRepo) RecoverStaleSending(ctx context.Context, olderThan time.Duration) (int64, error) {
+func (m *mockDirectRepo) RecoverStaleSending(ctx context.Context, olderThan time.Duration, maxAttempts int) (int64, error) {
 	var count int64
 	cutoff := time.Now().UTC().Add(-olderThan)
 	for _, n := range m.notifications {
 		if n.DeliveryStatus == domain.DeliveryStatusSending && n.LastAttemptAt != nil && n.LastAttemptAt.Before(cutoff) {
-			n.DeliveryStatus = domain.DeliveryStatusPending
-			n.ErrorMessage = "delivery claim timed out and was recovered"
+			if maxAttempts > 0 && n.AttemptsCount >= maxAttempts {
+				n.DeliveryStatus = domain.DeliveryStatusFailed
+				n.ErrorMessage = "delivery attempt timed out and max attempts reached"
+			} else {
+				n.DeliveryStatus = domain.DeliveryStatusPending
+				n.ErrorMessage = "delivery claim timed out and was recovered"
+			}
 			count++
 		}
 	}

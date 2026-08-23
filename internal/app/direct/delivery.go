@@ -19,11 +19,14 @@ var (
 	ErrInvalidDeliveryState  = errors.New("direct notification is not in pending state")
 )
 
+const defaultMaxAttempts = 5
+
 type DeliveryService struct {
 	directRepo   domain.DirectNotificationRepository
 	attemptRepo  domain.DeliveryAttemptRepository
 	templateRepo domain.EmailTemplateRepository
 	sender       email.Sender
+	maxAttempts  int
 }
 
 func NewDeliveryService(
@@ -32,11 +35,25 @@ func NewDeliveryService(
 	templateRepo domain.EmailTemplateRepository,
 	sender email.Sender,
 ) *DeliveryService {
+	return NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, templateRepo, sender, defaultMaxAttempts)
+}
+
+func NewDeliveryServiceWithMaxAttempts(
+	directRepo domain.DirectNotificationRepository,
+	attemptRepo domain.DeliveryAttemptRepository,
+	templateRepo domain.EmailTemplateRepository,
+	sender email.Sender,
+	maxAttempts int,
+) *DeliveryService {
+	if maxAttempts <= 0 {
+		maxAttempts = defaultMaxAttempts
+	}
 	return &DeliveryService{
 		directRepo:   directRepo,
 		attemptRepo:  attemptRepo,
 		templateRepo: templateRepo,
 		sender:       sender,
+		maxAttempts:  maxAttempts,
 	}
 }
 
@@ -60,10 +77,16 @@ func (s *DeliveryService) Deliver(ctx context.Context, notificationID string) er
 		return ErrAlreadySent
 	case domain.DeliveryStatusCancelled:
 		return ErrNotificationCancelled
+	case domain.DeliveryStatusFailed:
+		return fmt.Errorf("%w: direct notification delivery failed and cannot be delivered manually", ErrInvalidDeliveryState)
 	case domain.DeliveryStatusPending:
 		// Expected state
 	default:
 		return fmt.Errorf("%w: current status is '%s'", ErrInvalidDeliveryState, notification.DeliveryStatus)
+	}
+
+	if notification.AttemptsCount >= s.maxAttempts {
+		return fmt.Errorf("%w: maximum delivery attempts (%d) reached", ErrInvalidDeliveryState, s.maxAttempts)
 	}
 
 	// 3. Mark notification as sending
@@ -158,8 +181,15 @@ func (s *DeliveryService) deliverClaimed(ctx context.Context, notification *doma
 	// Delivery failure handling
 	failedAt := time.Now().UTC()
 	errMsg := sendErr.Error()
-	if err := s.directRepo.UpdateStatus(ctx, notification.ID, domain.DeliveryStatusFailed, attemptsCount, &failedAt, nil, errMsg); err != nil {
-		return fmt.Errorf("failed to record failed delivery status: %w (original error: %v)", err, sendErr)
+
+	// If attempts reached maxAttempts, mark permanently failed; otherwise return to pending for retry
+	nextStatus := domain.DeliveryStatusPending
+	if attemptsCount >= s.maxAttempts {
+		nextStatus = domain.DeliveryStatusFailed
+	}
+
+	if err := s.directRepo.UpdateStatus(ctx, notification.ID, nextStatus, attemptsCount, &failedAt, nil, errMsg); err != nil {
+		return fmt.Errorf("failed to record delivery status: %w (original error: %v)", err, sendErr)
 	}
 
 	targetAttempt.Status = domain.DeliveryStatusFailed

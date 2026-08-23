@@ -11,6 +11,7 @@ import (
 
 const defaultBatchSize = 10
 const defaultStaleTimeout = 5 * time.Minute
+const defaultWorkerMaxAttempts = 5
 
 // Worker periodically queries for pending direct notifications and delivers them via DeliveryService.
 type Worker struct {
@@ -18,6 +19,7 @@ type Worker struct {
 	deliveryService *DeliveryService
 	interval        time.Duration
 	staleTimeout    time.Duration
+	maxAttempts     int
 	batchSize       int
 	logger          logger.Logger
 	mu              sync.Mutex
@@ -30,16 +32,21 @@ func NewWorker(
 	deliveryService *DeliveryService,
 	interval time.Duration,
 	staleTimeout time.Duration,
+	maxAttempts int,
 	logger logger.Logger,
 ) *Worker {
 	if staleTimeout <= 0 {
 		staleTimeout = defaultStaleTimeout
+	}
+	if maxAttempts <= 0 {
+		maxAttempts = defaultWorkerMaxAttempts
 	}
 	return &Worker{
 		directRepo:      directRepo,
 		deliveryService: deliveryService,
 		interval:        interval,
 		staleTimeout:    staleTimeout,
+		maxAttempts:     maxAttempts,
 		batchSize:       defaultBatchSize,
 		logger:          logger,
 	}
@@ -71,6 +78,7 @@ func (w *Worker) Start(ctx context.Context) {
 		w.logger.Info("direct notification background worker started",
 			logger.Duration("interval", w.interval),
 			logger.Duration("staleTimeout", w.staleTimeout),
+			logger.Int("maxAttempts", w.maxAttempts),
 		)
 	}
 
@@ -97,9 +105,9 @@ func (w *Worker) ProcessPending(ctx context.Context) {
 		return
 	}
 
-	// 1. Recover stale 'sending' notifications back to 'pending' before claiming
+	// 1. Recover stale 'sending' notifications back to 'pending' (or 'failed' if maxAttempts reached) before claiming
 	if w.staleTimeout > 0 {
-		recoveredCount, err := w.directRepo.RecoverStaleSending(ctx, w.staleTimeout)
+		recoveredCount, err := w.directRepo.RecoverStaleSending(ctx, w.staleTimeout, w.maxAttempts)
 		if err != nil {
 			if ctx.Err() == nil && w.logger != nil {
 				w.logger.Warn("failed to recover stale sending direct notifications in worker", logger.Error(err))
@@ -109,8 +117,8 @@ func (w *Worker) ProcessPending(ctx context.Context) {
 		}
 	}
 
-	// 2. Atomically claim pending notifications
-	claimed, err := w.directRepo.ClaimPending(ctx, w.batchSize)
+	// 2. Atomically claim pending notifications below maxAttempts
+	claimed, err := w.directRepo.ClaimPending(ctx, w.batchSize, w.maxAttempts)
 	if err != nil {
 		if ctx.Err() == nil && w.logger != nil {
 			w.logger.Error("failed to claim pending direct notifications in worker", logger.Error(err))

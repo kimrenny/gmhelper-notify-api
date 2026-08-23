@@ -133,9 +133,12 @@ ORDER BY created_at ASC`, domain.DeliveryStatusPending)
 	return notifications, rows.Err()
 }
 
-func (r *DirectNotificationRepository) ClaimPending(ctx context.Context, limit int) ([]*domain.DirectNotification, error) {
+func (r *DirectNotificationRepository) ClaimPending(ctx context.Context, limit int, maxAttempts int) ([]*domain.DirectNotification, error) {
 	if limit <= 0 {
 		limit = 10
+	}
+	if maxAttempts <= 0 {
+		maxAttempts = 5
 	}
 
 	query := `
@@ -143,12 +146,13 @@ WITH claimed AS (
 	SELECT id
 	FROM direct_notifications
 	WHERE delivery_status = $1
+	  AND attempts_count < $2
 	ORDER BY created_at ASC
 	FOR UPDATE SKIP LOCKED
-	LIMIT $2
+	LIMIT $3
 )
 UPDATE direct_notifications d
-SET delivery_status = $3,
+SET delivery_status = $4,
     attempts_count = d.attempts_count + 1,
     last_attempt_at = now(),
     updated_at = now()
@@ -158,7 +162,7 @@ RETURNING d.id, d.template_id, d.external_user_id, d.recipient_email, d.recipien
           d.notification_type, d.delivery_status, d.attempts_count, d.last_attempt_at,
           d.sent_at, d.error_message, d.payload, d.created_at, d.updated_at`
 
-	rows, err := r.db.QueryContext(ctx, query, domain.DeliveryStatusPending, limit, domain.DeliveryStatusSending)
+	rows, err := r.db.QueryContext(ctx, query, domain.DeliveryStatusPending, maxAttempts, limit, domain.DeliveryStatusSending)
 	if err != nil {
 		return nil, err
 	}
@@ -185,14 +189,17 @@ RETURNING d.id, d.template_id, d.external_user_id, d.recipient_email, d.recipien
 	return notifications, rows.Err()
 }
 
-func (r *DirectNotificationRepository) RecoverStaleSending(ctx context.Context, olderThan time.Duration) (int64, error) {
+func (r *DirectNotificationRepository) RecoverStaleSending(ctx context.Context, olderThan time.Duration, maxAttempts int) (int64, error) {
 	if olderThan <= 0 {
 		return 0, fmt.Errorf("olderThan duration must be positive: %v", olderThan)
+	}
+	if maxAttempts <= 0 {
+		maxAttempts = 5
 	}
 
 	query := `
 WITH stale_notifications AS (
-	SELECT id
+	SELECT id, attempts_count
 	FROM direct_notifications
 	WHERE delivery_status = $1
 	  AND last_attempt_at IS NOT NULL
@@ -210,8 +217,8 @@ recovered_attempts AS (
 ),
 updated_notifications AS (
 	UPDATE direct_notifications d
-	SET delivery_status = $5,
-	    error_message = 'delivery claim timed out and was recovered',
+	SET delivery_status = CASE WHEN d.attempts_count >= $6 THEN $3 ELSE $5 END,
+	    error_message = CASE WHEN d.attempts_count >= $6 THEN 'delivery attempt timed out and max attempts reached' ELSE 'delivery claim timed out and was recovered' END,
 	    updated_at = now()
 	FROM stale_notifications s
 	WHERE d.id = s.id
@@ -225,9 +232,10 @@ SELECT count(*) FROM updated_notifications`
 		query,
 		domain.DeliveryStatusSending,            // $1: sending
 		olderThan.Microseconds(),                // $2: microseconds
-		domain.DeliveryStatusFailed,             // $3: failed for interrupted attempts
+		domain.DeliveryStatusFailed,             // $3: failed
 		domain.DeliveryTargetDirectNotification, // $4: target_type
 		domain.DeliveryStatusPending,            // $5: pending
+		maxAttempts,                             // $6: maxAttempts
 	).Scan(&count)
 	if err != nil {
 		return 0, err

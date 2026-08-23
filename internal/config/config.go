@@ -26,6 +26,7 @@ type Config struct {
 	WorkerEnabled      bool
 	WorkerInterval     time.Duration
 	WorkerStaleTimeout time.Duration
+	WorkerMaxAttempts  int
 }
 
 func Load() (*Config, error) {
@@ -64,6 +65,11 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	workerMaxAttempts, err := parseIntEnv("NOTIFY_WORKER_MAX_ATTEMPTS", 5)
+	if err != nil {
+		return nil, err
+	}
+
 	cfg := &Config{
 		Env:                envOrDefault("APP_ENV", "development"),
 		HTTPHost:           envOrDefault("HTTP_HOST", "0.0.0.0"),
@@ -82,6 +88,7 @@ func Load() (*Config, error) {
 		WorkerEnabled:      parseBoolEnv("NOTIFY_WORKER_ENABLED", true),
 		WorkerInterval:     workerInterval,
 		WorkerStaleTimeout: workerStaleTimeout,
+		WorkerMaxAttempts:  workerMaxAttempts,
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -165,6 +172,9 @@ func (c *Config) Validate() error {
 	}
 	if c.WorkerEnabled && c.WorkerStaleTimeout <= 0 {
 		return fmt.Errorf("NOTIFY_WORKER_STALE_TIMEOUT must be a positive duration when worker is enabled")
+	}
+	if c.WorkerEnabled && c.WorkerMaxAttempts <= 0 {
+		return fmt.Errorf("NOTIFY_WORKER_MAX_ATTEMPTS must be a positive integer when worker is enabled")
 	}
 	return nil
 }

@@ -181,6 +181,23 @@ func TestConfigValidate_WorkerSettings(t *testing.T) {
 		t.Fatal("expected error when worker is enabled with zero stale timeout, got nil")
 	}
 
+	// Worker enabled with zero max attempts -> error
+	cfgInvalidMaxAttempts := &Config{
+		DatabaseURL:        "postgres://localhost/test",
+		SMTPHost:           "smtp.example.com",
+		SMTPFrom:           "test@example.com",
+		HTTPPort:           8080,
+		SMTPPort:           587,
+		AuthSecret:         "secret-32-chars-long-here!!!!!!",
+		WorkerEnabled:      true,
+		WorkerInterval:     5 * time.Second,
+		WorkerStaleTimeout: 5 * time.Minute,
+		WorkerMaxAttempts:  0,
+	}
+	if err := cfgInvalidMaxAttempts.Validate(); err == nil {
+		t.Fatal("expected error when worker is enabled with zero max attempts, got nil")
+	}
+
 	// Worker enabled with valid settings -> ok
 	cfgValidWorker := &Config{
 		DatabaseURL:        "postgres://localhost/test",
@@ -192,8 +209,9 @@ func TestConfigValidate_WorkerSettings(t *testing.T) {
 		WorkerEnabled:      true,
 		WorkerInterval:     5 * time.Second,
 		WorkerStaleTimeout: 5 * time.Minute,
+		WorkerMaxAttempts:  5,
 	}
 	if err := cfgValidWorker.Validate(); err != nil {
-		t.Fatalf("expected valid config for enabled worker with positive interval and stale timeout, got: %v", err)
+		t.Fatalf("expected valid config for enabled worker with positive interval, stale timeout, and max attempts, got: %v", err)
 	}
 }

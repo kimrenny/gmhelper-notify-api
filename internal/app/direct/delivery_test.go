@@ -201,9 +201,12 @@ func TestDeliveryService_Deliver_SMTPFailure(t *testing.T) {
 		t.Errorf("expected returned error to wrap/match original smtpErr, got %v", err)
 	}
 
-	// Verify Notification status marked as failed with error message
-	if notif.DeliveryStatus != domain.DeliveryStatusFailed {
-		t.Errorf("expected notification status failed, got %s", notif.DeliveryStatus)
+	// 1. Below max attempts (attempt 1 of 5) -> notification returned to pending for retry
+	if notif.DeliveryStatus != domain.DeliveryStatusPending {
+		t.Errorf("expected notification status pending for retry below max attempts, got %s", notif.DeliveryStatus)
+	}
+	if notif.AttemptsCount != 1 {
+		t.Errorf("expected attempts_count 1, got %d", notif.AttemptsCount)
 	}
 	if notif.ErrorMessage != "550 5.1.1 User unknown" {
 		t.Errorf("expected notification error_message recorded, got: %s", notif.ErrorMessage)
@@ -218,6 +221,33 @@ func TestDeliveryService_Deliver_SMTPFailure(t *testing.T) {
 	}
 	if attempt.ErrorMessage != "550 5.1.1 User unknown" {
 		t.Errorf("expected attempt error_message recorded, got: %s", attempt.ErrorMessage)
+	}
+
+	// 2. At max attempts (e.g. maxAttempts = 1 or notification already at 4 attempts) -> permanently failed
+	svcMax1 := NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, templateRepo, sender, 1)
+	notif2 := &domain.DirectNotification{
+		ID:             "notif-max-reached",
+		TemplateID:     tpl.ID,
+		RecipientEmail: "user2@example.com",
+		DeliveryStatus: domain.DeliveryStatusPending,
+		AttemptsCount:  0,
+	}
+	directRepo.notifications[notif2.ID] = notif2
+	attempt2 := &domain.DeliveryAttempt{
+		ID:            "attempt-max-reached",
+		TargetType:    domain.DeliveryTargetDirectNotification,
+		TargetID:      notif2.ID,
+		Status:        domain.DeliveryStatusPending,
+		AttemptNumber: 1,
+	}
+	attemptRepo.attempts[attempt2.ID] = attempt2
+
+	err = svcMax1.Deliver(context.Background(), notif2.ID)
+	if err == nil {
+		t.Fatal("expected error on SMTP failure, got nil")
+	}
+	if notif2.DeliveryStatus != domain.DeliveryStatusFailed {
+		t.Errorf("expected notification to be permanently failed when reaching max attempts, got %s", notif2.DeliveryStatus)
 	}
 }
 
@@ -261,13 +291,43 @@ func TestDeliveryService_Deliver_InvalidStates(t *testing.T) {
 		t.Errorf("expected ErrNotificationCancelled, got %v", err)
 	}
 
-	// 3. Not Found
+	// 3. Already Failed
+	notifFailed := &domain.DirectNotification{
+		ID:             "notif-failed",
+		TemplateID:     tpl.ID,
+		RecipientEmail: "user@example.com",
+		DeliveryStatus: domain.DeliveryStatusFailed,
+		AttemptsCount:  5,
+	}
+	directRepo.notifications[notifFailed.ID] = notifFailed
+
+	err = svc.Deliver(context.Background(), notifFailed.ID)
+	if !errors.Is(err, ErrInvalidDeliveryState) {
+		t.Errorf("expected ErrInvalidDeliveryState for failed notification, got %v", err)
+	}
+
+	// 4. Exhausted attempts
+	notifExhausted := &domain.DirectNotification{
+		ID:             "notif-exhausted",
+		TemplateID:     tpl.ID,
+		RecipientEmail: "user@example.com",
+		DeliveryStatus: domain.DeliveryStatusPending,
+		AttemptsCount:  5,
+	}
+	directRepo.notifications[notifExhausted.ID] = notifExhausted
+
+	err = svc.Deliver(context.Background(), notifExhausted.ID)
+	if !errors.Is(err, ErrInvalidDeliveryState) {
+		t.Errorf("expected ErrInvalidDeliveryState for exhausted attempts notification, got %v", err)
+	}
+
+	// 5. Not Found
 	err = svc.Deliver(context.Background(), "missing-id")
 	if !errors.Is(err, domain.ErrNotFound) {
 		t.Errorf("expected ErrNotFound for missing notification, got %v", err)
 	}
 
-	// 4. Empty ID
+	// 6. Empty ID
 	err = svc.Deliver(context.Background(), "   ")
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("expected ErrInvalidInput for empty ID, got %v", err)

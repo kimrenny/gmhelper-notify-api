@@ -842,8 +842,8 @@ func TestIntegration_DirectNotification_Delivery_SMTPFailure(t *testing.T) {
 	_ = db.QueryRowContext(ctx, `SELECT delivery_status, attempts_count, sent_at, error_message FROM direct_notifications WHERE id = $1`, createdResp.ID).
 		Scan(&dbStatus, &dbAttempts, &dbSentAt, &dbErrorMessage)
 
-	if dbStatus != "failed" {
-		t.Errorf("expected db delivery_status failed, got %s", dbStatus)
+	if dbStatus != "pending" {
+		t.Errorf("expected db delivery_status pending for retry below max attempts, got %s", dbStatus)
 	}
 	if dbAttempts != 1 {
 		t.Errorf("expected db attempts_count 1, got %d", dbAttempts)
@@ -1026,7 +1026,7 @@ func TestIntegration_DirectNotification_BackgroundWorker_EndToEnd(t *testing.T) 
 	createdNotifIDs = append(createdNotifIDs, notif.ID)
 
 	// 3. Start background worker with 20ms polling interval
-	worker := direct.NewWorker(directRepo, deliveryService, 20*time.Millisecond, 5*time.Minute, log)
+	worker := direct.NewWorker(directRepo, deliveryService, 20*time.Millisecond, 5*time.Minute, 5, log)
 	workerDone := make(chan struct{})
 	go func() {
 		worker.Start(ctx)
@@ -1160,8 +1160,8 @@ func TestIntegration_DirectNotification_ConcurrentWorkers_AtomicClaiming(t *test
 	}
 
 	// 3. Start 2 independent workers concurrently against the same PostgreSQL database
-	worker1 := direct.NewWorker(directRepo, deliveryService, 20*time.Millisecond, 5*time.Minute, log)
-	worker2 := direct.NewWorker(directRepo, deliveryService, 20*time.Millisecond, 5*time.Minute, log)
+	worker1 := direct.NewWorker(directRepo, deliveryService, 20*time.Millisecond, 5*time.Minute, 5, log)
+	worker2 := direct.NewWorker(directRepo, deliveryService, 20*time.Millisecond, 5*time.Minute, 5, log)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -1317,7 +1317,7 @@ func TestIntegration_DirectNotification_StaleRecovery_EndToEnd(t *testing.T) {
 	createdNotifIDs = append(createdNotifIDs, freshNotif.ID)
 
 	// 4. Start Worker with 1 minute stale timeout (so 10 mins ago is stale, 10 secs ago is NOT)
-	worker := direct.NewWorker(directRepo, deliveryService, 20*time.Millisecond, 1*time.Minute, log)
+	worker := direct.NewWorker(directRepo, deliveryService, 20*time.Millisecond, 1*time.Minute, 5, log)
 	workerDone := make(chan struct{})
 	go func() {
 		worker.Start(ctx)
@@ -1405,5 +1405,173 @@ func TestIntegration_DirectNotification_StaleRecovery_EndToEnd(t *testing.T) {
 	}
 	if messages[0].Subject != "Stale Notice: Recovered And Delivered" {
 		t.Errorf("expected subject 'Stale Notice: Recovered And Delivered', got '%s'", messages[0].Subject)
+	}
+}
+
+func TestIntegration_DirectNotification_MaxAttempts_Exhaustion_EndToEnd(t *testing.T) {
+	db := getIntegrationDB(t)
+	smtpServer := testserver.StartFakeSMTPServer(t)
+	defer smtpServer.Close()
+
+	// Configure fake SMTP to reject recipient so every send attempt fails
+	smtpServer.RejectRecipient = true
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	log, _ := logger.NewLogger("info")
+	templateRepo := postgres.NewEmailTemplateRepository(db)
+	directRepo := postgres.NewDirectNotificationRepository(db)
+	attemptRepo := postgres.NewDeliveryAttemptRepository(db)
+	smtpClient := infrasmtp.NewClient(smtpServer.Host, smtpServer.Port, "", "", "no-reply@gmhelper.local")
+
+	maxAttempts := 3
+	deliveryService := direct.NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, templateRepo, smtpClient, maxAttempts)
+
+	createdTplIDs := []string{}
+	createdNotifIDs := []string{}
+	defer func() {
+		cleanupRecords(t, db, createdNotifIDs, createdTplIDs)
+	}()
+
+	// 1. Seed active template
+	tpl := &domain.EmailTemplate{
+		ID:            uuid.NewString(),
+		TemplateKey:   "max_att_" + uuid.NewString()[:8],
+		Name:          "Max Attempts Template",
+		Subject:       "Max Attempts Subject",
+		HTMLBody:      "<p>Body</p>",
+		PlainTextBody: "Body",
+		Locale:        "en",
+		Status:        domain.TemplateStatusActive,
+		Version:       1,
+		CreatedAt:     time.Now().UTC(),
+		UpdatedAt:     time.Now().UTC(),
+	}
+	if err := templateRepo.Create(ctx, tpl); err != nil {
+		t.Fatalf("failed to seed template: %v", err)
+	}
+	createdTplIDs = append(createdTplIDs, tpl.ID)
+
+	// 2. Seed pending notification
+	notif := &domain.DirectNotification{
+		ID:               uuid.NewString(),
+		TemplateID:       tpl.ID,
+		RecipientEmail:   "failing-user@example.com",
+		NotificationType: domain.NotificationTypeDirect,
+		DeliveryStatus:   domain.DeliveryStatusPending,
+		AttemptsCount:    0,
+		CreatedAt:        time.Now().UTC(),
+		UpdatedAt:        time.Now().UTC(),
+	}
+	attempt := &domain.DeliveryAttempt{
+		ID:            uuid.NewString(),
+		TargetType:    domain.DeliveryTargetDirectNotification,
+		TargetID:      notif.ID,
+		Status:        domain.DeliveryStatusPending,
+		AttemptNumber: 1,
+		AttemptedAt:   time.Now().UTC(),
+		CreatedAt:     time.Now().UTC(),
+	}
+	if err := directRepo.CreateWithInitialAttempt(ctx, notif, attempt); err != nil {
+		t.Fatalf("failed to seed pending notification: %v", err)
+	}
+	createdNotifIDs = append(createdNotifIDs, notif.ID)
+
+	// 3. Start Worker with maxAttempts = 3 and 20ms interval
+	worker := direct.NewWorker(directRepo, deliveryService, 20*time.Millisecond, 500*time.Millisecond, maxAttempts, log)
+	workerDone := make(chan struct{})
+	go func() {
+		worker.Start(ctx)
+		close(workerDone)
+	}()
+
+	// 4. Poll database until notification transitions to 'failed' with attempts_count = 3
+	deadline := time.Now().Add(5 * time.Second)
+	var (
+		finalStatus   string
+		finalAttempts int
+		finalErrMsg   string
+	)
+	for time.Now().Before(deadline) {
+		err := db.QueryRowContext(ctx, `SELECT delivery_status, attempts_count, error_message FROM direct_notifications WHERE id = $1`, notif.ID).
+			Scan(&finalStatus, &finalAttempts, &finalErrMsg)
+		if err == nil && finalStatus == "failed" && finalAttempts == maxAttempts {
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+
+	// Allow worker to run a few more ticks to prove no 4th attempt occurs
+	time.Sleep(100 * time.Millisecond)
+
+	// Stop worker cleanly
+	cancel()
+	select {
+	case <-workerDone:
+		// Clean exit
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("worker did not exit cleanly")
+	}
+
+	// 5. Verify Notification State
+	if finalStatus != "failed" {
+		t.Fatalf("expected notification to reach 'failed' status, got '%s'", finalStatus)
+	}
+	if finalAttempts != 3 {
+		t.Errorf("expected attempts_count to be exactly 3, got %d (prevented indefinite retry)", finalAttempts)
+	}
+	if finalErrMsg == "" {
+		t.Error("expected error_message to be populated on failed notification")
+	}
+
+	// 6. Verify Delivery Attempts in Database
+	attempts, err := attemptRepo.ListByTarget(context.Background(), domain.DeliveryTargetDirectNotification, notif.ID)
+	if err != nil {
+		t.Fatalf("failed to list delivery attempts: %v", err)
+	}
+	if len(attempts) != 3 {
+		t.Fatalf("expected exactly 3 delivery attempts recorded, got %d", len(attempts))
+	}
+	for i, att := range attempts {
+		expectedAttemptNum := i + 1
+		if att.AttemptNumber != expectedAttemptNum {
+			t.Errorf("attempt %d: expected attempt_number %d, got %d", i, expectedAttemptNum, att.AttemptNumber)
+		}
+		if att.Status != domain.DeliveryStatusFailed {
+			t.Errorf("attempt %d: expected status 'failed', got '%s'", i, att.Status)
+		}
+		if att.ErrorMessage == "" {
+			t.Errorf("attempt %d: expected non-empty error_message", i)
+		}
+	}
+
+	// 7. Verify Stale Recovery on Exhausted Notification Does Not Return to Pending
+	// Simulate notification stuck in 'sending' with attempts_count = 3
+	tenMinsAgo := time.Now().UTC().Add(-10 * time.Minute)
+	_, err = db.ExecContext(context.Background(), `
+		UPDATE direct_notifications
+		SET delivery_status = 'sending', attempts_count = 3, last_attempt_at = $1
+		WHERE id = $2`, tenMinsAgo, notif.ID)
+	if err != nil {
+		t.Fatalf("failed to update notification to stale sending: %v", err)
+	}
+
+	recoveredCount, err := directRepo.RecoverStaleSending(context.Background(), 1*time.Minute, maxAttempts)
+	if err != nil {
+		t.Fatalf("failed to run RecoverStaleSending: %v", err)
+	}
+	if recoveredCount != 1 {
+		t.Fatalf("expected 1 recovered notification, got %d", recoveredCount)
+	}
+
+	var postRecoveryStatus string
+	err = db.QueryRowContext(context.Background(), `SELECT delivery_status FROM direct_notifications WHERE id = $1`, notif.ID).
+		Scan(&postRecoveryStatus)
+	if err != nil {
+		t.Fatalf("failed to query notification status: %v", err)
+	}
+	if postRecoveryStatus != "failed" {
+		t.Errorf("expected notification with attempts >= maxAttempts to become 'failed' upon stale recovery, got '%s'", postRecoveryStatus)
 	}
 }

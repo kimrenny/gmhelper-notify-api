@@ -56,7 +56,7 @@ func (m *workerMockRepo) ListPending(ctx context.Context) ([]*domain.DirectNotif
 	return res, nil
 }
 
-func (m *workerMockRepo) ClaimPending(ctx context.Context, limit int) ([]*domain.DirectNotification, error) {
+func (m *workerMockRepo) ClaimPending(ctx context.Context, limit int, maxAttempts int) ([]*domain.DirectNotification, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.listErr != nil {
@@ -65,7 +65,7 @@ func (m *workerMockRepo) ClaimPending(ctx context.Context, limit int) ([]*domain
 	var res []*domain.DirectNotification
 	now := time.Now().UTC()
 	for _, n := range m.notifications {
-		if n.DeliveryStatus == domain.DeliveryStatusPending {
+		if n.DeliveryStatus == domain.DeliveryStatusPending && (maxAttempts <= 0 || n.AttemptsCount < maxAttempts) {
 			n.DeliveryStatus = domain.DeliveryStatusSending
 			n.AttemptsCount++
 			n.LastAttemptAt = &now
@@ -78,7 +78,7 @@ func (m *workerMockRepo) ClaimPending(ctx context.Context, limit int) ([]*domain
 	return res, nil
 }
 
-func (m *workerMockRepo) RecoverStaleSending(ctx context.Context, olderThan time.Duration) (int64, error) {
+func (m *workerMockRepo) RecoverStaleSending(ctx context.Context, olderThan time.Duration, maxAttempts int) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.listErr != nil {
@@ -88,8 +88,13 @@ func (m *workerMockRepo) RecoverStaleSending(ctx context.Context, olderThan time
 	cutoff := time.Now().UTC().Add(-olderThan)
 	for _, n := range m.notifications {
 		if n.DeliveryStatus == domain.DeliveryStatusSending && n.LastAttemptAt != nil && n.LastAttemptAt.Before(cutoff) {
-			n.DeliveryStatus = domain.DeliveryStatusPending
-			n.ErrorMessage = "delivery claim timed out and was recovered"
+			if maxAttempts > 0 && n.AttemptsCount >= maxAttempts {
+				n.DeliveryStatus = domain.DeliveryStatusFailed
+				n.ErrorMessage = "delivery attempt timed out and max attempts reached"
+			} else {
+				n.DeliveryStatus = domain.DeliveryStatusPending
+				n.ErrorMessage = "delivery claim timed out and was recovered"
+			}
 			count++
 		}
 	}
@@ -134,7 +139,7 @@ func setupWorkerTest() (*Worker, *workerMockRepo, *workerMockAttemptRepo, *worke
 	sender := &workerMockSender{failIDs: make(map[string]bool)}
 
 	deliveryService := NewDeliveryService(directRepo, attemptRepo, tplRepo, sender)
-	worker := NewWorker(directRepo, deliveryService, 50*time.Millisecond, 5*time.Minute, log)
+	worker := NewWorker(directRepo, deliveryService, 50*time.Millisecond, 5*time.Minute, 5, log)
 
 	return worker, directRepo, attemptRepo, tplRepo, sender
 }
@@ -289,8 +294,11 @@ func TestWorker_ProcessPending_FailureDoesNotStopCycle(t *testing.T) {
 
 	worker.ProcessPending(context.Background())
 
-	if n1.DeliveryStatus != domain.DeliveryStatusFailed {
-		t.Errorf("expected notif-fail to have status failed, got %s", n1.DeliveryStatus)
+	if n1.DeliveryStatus != domain.DeliveryStatusPending {
+		t.Errorf("expected notif-fail to return to pending for retry, got %s", n1.DeliveryStatus)
+	}
+	if n1.AttemptsCount != 1 {
+		t.Errorf("expected notif-fail attempts_count 1, got %d", n1.AttemptsCount)
 	}
 	if n2.DeliveryStatus != domain.DeliveryStatusSent {
 		t.Errorf("expected notif-ok to have status sent despite earlier failure, got %s", n2.DeliveryStatus)
@@ -355,8 +363,8 @@ func TestWorker_ConcurrentInstances_NoDuplicateDelivery(t *testing.T) {
 
 	deliveryService := NewDeliveryService(directRepo, attemptRepo, tplRepo, sender)
 
-	worker1 := NewWorker(directRepo, deliveryService, 20*time.Millisecond, 5*time.Minute, log)
-	worker2 := NewWorker(directRepo, deliveryService, 20*time.Millisecond, 5*time.Minute, log)
+	worker1 := NewWorker(directRepo, deliveryService, 20*time.Millisecond, 5*time.Minute, 5, log)
+	worker2 := NewWorker(directRepo, deliveryService, 20*time.Millisecond, 5*time.Minute, 5, log)
 
 	tpl := &domain.EmailTemplate{
 		ID:       "tpl-concurrent",
@@ -477,5 +485,152 @@ func TestWorker_StaleRecovery_FreshNotRecovered(t *testing.T) {
 	}
 	if len(sender.sentMsgs) != 0 {
 		t.Errorf("expected 0 sent messages for fresh in-flight notification, got %d", len(sender.sentMsgs))
+	}
+}
+
+func TestWorker_ExhaustedNotification_NeverClaimed(t *testing.T) {
+	worker, directRepo, _, tplRepo, sender := setupWorkerTest()
+
+	tpl := &domain.EmailTemplate{
+		ID:       "tpl-exhausted",
+		Subject:  "Exhausted",
+		HTMLBody: "<p>Exhausted</p>",
+		Status:   domain.TemplateStatusActive,
+		Version:  1,
+	}
+	tplRepo.templates[tpl.ID] = tpl
+
+	notif := &domain.DirectNotification{
+		ID:               "notif-exhausted-1",
+		TemplateID:       tpl.ID,
+		RecipientEmail:   "exhausted@example.com",
+		NotificationType: domain.NotificationTypeDirect,
+		DeliveryStatus:   domain.DeliveryStatusPending,
+		AttemptsCount:    5, // maxAttempts is 5
+	}
+	directRepo.notifications[notif.ID] = notif
+
+	worker.ProcessPending(context.Background())
+
+	// Must remain in pending and never be claimed/sent
+	if notif.DeliveryStatus != domain.DeliveryStatusPending {
+		t.Errorf("expected exhausted notification to remain pending (unclaimed), got %s", notif.DeliveryStatus)
+	}
+	if notif.AttemptsCount != 5 {
+		t.Errorf("expected attempts_count to stay 5, got %d", notif.AttemptsCount)
+	}
+	if len(sender.sentMsgs) != 0 {
+		t.Fatalf("expected 0 sent messages, got %d", len(sender.sentMsgs))
+	}
+}
+
+func TestWorker_RepeatedFailures_EventuallyStopAtMaxAttempts(t *testing.T) {
+	log, _ := logger.NewLogger("info")
+	directRepo := &workerMockRepo{notifications: make(map[string]*domain.DirectNotification)}
+	attemptRepo := &workerMockAttemptRepo{attempts: make(map[string]*domain.DeliveryAttempt)}
+	tplRepo := &workerMockTplRepo{templates: make(map[string]*domain.EmailTemplate)}
+	sender := &workerMockSender{failIDs: map[string]bool{"failing@example.com": true}}
+
+	maxAttempts := 3
+	deliveryService := NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, tplRepo, sender, maxAttempts)
+	worker := NewWorker(directRepo, deliveryService, 10*time.Millisecond, 5*time.Minute, maxAttempts, log)
+
+	tpl := &domain.EmailTemplate{
+		ID:       "tpl-fail",
+		Subject:  "Fail",
+		HTMLBody: "<p>Fail</p>",
+		Status:   domain.TemplateStatusActive,
+		Version:  1,
+	}
+	tplRepo.templates[tpl.ID] = tpl
+
+	notif := &domain.DirectNotification{
+		ID:               "notif-repeat-fail",
+		TemplateID:       tpl.ID,
+		RecipientEmail:   "failing@example.com",
+		NotificationType: domain.NotificationTypeDirect,
+		DeliveryStatus:   domain.DeliveryStatusPending,
+		AttemptsCount:    0,
+	}
+	directRepo.notifications[notif.ID] = notif
+
+	// Cycle 1: attempt 1 fails -> notification returned to pending
+	worker.ProcessPending(context.Background())
+	if notif.DeliveryStatus != domain.DeliveryStatusPending {
+		t.Fatalf("expected status pending after attempt 1, got %s", notif.DeliveryStatus)
+	}
+	if notif.AttemptsCount != 1 {
+		t.Fatalf("expected attempts_count 1, got %d", notif.AttemptsCount)
+	}
+
+	// Cycle 2: attempt 2 fails -> notification returned to pending
+	worker.ProcessPending(context.Background())
+	if notif.DeliveryStatus != domain.DeliveryStatusPending {
+		t.Fatalf("expected status pending after attempt 2, got %s", notif.DeliveryStatus)
+	}
+	if notif.AttemptsCount != 2 {
+		t.Fatalf("expected attempts_count 2, got %d", notif.AttemptsCount)
+	}
+
+	// Cycle 3: attempt 3 fails -> maxAttempts (3) reached -> permanently failed!
+	worker.ProcessPending(context.Background())
+	if notif.DeliveryStatus != domain.DeliveryStatusFailed {
+		t.Fatalf("expected status failed after attempt 3 (max reached), got %s", notif.DeliveryStatus)
+	}
+	if notif.AttemptsCount != 3 {
+		t.Fatalf("expected attempts_count 3, got %d", notif.AttemptsCount)
+	}
+
+	// Cycle 4: subsequent cycle does nothing
+	worker.ProcessPending(context.Background())
+	if notif.DeliveryStatus != domain.DeliveryStatusFailed {
+		t.Fatalf("expected status failed to persist, got %s", notif.DeliveryStatus)
+	}
+	if notif.AttemptsCount != 3 {
+		t.Fatalf("expected attempts_count to stay 3, got %d", notif.AttemptsCount)
+	}
+}
+
+func TestWorker_StaleRecovery_AtLimit_MarksNotificationFailed(t *testing.T) {
+	log, _ := logger.NewLogger("info")
+	directRepo := &workerMockRepo{notifications: make(map[string]*domain.DirectNotification)}
+	attemptRepo := &workerMockAttemptRepo{attempts: make(map[string]*domain.DeliveryAttempt)}
+	tplRepo := &workerMockTplRepo{templates: make(map[string]*domain.EmailTemplate)}
+	sender := &workerMockSender{failIDs: make(map[string]bool)}
+
+	maxAttempts := 3
+	deliveryService := NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, tplRepo, sender, maxAttempts)
+	worker := NewWorker(directRepo, deliveryService, 10*time.Millisecond, 5*time.Minute, maxAttempts, log)
+
+	tpl := &domain.EmailTemplate{
+		ID:       "tpl-stale-limit",
+		Subject:  "Stale Limit",
+		HTMLBody: "<p>Stale Limit</p>",
+		Status:   domain.TemplateStatusActive,
+		Version:  1,
+	}
+	tplRepo.templates[tpl.ID] = tpl
+
+	// In sending state with attempts_count = 3 (at limit) and last_attempt_at 10 minutes ago
+	tenMinsAgo := time.Now().UTC().Add(-10 * time.Minute)
+	notif := &domain.DirectNotification{
+		ID:               "notif-stale-limit-1",
+		TemplateID:       tpl.ID,
+		RecipientEmail:   "stale-limit@example.com",
+		NotificationType: domain.NotificationTypeDirect,
+		DeliveryStatus:   domain.DeliveryStatusSending,
+		AttemptsCount:    3,
+		LastAttemptAt:    &tenMinsAgo,
+	}
+	directRepo.notifications[notif.ID] = notif
+
+	worker.ProcessPending(context.Background())
+
+	// Stale recovery at limit must mark notification permanently as failed
+	if notif.DeliveryStatus != domain.DeliveryStatusFailed {
+		t.Errorf("expected stale notification at limit to become failed, got %s", notif.DeliveryStatus)
+	}
+	if len(sender.sentMsgs) != 0 {
+		t.Errorf("expected 0 sent messages, got %d", len(sender.sentMsgs))
 	}
 }
