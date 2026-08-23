@@ -88,3 +88,47 @@ func TestConfigValidate_InvalidPort(t *testing.T) {
 		t.Fatal("expected error for port > 65535, got nil")
 	}
 }
+
+func TestConfigValidate_ProductionAuthSecretRequired(t *testing.T) {
+	// Default dev secret rejected in production
+	cfgDefaultSecret := &Config{
+		Env:         "production",
+		DatabaseURL: "postgres://localhost/test",
+		SMTPHost:    "smtp.example.com",
+		SMTPFrom:    "test@example.com",
+		HTTPPort:    8080,
+		SMTPPort:    587,
+		AuthSecret:  "gmhelper-secret-key-change-in-production",
+	}
+	if err := cfgDefaultSecret.Validate(); err == nil {
+		t.Fatal("expected error in production when using default secret, got nil")
+	}
+
+	// Empty secret rejected in production
+	cfgEmptySecret := &Config{
+		Env:         "production",
+		DatabaseURL: "postgres://localhost/test",
+		SMTPHost:    "smtp.example.com",
+		SMTPFrom:    "test@example.com",
+		HTTPPort:    8080,
+		SMTPPort:    587,
+		AuthSecret:  "",
+	}
+	if err := cfgEmptySecret.Validate(); err == nil {
+		t.Fatal("expected error in production when auth secret is empty, got nil")
+	}
+
+	// Explicit production secret allowed
+	cfgValidProd := &Config{
+		Env:         "production",
+		DatabaseURL: "postgres://localhost/test",
+		SMTPHost:    "smtp.example.com",
+		SMTPFrom:    "test@example.com",
+		HTTPPort:    8080,
+		SMTPPort:    587,
+		AuthSecret:  "super-secure-production-secret-value-32-chars",
+	}
+	if err := cfgValidProd.Validate(); err != nil {
+		t.Fatalf("expected valid production config, got: %v", err)
+	}
+}
