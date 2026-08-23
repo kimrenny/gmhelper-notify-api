@@ -14,12 +14,14 @@ import (
 
 	"github.com/gmhelper/notify-api/internal/api"
 	"github.com/gmhelper/notify-api/internal/api/handlers"
+	"github.com/gmhelper/notify-api/internal/app/direct"
 	"github.com/gmhelper/notify-api/internal/app/health"
 	"github.com/gmhelper/notify-api/internal/app/template"
 	"github.com/gmhelper/notify-api/internal/config"
 	"github.com/gmhelper/notify-api/internal/http/middleware"
 	"github.com/gmhelper/notify-api/internal/infra/logger"
 	"github.com/gmhelper/notify-api/internal/infra/postgres"
+	"github.com/gmhelper/notify-api/internal/infra/smtp"
 )
 
 func main() {
@@ -62,7 +64,15 @@ func main() {
 	templateService := template.NewService(templateRepo)
 	templateHandler := handlers.NewTemplateHandler(templateService, log)
 
-	router := api.NewRouter(healthHandler, templateHandler)
+	directRepo := postgres.NewDirectNotificationRepository(db.DB())
+	attemptRepo := postgres.NewDeliveryAttemptRepository(db.DB())
+	smtpSender := smtp.NewClient(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom)
+
+	directService := direct.NewService(templateRepo, directRepo)
+	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, templateRepo, smtpSender)
+	directHandler := handlers.NewDirectNotificationHandler(directService, deliveryService, log)
+
+	router := api.NewRouter(healthHandler, templateHandler, directHandler)
 	handler := middleware.Chain(router,
 		middleware.RequestID(),
 		middleware.Logging(log),

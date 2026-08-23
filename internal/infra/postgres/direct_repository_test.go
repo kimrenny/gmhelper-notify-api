@@ -182,6 +182,7 @@ func TestDirectNotificationRepository_CreateWithInitialAttempt_Atomic(t *testing
 		RecipientEmail:   "user@example.com",
 		NotificationType: domain.NotificationTypeDirect,
 		DeliveryStatus:   domain.DeliveryStatusPending,
+		Payload:          json.RawMessage(`{"key":"value"}`),
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}

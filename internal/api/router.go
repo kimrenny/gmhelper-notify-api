@@ -7,7 +7,11 @@ import (
 )
 
 // NewRouter constructs and configures the HTTP root router.
-func NewRouter(healthHandler *handlers.HealthHandler, templateHandler *handlers.TemplateHandler) http.Handler {
+func NewRouter(
+	healthHandler *handlers.HealthHandler,
+	templateHandler *handlers.TemplateHandler,
+	directHandler *handlers.DirectNotificationHandler,
+) http.Handler {
 	mux := http.NewServeMux()
 
 	// System & probe endpoints outside versioned API
@@ -24,6 +28,14 @@ func NewRouter(healthHandler *handlers.HealthHandler, templateHandler *handlers.
 		apiV1Mux.HandleFunc("POST /templates", templateHandler.Create)
 		apiV1Mux.HandleFunc("PUT /templates/{id}", templateHandler.Update)
 		apiV1Mux.HandleFunc("DELETE /templates/{id}", templateHandler.Delete)
+	}
+
+	// Direct Notification endpoints
+	if directHandler != nil {
+		apiV1Mux.HandleFunc("POST /notifications/direct", directHandler.Create)
+		apiV1Mux.HandleFunc("GET /notifications/direct/pending", directHandler.ListPending)
+		apiV1Mux.HandleFunc("GET /notifications/direct/{id}", directHandler.GetByID)
+		apiV1Mux.HandleFunc("POST /notifications/direct/{id}/deliver", directHandler.Deliver)
 	}
 
 	// Fallback for unhandled /api/v1/ routes
