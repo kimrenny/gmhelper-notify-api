@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestConfigLoad_Success(t *testing.T) {
@@ -130,5 +131,52 @@ func TestConfigValidate_ProductionAuthSecretRequired(t *testing.T) {
 	}
 	if err := cfgValidProd.Validate(); err != nil {
 		t.Fatalf("expected valid production config, got: %v", err)
+	}
+}
+
+func TestConfigValidate_WorkerSettings(t *testing.T) {
+	// Worker enabled with zero/negative interval -> error
+	cfgInvalidInterval := &Config{
+		DatabaseURL:    "postgres://localhost/test",
+		SMTPHost:       "smtp.example.com",
+		SMTPFrom:       "test@example.com",
+		HTTPPort:       8080,
+		SMTPPort:       587,
+		AuthSecret:     "secret-32-chars-long-here!!!!!!",
+		WorkerEnabled:  true,
+		WorkerInterval: 0,
+	}
+	if err := cfgInvalidInterval.Validate(); err == nil {
+		t.Fatal("expected error when worker is enabled with zero interval, got nil")
+	}
+
+	// Worker disabled with zero interval -> ok
+	cfgDisabled := &Config{
+		DatabaseURL:    "postgres://localhost/test",
+		SMTPHost:       "smtp.example.com",
+		SMTPFrom:       "test@example.com",
+		HTTPPort:       8080,
+		SMTPPort:       587,
+		AuthSecret:     "secret-32-chars-long-here!!!!!!",
+		WorkerEnabled:  false,
+		WorkerInterval: 0,
+	}
+	if err := cfgDisabled.Validate(); err != nil {
+		t.Fatalf("expected valid config when worker is disabled, got: %v", err)
+	}
+
+	// Worker enabled with valid interval -> ok
+	cfgValidWorker := &Config{
+		DatabaseURL:    "postgres://localhost/test",
+		SMTPHost:       "smtp.example.com",
+		SMTPFrom:       "test@example.com",
+		HTTPPort:       8080,
+		SMTPPort:       587,
+		AuthSecret:     "secret-32-chars-long-here!!!!!!",
+		WorkerEnabled:  true,
+		WorkerInterval: 5 * time.Second,
+	}
+	if err := cfgValidWorker.Validate(); err != nil {
+		t.Fatalf("expected valid config for enabled worker with positive interval, got: %v", err)
 	}
 }

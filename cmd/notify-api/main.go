@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -84,6 +85,19 @@ func main() {
 		middleware.CORS(cfg.AllowedCORSOrigins),
 	)
 
+	// Direct notification background delivery worker
+	var workerWg sync.WaitGroup
+	if cfg.WorkerEnabled {
+		worker := direct.NewWorker(directRepo, deliveryService, cfg.WorkerInterval, log)
+		workerWg.Add(1)
+		go func() {
+			defer workerWg.Done()
+			worker.Start(ctx)
+		}()
+	} else {
+		log.Info("direct notification background worker is disabled")
+	}
+
 	server := &http.Server{
 		Addr:         net.JoinHostPort(cfg.HTTPHost, strconv.Itoa(cfg.HTTPPort)),
 		Handler:      handler,
@@ -103,6 +117,10 @@ func main() {
 
 	sig := <-shutdownChan
 	log.Info("shutdown signal received", zapString("signal", sig.String()))
+
+	// Cancel root context to signal background workers to stop
+	cancel()
+	workerWg.Wait()
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
