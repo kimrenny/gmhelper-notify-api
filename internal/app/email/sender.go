@@ -3,9 +3,11 @@ package email
 import "context"
 
 type Message struct {
-	To      string
-	Subject string
-	Body    string
+	From          string
+	To            string
+	Subject       string
+	HTMLBody      string
+	PlainTextBody string
 }
 
 type Sender interface {
