@@ -242,3 +242,139 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`)).
 		t.Fatalf("unfulfilled expectations: %v", err)
 	}
 }
+
+func TestDirectNotificationRepository_ClaimPending(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	repo := NewDirectNotificationRepository(db)
+	now := time.Now().UTC()
+
+	rows := sqlmock.NewRows([]string{
+		"id", "template_id", "external_user_id", "recipient_email", "recipient_name", "notification_type",
+		"delivery_status", "attempts_count", "last_attempt_at", "sent_at", "error_message", "payload", "created_at", "updated_at",
+	}).AddRow(
+		"claimed-id-1", "template-1", "user-1", "recipient@example.com", "Recipient",
+		domain.NotificationTypeDirect, domain.DeliveryStatusSending, 1, &now,
+		nil, "", []byte(`{"key":"value"}`), now, now,
+	)
+
+	mock.ExpectQuery(regexp.QuoteMeta(`
+WITH claimed AS (
+	SELECT id
+	FROM direct_notifications
+	WHERE delivery_status = $1
+	  AND attempts_count < $2
+	ORDER BY created_at ASC
+	FOR UPDATE SKIP LOCKED
+	LIMIT $3
+)
+UPDATE direct_notifications d
+SET delivery_status = $4,
+    attempts_count = d.attempts_count + 1,
+    last_attempt_at = now(),
+    updated_at = now()
+FROM claimed
+WHERE d.id = claimed.id
+RETURNING d.id, d.template_id, d.external_user_id, d.recipient_email, d.recipient_name,
+          d.notification_type, d.delivery_status, d.attempts_count, d.last_attempt_at,
+          d.sent_at, d.error_message, d.payload, d.created_at, d.updated_at`)).
+		WithArgs(domain.DeliveryStatusPending, 5, 10, domain.DeliveryStatusSending).
+		WillReturnRows(rows)
+
+	claimed, err := repo.ClaimPending(context.Background(), 10, 5)
+	if err != nil {
+		t.Fatalf("expected ClaimPending success, got: %v", err)
+	}
+
+	if len(claimed) != 1 {
+		t.Fatalf("expected 1 claimed notification, got %d", len(claimed))
+	}
+	if claimed[0].ID != "claimed-id-1" {
+		t.Errorf("expected ID claimed-id-1, got %s", claimed[0].ID)
+	}
+	if claimed[0].DeliveryStatus != domain.DeliveryStatusSending {
+		t.Errorf("expected status sending, got %s", claimed[0].DeliveryStatus)
+	}
+	if claimed[0].AttemptsCount != 1 {
+		t.Errorf("expected attempts_count 1, got %d", claimed[0].AttemptsCount)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unfulfilled expectations: %v", err)
+	}
+}
+
+func TestDirectNotificationRepository_RecoverStaleSending(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	repo := NewDirectNotificationRepository(db)
+
+	// 1. Negative / zero olderThan returns error
+	if _, err := repo.RecoverStaleSending(context.Background(), 0, 5); err == nil {
+		t.Fatal("expected error for zero duration, got nil")
+	}
+	if _, err := repo.RecoverStaleSending(context.Background(), -1*time.Minute, 5); err == nil {
+		t.Fatal("expected error for negative duration, got nil")
+	}
+
+	// 2. Successful recovery
+	staleTimeout := 5 * time.Minute
+	mock.ExpectQuery(regexp.QuoteMeta(`
+WITH stale_notifications AS (
+	SELECT id, attempts_count
+	FROM direct_notifications
+	WHERE delivery_status = $1
+	  AND last_attempt_at IS NOT NULL
+	  AND last_attempt_at < now() - ($2 * interval '1 microsecond')
+	FOR UPDATE SKIP LOCKED
+),
+recovered_attempts AS (
+	UPDATE delivery_attempts a
+	SET status = $3,
+	    error_message = 'delivery attempt timed out and was recovered'
+	FROM stale_notifications s
+	WHERE a.target_type = $4
+	  AND a.target_id = s.id
+	  AND (a.status = $1 OR a.status = $5)
+),
+updated_notifications AS (
+	UPDATE direct_notifications d
+	SET delivery_status = CASE WHEN d.attempts_count >= $6 THEN $3 ELSE $5 END,
+	    error_message = CASE WHEN d.attempts_count >= $6 THEN 'delivery attempt timed out and max attempts reached' ELSE 'delivery claim timed out and was recovered' END,
+	    updated_at = now()
+	FROM stale_notifications s
+	WHERE d.id = s.id
+	RETURNING d.id
+)
+SELECT count(*) FROM updated_notifications`)).
+		WithArgs(
+			domain.DeliveryStatusSending,
+			staleTimeout.Microseconds(),
+			domain.DeliveryStatusFailed,
+			domain.DeliveryTargetDirectNotification,
+			domain.DeliveryStatusPending,
+			5,
+		).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+
+	recovered, err := repo.RecoverStaleSending(context.Background(), staleTimeout, 5)
+	if err != nil {
+		t.Fatalf("expected RecoverStaleSending success, got: %v", err)
+	}
+
+	if recovered != 2 {
+		t.Errorf("expected 2 recovered notifications, got %d", recovered)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unfulfilled expectations: %v", err)
+	}
+}

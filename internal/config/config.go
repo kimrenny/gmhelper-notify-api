@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -22,6 +23,10 @@ type Config struct {
 	AuthIssuer         string
 	AuthAudience       string
 	AuthSecret         string
+	WorkerEnabled      bool
+	WorkerInterval     time.Duration
+	WorkerStaleTimeout time.Duration
+	WorkerMaxAttempts  int
 }
 
 func Load() (*Config, error) {
@@ -50,6 +55,21 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	workerInterval, err := parseDurationEnv("NOTIFY_WORKER_INTERVAL", 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+
+	workerStaleTimeout, err := parseDurationEnv("NOTIFY_WORKER_STALE_TIMEOUT", 5*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+
+	workerMaxAttempts, err := parseIntEnv("NOTIFY_WORKER_MAX_ATTEMPTS", 5)
+	if err != nil {
+		return nil, err
+	}
+
 	cfg := &Config{
 		Env:                envOrDefault("APP_ENV", "development"),
 		HTTPHost:           envOrDefault("HTTP_HOST", "0.0.0.0"),
@@ -65,6 +85,10 @@ func Load() (*Config, error) {
 		AuthIssuer:         envOrDefault("NOTIFY_AUTH_ISSUER", "gmhelper-api"),
 		AuthAudience:       envOrDefault("NOTIFY_AUTH_AUDIENCE", "gmhelper-notify-api"),
 		AuthSecret:         envOrDefault("NOTIFY_AUTH_SECRET", "gmhelper-secret-key-change-in-production"),
+		WorkerEnabled:      parseBoolEnv("NOTIFY_WORKER_ENABLED", true),
+		WorkerInterval:     workerInterval,
+		WorkerStaleTimeout: workerStaleTimeout,
+		WorkerMaxAttempts:  workerMaxAttempts,
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -143,6 +167,15 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.AuthSecret) == "" {
 		return fmt.Errorf("NOTIFY_AUTH_SECRET cannot be empty")
 	}
+	if c.WorkerEnabled && c.WorkerInterval <= 0 {
+		return fmt.Errorf("NOTIFY_WORKER_INTERVAL must be a positive duration when worker is enabled")
+	}
+	if c.WorkerEnabled && c.WorkerStaleTimeout <= 0 {
+		return fmt.Errorf("NOTIFY_WORKER_STALE_TIMEOUT must be a positive duration when worker is enabled")
+	}
+	if c.WorkerEnabled && c.WorkerMaxAttempts <= 0 {
+		return fmt.Errorf("NOTIFY_WORKER_MAX_ATTEMPTS must be a positive integer when worker is enabled")
+	}
 	return nil
 }
 
@@ -171,6 +204,34 @@ func parseIntEnv(name string, defaultValue int) (int, error) {
 		return 0, fmt.Errorf("invalid integer for %s: %w", name, err)
 	}
 	return parsed, nil
+}
+
+func parseBoolEnv(name string, defaultValue bool) bool {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return defaultValue
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return defaultValue
+	}
+	return parsed
+}
+
+func parseDurationEnv(name string, defaultValue time.Duration) (time.Duration, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return defaultValue, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err == nil {
+		return d, nil
+	}
+	sec, intErr := strconv.Atoi(value)
+	if intErr == nil {
+		return time.Duration(sec) * time.Second, nil
+	}
+	return 0, fmt.Errorf("invalid duration for %s: %w", name, err)
 }
 
 func requireEnv(name string) (string, error) {

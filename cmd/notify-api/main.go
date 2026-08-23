@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -70,7 +71,7 @@ func main() {
 	smtpSender := smtp.NewClient(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom)
 
 	directService := direct.NewService(templateRepo, directRepo)
-	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, templateRepo, smtpSender)
+	deliveryService := direct.NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, templateRepo, smtpSender, cfg.WorkerMaxAttempts)
 	directHandler := handlers.NewDirectNotificationHandler(directService, deliveryService, log)
 
 	jwtVerifier := auth.NewJWTVerifier(cfg.AuthSecret, cfg.AuthIssuer, cfg.AuthAudience)
@@ -83,6 +84,19 @@ func main() {
 		middleware.Recovery(log),
 		middleware.CORS(cfg.AllowedCORSOrigins),
 	)
+
+	// Direct notification background delivery worker
+	var workerWg sync.WaitGroup
+	if cfg.WorkerEnabled {
+		worker := direct.NewWorker(directRepo, deliveryService, cfg.WorkerInterval, cfg.WorkerStaleTimeout, cfg.WorkerMaxAttempts, log)
+		workerWg.Add(1)
+		go func() {
+			defer workerWg.Done()
+			worker.Start(ctx)
+		}()
+	} else {
+		log.Info("direct notification background worker is disabled")
+	}
 
 	server := &http.Server{
 		Addr:         net.JoinHostPort(cfg.HTTPHost, strconv.Itoa(cfg.HTTPPort)),
@@ -103,6 +117,10 @@ func main() {
 
 	sig := <-shutdownChan
 	log.Info("shutdown signal received", zapString("signal", sig.String()))
+
+	// Cancel root context to signal background workers to stop
+	cancel()
+	workerWg.Wait()
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()

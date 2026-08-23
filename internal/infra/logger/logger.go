@@ -1,6 +1,8 @@
 package logger
 
 import (
+	"time"
+
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -29,6 +31,18 @@ func parseLogLevel(level string) zapcore.Level {
 
 func String(key, value string) Field {
 	return zap.String(key, value)
+}
+
+func Int(key string, value int) Field {
+	return zap.Int(key, value)
+}
+
+func Int64(key string, value int64) Field {
+	return zap.Int64(key, value)
+}
+
+func Duration(key string, value time.Duration) Field {
+	return zap.Duration(key, value)
 }
 
 func Error(err error) Field {

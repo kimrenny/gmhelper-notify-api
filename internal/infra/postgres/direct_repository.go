@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/gmhelper/notify-api/internal/domain"
@@ -130,6 +131,117 @@ ORDER BY created_at ASC`, domain.DeliveryStatusPending)
 		notifications = append(notifications, notification)
 	}
 	return notifications, rows.Err()
+}
+
+func (r *DirectNotificationRepository) ClaimPending(ctx context.Context, limit int, maxAttempts int) ([]*domain.DirectNotification, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	if maxAttempts <= 0 {
+		maxAttempts = 5
+	}
+
+	query := `
+WITH claimed AS (
+	SELECT id
+	FROM direct_notifications
+	WHERE delivery_status = $1
+	  AND attempts_count < $2
+	ORDER BY created_at ASC
+	FOR UPDATE SKIP LOCKED
+	LIMIT $3
+)
+UPDATE direct_notifications d
+SET delivery_status = $4,
+    attempts_count = d.attempts_count + 1,
+    last_attempt_at = now(),
+    updated_at = now()
+FROM claimed
+WHERE d.id = claimed.id
+RETURNING d.id, d.template_id, d.external_user_id, d.recipient_email, d.recipient_name,
+          d.notification_type, d.delivery_status, d.attempts_count, d.last_attempt_at,
+          d.sent_at, d.error_message, d.payload, d.created_at, d.updated_at`
+
+	rows, err := r.db.QueryContext(ctx, query, domain.DeliveryStatusPending, maxAttempts, limit, domain.DeliveryStatusSending)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	notifications := []*domain.DirectNotification{}
+	for rows.Next() {
+		notification := &domain.DirectNotification{}
+		var rawPayload []byte
+		if err := rows.Scan(
+			&notification.ID, &notification.TemplateID, &notification.ExternalUserID,
+			&notification.RecipientEmail, &notification.RecipientName, &notification.NotificationType,
+			&notification.DeliveryStatus, &notification.AttemptsCount, &notification.LastAttemptAt,
+			&notification.SentAt, &notification.ErrorMessage, &rawPayload,
+			&notification.CreatedAt, &notification.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if len(rawPayload) > 0 {
+			notification.Payload = json.RawMessage(rawPayload)
+		}
+		notifications = append(notifications, notification)
+	}
+	return notifications, rows.Err()
+}
+
+func (r *DirectNotificationRepository) RecoverStaleSending(ctx context.Context, olderThan time.Duration, maxAttempts int) (int64, error) {
+	if olderThan <= 0 {
+		return 0, fmt.Errorf("olderThan duration must be positive: %v", olderThan)
+	}
+	if maxAttempts <= 0 {
+		maxAttempts = 5
+	}
+
+	query := `
+WITH stale_notifications AS (
+	SELECT id, attempts_count
+	FROM direct_notifications
+	WHERE delivery_status = $1
+	  AND last_attempt_at IS NOT NULL
+	  AND last_attempt_at < now() - ($2 * interval '1 microsecond')
+	FOR UPDATE SKIP LOCKED
+),
+recovered_attempts AS (
+	UPDATE delivery_attempts a
+	SET status = $3,
+	    error_message = 'delivery attempt timed out and was recovered'
+	FROM stale_notifications s
+	WHERE a.target_type = $4
+	  AND a.target_id = s.id
+	  AND (a.status = $1 OR a.status = $5)
+),
+updated_notifications AS (
+	UPDATE direct_notifications d
+	SET delivery_status = CASE WHEN d.attempts_count >= $6 THEN $3 ELSE $5 END,
+	    error_message = CASE WHEN d.attempts_count >= $6 THEN 'delivery attempt timed out and max attempts reached' ELSE 'delivery claim timed out and was recovered' END,
+	    updated_at = now()
+	FROM stale_notifications s
+	WHERE d.id = s.id
+	RETURNING d.id
+)
+SELECT count(*) FROM updated_notifications`
+
+	var count int64
+	err := r.db.QueryRowContext(
+		ctx,
+		query,
+		domain.DeliveryStatusSending,            // $1: sending
+		olderThan.Microseconds(),                // $2: microseconds
+		domain.DeliveryStatusFailed,             // $3: failed
+		domain.DeliveryTargetDirectNotification, // $4: target_type
+		domain.DeliveryStatusPending,            // $5: pending
+		maxAttempts,                             // $6: maxAttempts
+	).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+
+	return count, nil
 }
 
 func (r *DirectNotificationRepository) UpdateStatus(ctx context.Context, id string, status domain.DeliveryStatus, attempts int, lastAttemptAt, sentAt *time.Time, errorMessage string) error {
