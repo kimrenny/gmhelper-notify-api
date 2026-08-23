@@ -21,12 +21,12 @@ var (
 )
 
 type CreateInput struct {
-	TemplateID       string                 `json:"templateId"`
-	ExternalUserID   string                 `json:"externalUserId,omitempty"`
-	RecipientEmail   string                 `json:"recipientEmail"`
-	RecipientName    string                 `json:"recipientName,omitempty"`
+	TemplateID       string                  `json:"templateId"`
+	ExternalUserID   string                  `json:"externalUserId,omitempty"`
+	RecipientEmail   string                  `json:"recipientEmail"`
+	RecipientName    string                  `json:"recipientName,omitempty"`
 	NotificationType domain.NotificationType `json:"notificationType,omitempty"`
-	Payload          map[string]any         `json:"payload,omitempty"`
+	Payload          map[string]any          `json:"payload,omitempty"`
 }
 
 type CreateResult struct {
