@@ -113,7 +113,6 @@ func parseAndApplyEnvFile(filePath string) error {
 	return nil
 }
 
-
 func (c *Config) Validate() error {
 	if err := validatePort("HTTP_PORT", c.HTTPPort); err != nil {
 		return err
@@ -167,4 +166,3 @@ func requireEnv(name string) (string, error) {
 	}
 	return value, nil
 }
-

@@ -24,13 +24,13 @@ const (
 )
 
 const (
-	CampaignStatusDraft          CampaignStatus = "draft"
-	CampaignStatusScheduled      CampaignStatus = "scheduled"
-	CampaignStatusSending        CampaignStatus = "sending"
-	CampaignStatusCompleted      CampaignStatus = "completed"
+	CampaignStatusDraft           CampaignStatus = "draft"
+	CampaignStatusScheduled       CampaignStatus = "scheduled"
+	CampaignStatusSending         CampaignStatus = "sending"
+	CampaignStatusCompleted       CampaignStatus = "completed"
 	CampaignStatusPartiallyFailed CampaignStatus = "partially_failed"
-	CampaignStatusFailed         CampaignStatus = "failed"
-	CampaignStatusCancelled      CampaignStatus = "cancelled"
+	CampaignStatusFailed          CampaignStatus = "failed"
+	CampaignStatusCancelled       CampaignStatus = "cancelled"
 )
 
 const (
@@ -47,7 +47,7 @@ const (
 )
 
 const (
-	DeliveryTargetCampaignRecipient DeliveryTargetType = "campaign_recipient"
+	DeliveryTargetCampaignRecipient  DeliveryTargetType = "campaign_recipient"
 	DeliveryTargetDirectNotification DeliveryTargetType = "direct_notification"
 )
 
@@ -150,6 +150,13 @@ func (r *AutomationRule) Validate(ctx context.Context) error {
 	return nil
 }
 
+func (a *DeliveryAttempt) Validate(ctx context.Context) error {
+	if a.ID == "" || a.TargetID == "" || !a.TargetType.IsValid() || !a.Status.IsValid() || a.AttemptNumber <= 0 {
+		return ErrInvalidEntity
+	}
+	return nil
+}
+
 type EmailTemplate struct {
 	ID            string         `json:"id" db:"id"`
 	TemplateKey   string         `json:"templateKey" db:"template_key"`
@@ -210,14 +217,14 @@ type DirectNotification struct {
 }
 
 type DeliveryAttempt struct {
-	ID           string             `json:"id" db:"id"`
-	TargetType   DeliveryTargetType `json:"targetType" db:"target_type"`
-	TargetID     string             `json:"targetId" db:"target_id"`
-	Status       DeliveryStatus     `json:"status" db:"status"`
-	AttemptNumber int               `json:"attemptNumber" db:"attempt_number"`
-	ErrorMessage string             `json:"errorMessage,omitempty" db:"error_message"`
-	AttemptedAt  time.Time          `json:"attemptedAt" db:"attempted_at"`
-	CreatedAt    time.Time          `json:"createdAt" db:"created_at"`
+	ID            string             `json:"id" db:"id"`
+	TargetType    DeliveryTargetType `json:"targetType" db:"target_type"`
+	TargetID      string             `json:"targetId" db:"target_id"`
+	Status        DeliveryStatus     `json:"status" db:"status"`
+	AttemptNumber int                `json:"attemptNumber" db:"attempt_number"`
+	ErrorMessage  string             `json:"errorMessage,omitempty" db:"error_message"`
+	AttemptedAt   time.Time          `json:"attemptedAt" db:"attempted_at"`
+	CreatedAt     time.Time          `json:"createdAt" db:"created_at"`
 }
 
 type AutomationRule struct {

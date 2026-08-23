@@ -22,4 +22,3 @@ func Recovery(log logger.Logger) Middleware {
 		})
 	}
 }
-

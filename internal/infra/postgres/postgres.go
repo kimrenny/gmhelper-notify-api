@@ -40,4 +40,3 @@ func (p *PostgresDB) Close(ctx context.Context) error {
 func (p *PostgresDB) DB() *sql.DB {
 	return p.db
 }
-

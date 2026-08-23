@@ -1,8 +1,8 @@
 package middleware
 
 import (
-	"net/http"
 	"github.com/google/uuid"
+	"net/http"
 )
 
 const RequestIDHeader = "X-Request-ID"

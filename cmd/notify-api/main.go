@@ -70,7 +70,6 @@ func main() {
 		middleware.CORS(cfg.AllowedCORSOrigins),
 	)
 
-
 	server := &http.Server{
 		Addr:         net.JoinHostPort(cfg.HTTPHost, strconv.Itoa(cfg.HTTPPort)),
 		Handler:      handler,
@@ -108,4 +107,3 @@ func zapString(key, value string) logger.Field {
 func zapError(err error) logger.Field {
 	return logger.Error(err)
 }
-

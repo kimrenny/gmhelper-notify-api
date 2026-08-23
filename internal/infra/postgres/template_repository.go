@@ -123,4 +123,3 @@ ORDER BY template_key, locale, version`)
 	}
 	return templates, rows.Err()
 }
-

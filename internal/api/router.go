@@ -47,5 +47,3 @@ func NewRouter(healthHandler *handlers.HealthHandler, templateHandler *handlers.
 
 	return mux
 }
-
-
