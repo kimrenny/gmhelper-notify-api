@@ -19,6 +19,7 @@ import (
 	"github.com/gmhelper/notify-api/internal/app/template"
 	"github.com/gmhelper/notify-api/internal/config"
 	"github.com/gmhelper/notify-api/internal/http/middleware"
+	"github.com/gmhelper/notify-api/internal/infra/auth"
 	"github.com/gmhelper/notify-api/internal/infra/logger"
 	"github.com/gmhelper/notify-api/internal/infra/postgres"
 	"github.com/gmhelper/notify-api/internal/infra/smtp"
@@ -72,7 +73,10 @@ func main() {
 	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, templateRepo, smtpSender)
 	directHandler := handlers.NewDirectNotificationHandler(directService, deliveryService, log)
 
-	router := api.NewRouter(healthHandler, templateHandler, directHandler)
+	jwtVerifier := auth.NewJWTVerifier(cfg.AuthSecret, cfg.AuthIssuer, cfg.AuthAudience)
+	authMiddleware := middleware.Authenticate(jwtVerifier, log)
+
+	router := api.NewRouter(healthHandler, templateHandler, directHandler, authMiddleware)
 	handler := middleware.Chain(router,
 		middleware.RequestID(),
 		middleware.Logging(log),

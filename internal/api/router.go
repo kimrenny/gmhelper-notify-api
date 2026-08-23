@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gmhelper/notify-api/internal/api/handlers"
+	"github.com/gmhelper/notify-api/internal/http/middleware"
 )
 
 // NewRouter constructs and configures the HTTP root router.
@@ -11,12 +12,15 @@ func NewRouter(
 	healthHandler *handlers.HealthHandler,
 	templateHandler *handlers.TemplateHandler,
 	directHandler *handlers.DirectNotificationHandler,
+	authMiddleware middleware.Middleware,
 ) http.Handler {
 	mux := http.NewServeMux()
 
-	// System & probe endpoints outside versioned API
-	mux.HandleFunc("GET /health", healthHandler.Health)
-	mux.HandleFunc("GET /ready", healthHandler.Ready)
+	// System & probe endpoints outside versioned API (Always public)
+	if healthHandler != nil {
+		mux.HandleFunc("GET /health", healthHandler.Health)
+		mux.HandleFunc("GET /ready", healthHandler.Ready)
+	}
 
 	// API v1 prefix handler
 	apiV1Mux := http.NewServeMux()
@@ -30,12 +34,21 @@ func NewRouter(
 		apiV1Mux.HandleFunc("DELETE /templates/{id}", templateHandler.Delete)
 	}
 
-	// Direct Notification endpoints
+	// Direct Notification endpoints (Protected by service-to-service auth)
 	if directHandler != nil {
-		apiV1Mux.HandleFunc("POST /notifications/direct", directHandler.Create)
-		apiV1Mux.HandleFunc("GET /notifications/direct/pending", directHandler.ListPending)
-		apiV1Mux.HandleFunc("GET /notifications/direct/{id}", directHandler.GetByID)
-		apiV1Mux.HandleFunc("POST /notifications/direct/{id}/deliver", directHandler.Deliver)
+		directMux := http.NewServeMux()
+		directMux.HandleFunc("POST /notifications/direct", directHandler.Create)
+		directMux.HandleFunc("GET /notifications/direct/pending", directHandler.ListPending)
+		directMux.HandleFunc("GET /notifications/direct/{id}", directHandler.GetByID)
+		directMux.HandleFunc("POST /notifications/direct/{id}/deliver", directHandler.Deliver)
+
+		var directHandlerWrapper http.Handler = directMux
+		if authMiddleware != nil {
+			directHandlerWrapper = authMiddleware(directMux)
+		}
+
+		apiV1Mux.Handle("/notifications/direct", directHandlerWrapper)
+		apiV1Mux.Handle("/notifications/direct/", directHandlerWrapper)
 	}
 
 	// Fallback for unhandled /api/v1/ routes

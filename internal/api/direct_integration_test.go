@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,12 +18,20 @@ import (
 	"github.com/gmhelper/notify-api/internal/app/health"
 	"github.com/gmhelper/notify-api/internal/app/template"
 	"github.com/gmhelper/notify-api/internal/domain"
+	"github.com/gmhelper/notify-api/internal/http/middleware"
 	"github.com/gmhelper/notify-api/internal/http/response"
+	"github.com/gmhelper/notify-api/internal/infra/auth"
 	"github.com/gmhelper/notify-api/internal/infra/logger"
 	"github.com/gmhelper/notify-api/internal/infra/postgres"
 	infrasmtp "github.com/gmhelper/notify-api/internal/infra/smtp"
 	"github.com/gmhelper/notify-api/internal/infra/smtp/testserver"
 	"github.com/google/uuid"
+)
+
+const (
+	intTestSecret   = "integration-test-secret-key-32-chars!"
+	intTestIssuer   = "gmhelper-api"
+	intTestAudience = "gmhelper-notify-api"
 )
 
 func getIntegrationDB(t *testing.T) *sql.DB {
@@ -56,6 +65,15 @@ func getIntegrationDB(t *testing.T) *sql.DB {
 	return pgDB.DB()
 }
 
+func getTestAuthHeader(t *testing.T, userID string) string {
+	t.Helper()
+	token, err := auth.GenerateToken(intTestSecret, intTestIssuer, intTestAudience, userID, "service", 1*time.Hour)
+	if err != nil {
+		t.Fatalf("failed to generate test auth token: %v", err)
+	}
+	return "Bearer " + token
+}
+
 func setupIntegrationServer(
 	t *testing.T,
 	db *sql.DB,
@@ -79,7 +97,10 @@ func setupIntegrationServer(
 	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, templateRepo, smtpClient)
 	directHandler := handlers.NewDirectNotificationHandler(directService, deliveryService, log)
 
-	router := NewRouter(healthHandler, templateHandler, directHandler)
+	jwtVerifier := auth.NewJWTVerifier(intTestSecret, intTestIssuer, intTestAudience)
+	authMiddleware := middleware.Authenticate(jwtVerifier, log)
+
+	router := NewRouter(healthHandler, templateHandler, directHandler, authMiddleware)
 	return router, templateRepo, directRepo, attemptRepo
 }
 
@@ -137,7 +158,7 @@ func TestIntegration_DirectNotification_FullLifecycle_Success(t *testing.T) {
 	}
 	createdTplIDs = append(createdTplIDs, activeTpl.ID)
 
-	// 2. POST /api/v1/notifications/direct (Creation)
+	// 2. POST /api/v1/notifications/direct (Creation with valid Bearer Token)
 	createReqBody := handlers.CreateDirectNotificationRequest{
 		TemplateID:       activeTpl.ID,
 		RecipientEmail:   "alice@example.com",
@@ -150,6 +171,7 @@ func TestIntegration_DirectNotification_FullLifecycle_Success(t *testing.T) {
 	}
 	rawCreate, _ := json.Marshal(createReqBody)
 	reqCreate := httptest.NewRequest(http.MethodPost, "/api/v1/notifications/direct", bytes.NewReader(rawCreate))
+	reqCreate.Header.Set("Authorization", getTestAuthHeader(t, "verified-user-100"))
 	recCreate := httptest.NewRecorder()
 	router.ServeHTTP(recCreate, reqCreate)
 
@@ -172,6 +194,9 @@ func TestIntegration_DirectNotification_FullLifecycle_Success(t *testing.T) {
 	if createdResp.AttemptsCount != 0 {
 		t.Errorf("expected attempts_count 0, got %d", createdResp.AttemptsCount)
 	}
+	if createdResp.ExternalUserID != "verified-user-100" {
+		t.Errorf("expected ExternalUserID verified-user-100, got %s", createdResp.ExternalUserID)
+	}
 
 	// 3. Verify Database State after Creation
 	var (
@@ -179,9 +204,10 @@ func TestIntegration_DirectNotification_FullLifecycle_Success(t *testing.T) {
 		dbAttemptsCount int
 		dbSentAt        *time.Time
 		dbErrorMessage  string
+		dbExternalUser  string
 	)
-	err := db.QueryRowContext(ctx, `SELECT delivery_status, attempts_count, sent_at, error_message FROM direct_notifications WHERE id = $1`, createdResp.ID).
-		Scan(&dbStatus, &dbAttemptsCount, &dbSentAt, &dbErrorMessage)
+	err := db.QueryRowContext(ctx, `SELECT delivery_status, attempts_count, sent_at, error_message, external_user_id FROM direct_notifications WHERE id = $1`, createdResp.ID).
+		Scan(&dbStatus, &dbAttemptsCount, &dbSentAt, &dbErrorMessage, &dbExternalUser)
 	if err != nil {
 		t.Fatalf("failed to query created direct_notification: %v", err)
 	}
@@ -193,6 +219,9 @@ func TestIntegration_DirectNotification_FullLifecycle_Success(t *testing.T) {
 	}
 	if dbSentAt != nil {
 		t.Errorf("expected db sent_at to be NULL, got %v", dbSentAt)
+	}
+	if dbExternalUser != "verified-user-100" {
+		t.Errorf("expected external_user_id 'verified-user-100', got %s", dbExternalUser)
 	}
 
 	var (
@@ -213,8 +242,9 @@ func TestIntegration_DirectNotification_FullLifecycle_Success(t *testing.T) {
 		t.Errorf("expected attempt_number 1, got %d", attemptNumber)
 	}
 
-	// 4. POST /api/v1/notifications/direct/{id}/deliver (Execution)
+	// 4. POST /api/v1/notifications/direct/{id}/deliver (Execution with valid token)
 	reqDeliver := httptest.NewRequest(http.MethodPost, "/api/v1/notifications/direct/"+createdResp.ID+"/deliver", nil)
+	reqDeliver.Header.Set("Authorization", getTestAuthHeader(t, "verified-user-100"))
 	recDeliver := httptest.NewRecorder()
 	router.ServeHTTP(recDeliver, reqDeliver)
 
@@ -286,8 +316,9 @@ func TestIntegration_DirectNotification_FullLifecycle_Success(t *testing.T) {
 		t.Errorf("unexpected Plain Text body: %s", received.TextBody)
 	}
 
-	// 7. GET /api/v1/notifications/direct/{id}
+	// 7. GET /api/v1/notifications/direct/{id} (with valid token)
 	reqGet := httptest.NewRequest(http.MethodGet, "/api/v1/notifications/direct/"+createdResp.ID, nil)
+	reqGet.Header.Set("Authorization", getTestAuthHeader(t, "verified-user-100"))
 	recGet := httptest.NewRecorder()
 	router.ServeHTTP(recGet, reqGet)
 
@@ -299,6 +330,187 @@ func TestIntegration_DirectNotification_FullLifecycle_Success(t *testing.T) {
 	if getResp.ID != createdResp.ID || getResp.DeliveryStatus != "sent" {
 		t.Errorf("unexpected GetByID response: %+v", getResp)
 	}
+}
+
+func TestIntegration_DirectNotification_Authentication_Security(t *testing.T) {
+	db := getIntegrationDB(t)
+	smtpServer := testserver.StartFakeSMTPServer(t)
+	defer smtpServer.Close()
+
+	router, templateRepo, _, _ := setupIntegrationServer(t, db, smtpServer)
+	ctx := context.Background()
+
+	createdTplIDs := []string{}
+	defer func() {
+		cleanupRecords(t, db, nil, createdTplIDs)
+	}()
+
+	activeTpl := &domain.EmailTemplate{
+		ID:          uuid.NewString(),
+		TemplateKey: "auth_sec_" + uuid.NewString()[:8],
+		Name:        "Auth Security Tpl",
+		Subject:     "Hello",
+		HTMLBody:    "<p>Hello</p>",
+		Locale:      "en",
+		Status:      domain.TemplateStatusActive,
+		Version:     1,
+		CreatedAt:   time.Now().UTC(),
+		UpdatedAt:   time.Now().UTC(),
+	}
+	_ = templateRepo.Create(ctx, activeTpl)
+	createdTplIDs = append(createdTplIDs, activeTpl.ID)
+
+	validBody, _ := json.Marshal(handlers.CreateDirectNotificationRequest{
+		TemplateID:     activeTpl.ID,
+		RecipientEmail: "alice@example.com",
+	})
+
+	// 1. GET /health without JWT -> 200 OK (Public)
+	reqHealth := httptest.NewRequest(http.MethodGet, "/health", nil)
+	recHealth := httptest.NewRecorder()
+	router.ServeHTTP(recHealth, reqHealth)
+	if recHealth.Code != http.StatusOK {
+		t.Errorf("expected 200 OK on public /health, got %d", recHealth.Code)
+	}
+
+	// 2. GET /ready without JWT -> 200 OK (Public)
+	reqReady := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	recReady := httptest.NewRecorder()
+	router.ServeHTTP(recReady, reqReady)
+	if recReady.Code != http.StatusOK {
+		t.Errorf("expected 200 OK on public /ready, got %d", recReady.Code)
+	}
+
+	// 3. POST /api/v1/notifications/direct without JWT -> 401
+	reqNoAuth := httptest.NewRequest(http.MethodPost, "/api/v1/notifications/direct", bytes.NewReader(validBody))
+	recNoAuth := httptest.NewRecorder()
+	router.ServeHTTP(recNoAuth, reqNoAuth)
+	if recNoAuth.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized for missing auth header on POST /notifications/direct, got %d", recNoAuth.Code)
+	}
+
+	// 4. GET /api/v1/notifications/direct/pending without JWT -> 401
+	reqPendingNoAuth := httptest.NewRequest(http.MethodGet, "/api/v1/notifications/direct/pending", nil)
+	recPendingNoAuth := httptest.NewRecorder()
+	router.ServeHTTP(recPendingNoAuth, reqPendingNoAuth)
+	if recPendingNoAuth.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized for missing auth header on GET /pending, got %d", recPendingNoAuth.Code)
+	}
+
+	// 5. GET /api/v1/notifications/direct/{id} without JWT -> 401
+	reqGetNoAuth := httptest.NewRequest(http.MethodGet, "/api/v1/notifications/direct/some-id", nil)
+	recGetNoAuth := httptest.NewRecorder()
+	router.ServeHTTP(recGetNoAuth, reqGetNoAuth)
+	if recGetNoAuth.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized for missing auth header on GET /notifications/direct/{id}, got %d", recGetNoAuth.Code)
+	}
+
+	// 6. POST /api/v1/notifications/direct/{id}/deliver without JWT -> 401
+	reqDeliverNoAuth := httptest.NewRequest(http.MethodPost, "/api/v1/notifications/direct/some-id/deliver", nil)
+	recDeliverNoAuth := httptest.NewRecorder()
+	router.ServeHTTP(recDeliverNoAuth, reqDeliverNoAuth)
+	if recDeliverNoAuth.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized for missing auth header on POST /deliver, got %d", recDeliverNoAuth.Code)
+	}
+
+	// 7. Token Signed with Wrong Secret -> 401
+	badSecretToken, _ := auth.GenerateToken("completely-wrong-secret-key-32-chars", intTestIssuer, intTestAudience, "user-1", "service", time.Hour)
+	reqBadSig := httptest.NewRequest(http.MethodPost, "/api/v1/notifications/direct", bytes.NewReader(validBody))
+	reqBadSig.Header.Set("Authorization", "Bearer "+badSecretToken)
+	recBadSig := httptest.NewRecorder()
+	router.ServeHTTP(recBadSig, reqBadSig)
+	if recBadSig.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized for bad signature, got %d", recBadSig.Code)
+	}
+
+	// 8. Expired Token -> 401
+	expiredToken, _ := auth.GenerateToken(intTestSecret, intTestIssuer, intTestAudience, "user-1", "service", -10*time.Minute)
+	reqExpired := httptest.NewRequest(http.MethodPost, "/api/v1/notifications/direct", bytes.NewReader(validBody))
+	reqExpired.Header.Set("Authorization", "Bearer "+expiredToken)
+	recExpired := httptest.NewRecorder()
+	router.ServeHTTP(recExpired, reqExpired)
+	if recExpired.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized for expired token, got %d", recExpired.Code)
+	}
+
+	// 9. Wrong Issuer -> 401
+	wrongIssToken, _ := auth.GenerateToken(intTestSecret, "untrusted-external-issuer", intTestAudience, "user-1", "service", time.Hour)
+	reqWrongIss := httptest.NewRequest(http.MethodPost, "/api/v1/notifications/direct", bytes.NewReader(validBody))
+	reqWrongIss.Header.Set("Authorization", "Bearer "+wrongIssToken)
+	recWrongIss := httptest.NewRecorder()
+	router.ServeHTTP(recWrongIss, reqWrongIss)
+	if recWrongIss.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized for wrong issuer, got %d", recWrongIss.Code)
+	}
+
+	// 10. Wrong Audience -> 401
+	wrongAudToken, _ := auth.GenerateToken(intTestSecret, intTestIssuer, "wrong-audience", "user-1", "service", time.Hour)
+	reqWrongAud := httptest.NewRequest(http.MethodPost, "/api/v1/notifications/direct", bytes.NewReader(validBody))
+	reqWrongAud.Header.Set("Authorization", "Bearer "+wrongAudToken)
+	recWrongAud := httptest.NewRecorder()
+	router.ServeHTTP(recWrongAud, reqWrongAud)
+	if recWrongAud.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized for wrong audience, got %d", recWrongAud.Code)
+	}
+
+	// 11. alg=none header attack -> 401
+	noneHdr := `{"alg":"none","typ":"JWT"}`
+	noneClaims := fmt.Sprintf(`{"sub":"attacker","iss":"%s","aud":"%s","exp":%d}`, intTestIssuer, intTestAudience, time.Now().Add(time.Hour).Unix())
+	noneToken := strings.TrimRight(auth.EncodeBase64ForTest([]byte(noneHdr)), "=") + "." + strings.TrimRight(auth.EncodeBase64ForTest([]byte(noneClaims)), "=") + "."
+	reqNone := httptest.NewRequest(http.MethodPost, "/api/v1/notifications/direct", bytes.NewReader(validBody))
+	reqNone.Header.Set("Authorization", "Bearer "+noneToken)
+	recNone := httptest.NewRecorder()
+	router.ServeHTTP(recNone, reqNone)
+	if recNone.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized for alg=none, got %d", recNone.Code)
+	}
+
+	// 12. Modified Payload / Tampered Claims without re-signing -> 401
+	validToken, _ := auth.GenerateToken(intTestSecret, intTestIssuer, intTestAudience, "user-victim", "user", time.Hour)
+	parts := strings.Split(validToken, ".")
+	tamperedPayload := auth.EncodeBase64ForTest([]byte(fmt.Sprintf(`{"sub":"attacker-admin","iss":"%s","aud":"%s","exp":%d}`, intTestIssuer, intTestAudience, time.Now().Add(time.Hour).Unix())))
+	tamperedToken := parts[0] + "." + strings.TrimRight(tamperedPayload, "=") + "." + parts[2]
+	reqTampered := httptest.NewRequest(http.MethodPost, "/api/v1/notifications/direct", bytes.NewReader(validBody))
+	reqTampered.Header.Set("Authorization", "Bearer "+tamperedToken)
+	recTampered := httptest.NewRecorder()
+	router.ServeHTTP(recTampered, reqTampered)
+	if recTampered.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized for tampered payload, got %d", recTampered.Code)
+	}
+
+	// 13. Identity Spoofing Test: Client sends conflicting externalUserId in JSON body
+	// The authenticated principal "authenticated-trusted-caller" MUST override "spoofed-user-id" in DB!
+	spoofBody, _ := json.Marshal(handlers.CreateDirectNotificationRequest{
+		TemplateID:     activeTpl.ID,
+		ExternalUserID: "spoofed-attacker-identity",
+		RecipientEmail: "alice@example.com",
+	})
+	reqSpoof := httptest.NewRequest(http.MethodPost, "/api/v1/notifications/direct", bytes.NewReader(spoofBody))
+	reqSpoof.Header.Set("Authorization", getTestAuthHeader(t, "authenticated-trusted-caller"))
+	recSpoof := httptest.NewRecorder()
+	router.ServeHTTP(recSpoof, reqSpoof)
+	if recSpoof.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created on authenticated creation, got %d (body: %s)", recSpoof.Code, recSpoof.Body.String())
+	}
+
+	var spoofResp handlers.DirectNotificationResponse
+	_ = json.Unmarshal(recSpoof.Body.Bytes(), &spoofResp)
+	if spoofResp.ExternalUserID != "authenticated-trusted-caller" {
+		t.Errorf("expected ExternalUserID in response to be 'authenticated-trusted-caller', got %s", spoofResp.ExternalUserID)
+	}
+
+	// Verify real PostgreSQL record persistence
+	var dbStoredUserID string
+	err := db.QueryRowContext(ctx, `SELECT external_user_id FROM direct_notifications WHERE id = $1`, spoofResp.ID).Scan(&dbStoredUserID)
+	if err != nil {
+		t.Fatalf("failed to query db for spoof verification: %v", err)
+	}
+	if dbStoredUserID != "authenticated-trusted-caller" {
+		t.Errorf("SECURITY FAILURE: expected db external_user_id to be 'authenticated-trusted-caller', but stored %s", dbStoredUserID)
+	}
+
+	// Clean up created direct notification
+	cleanupRecords(t, db, []string{spoofResp.ID}, nil)
 }
 
 func TestIntegration_DirectNotification_Create_InvalidScenarios(t *testing.T) {
@@ -430,6 +642,7 @@ func TestIntegration_DirectNotification_Create_InvalidScenarios(t *testing.T) {
 			}
 
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/notifications/direct", r)
+			req.Header.Set("Authorization", getTestAuthHeader(t, "test-service-user"))
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, req)
 
@@ -513,8 +726,9 @@ func TestIntegration_DirectNotification_ListPending(t *testing.T) {
 	}
 	createdNotifIDs = append(createdNotifIDs, sentNotif.ID)
 
-	// GET /api/v1/notifications/direct/pending
+	// GET /api/v1/notifications/direct/pending (authenticated)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/notifications/direct/pending", nil)
+	req.Header.Set("Authorization", getTestAuthHeader(t, "test-user"))
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -584,6 +798,7 @@ func TestIntegration_DirectNotification_Delivery_SMTPFailure(t *testing.T) {
 	}
 	rawCreate, _ := json.Marshal(createBody)
 	reqCreate := httptest.NewRequest(http.MethodPost, "/api/v1/notifications/direct", bytes.NewReader(rawCreate))
+	reqCreate.Header.Set("Authorization", getTestAuthHeader(t, "user-alice"))
 	recCreate := httptest.NewRecorder()
 	router.ServeHTTP(recCreate, reqCreate)
 
@@ -599,6 +814,7 @@ func TestIntegration_DirectNotification_Delivery_SMTPFailure(t *testing.T) {
 
 	// Attempt delivery -> SMTP rejects recipient
 	reqDeliver := httptest.NewRequest(http.MethodPost, "/api/v1/notifications/direct/"+createdResp.ID+"/deliver", nil)
+	reqDeliver.Header.Set("Authorization", getTestAuthHeader(t, "user-alice"))
 	recDeliver := httptest.NewRecorder()
 	router.ServeHTTP(recDeliver, reqDeliver)
 
@@ -707,6 +923,7 @@ func TestIntegration_DirectNotification_Delivery_InvalidStates(t *testing.T) {
 	createdNotifIDs = append(createdNotifIDs, sentNotif.ID)
 
 	reqSent := httptest.NewRequest(http.MethodPost, "/api/v1/notifications/direct/"+sentNotif.ID+"/deliver", nil)
+	reqSent.Header.Set("Authorization", getTestAuthHeader(t, "user-test"))
 	recSent := httptest.NewRecorder()
 	router.ServeHTTP(recSent, reqSent)
 
@@ -731,6 +948,7 @@ func TestIntegration_DirectNotification_Delivery_InvalidStates(t *testing.T) {
 	createdNotifIDs = append(createdNotifIDs, cancelledNotif.ID)
 
 	reqCancelled := httptest.NewRequest(http.MethodPost, "/api/v1/notifications/direct/"+cancelledNotif.ID+"/deliver", nil)
+	reqCancelled.Header.Set("Authorization", getTestAuthHeader(t, "user-test"))
 	recCancelled := httptest.NewRecorder()
 	router.ServeHTTP(recCancelled, reqCancelled)
 

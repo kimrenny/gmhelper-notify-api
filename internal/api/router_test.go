@@ -14,7 +14,15 @@ import (
 	"github.com/gmhelper/notify-api/internal/app/email"
 	"github.com/gmhelper/notify-api/internal/app/health"
 	"github.com/gmhelper/notify-api/internal/domain"
+	"github.com/gmhelper/notify-api/internal/http/middleware"
+	"github.com/gmhelper/notify-api/internal/infra/auth"
 	"github.com/gmhelper/notify-api/internal/infra/logger"
+)
+
+const (
+	routerTestSecret   = "router-test-secret-key-32-chars"
+	routerTestIssuer   = "gmhelper-api"
+	routerTestAudience = "gmhelper-notify-api"
 )
 
 type dummyPinger struct {
@@ -101,7 +109,7 @@ func TestRouter_HealthAndReady(t *testing.T) {
 	pinger := &dummyPinger{err: nil}
 	readiness := health.NewReadinessService(pinger)
 	healthHandler := handlers.NewHealthHandler(readiness, log)
-	router := NewRouter(healthHandler, nil, nil)
+	router := NewRouter(healthHandler, nil, nil, nil)
 
 	// 1. GET /health
 	reqHealth := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -136,7 +144,7 @@ func TestRouter_NotFoundJSON(t *testing.T) {
 	pinger := &dummyPinger{err: nil}
 	readiness := health.NewReadinessService(pinger)
 	healthHandler := handlers.NewHealthHandler(readiness, log)
-	router := NewRouter(healthHandler, nil, nil)
+	router := NewRouter(healthHandler, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/unknown-endpoint", nil)
 	rec := httptest.NewRecorder()
@@ -156,7 +164,7 @@ func TestRouter_NotFoundJSON(t *testing.T) {
 	}
 }
 
-func TestRouter_DirectNotificationsRouting_PendingPrecedence(t *testing.T) {
+func TestRouter_DirectNotificationsRouting_AuthAndPrecedence(t *testing.T) {
 	log, _ := logger.NewLogger("info")
 	directRepo := &routerMockDirectRepo{
 		notifications: map[string]*domain.DirectNotification{
@@ -180,15 +188,33 @@ func TestRouter_DirectNotificationsRouting_PendingPrecedence(t *testing.T) {
 	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, tplRepo, sender)
 	directHandler := handlers.NewDirectNotificationHandler(directService, deliveryService, log)
 
-	router := NewRouter(nil, nil, directHandler)
+	verifier := auth.NewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
+	authMw := middleware.Authenticate(verifier, log)
 
-	// 1. GET /api/v1/notifications/direct/pending MUST return array of pending notifications (ListPending)
+	router := NewRouter(nil, nil, directHandler, authMw)
+
+	validToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to generate token: %v", err)
+	}
+
+	// 1. Unauthenticated request to /api/v1/notifications/direct/pending -> 401 Unauthorized
+	reqUnauth := httptest.NewRequest(http.MethodGet, "/api/v1/notifications/direct/pending", nil)
+	recUnauth := httptest.NewRecorder()
+	router.ServeHTTP(recUnauth, reqUnauth)
+
+	if recUnauth.Code != http.StatusUnauthorized {
+		t.Errorf("expected HTTP 401 Unauthorized for unauthenticated request, got %d", recUnauth.Code)
+	}
+
+	// 2. Authenticated request to /api/v1/notifications/direct/pending -> 200 OK (ListPending)
 	reqPending := httptest.NewRequest(http.MethodGet, "/api/v1/notifications/direct/pending", nil)
+	reqPending.Header.Set("Authorization", "Bearer "+validToken)
 	recPending := httptest.NewRecorder()
 	router.ServeHTTP(recPending, reqPending)
 
 	if recPending.Code != http.StatusOK {
-		t.Fatalf("expected status 200 on /pending, got %d", recPending.Code)
+		t.Fatalf("expected status 200 on authenticated /pending, got %d", recPending.Code)
 	}
 
 	var list []handlers.DirectNotificationResponse
@@ -199,8 +225,9 @@ func TestRouter_DirectNotificationsRouting_PendingPrecedence(t *testing.T) {
 		t.Errorf("expected ListPending response, got: %s", recPending.Body.String())
 	}
 
-	// 2. GET /api/v1/notifications/direct/actual-id-1 MUST return single notification object
+	// 3. Authenticated request to /api/v1/notifications/direct/actual-id-1 -> 200 OK (GetByID)
 	reqByID := httptest.NewRequest(http.MethodGet, "/api/v1/notifications/direct/actual-id-1", nil)
+	reqByID.Header.Set("Authorization", "Bearer "+validToken)
 	recByID := httptest.NewRecorder()
 	router.ServeHTTP(recByID, reqByID)
 

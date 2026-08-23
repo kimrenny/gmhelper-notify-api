@@ -10,6 +10,7 @@ import (
 
 	"github.com/gmhelper/notify-api/internal/app/direct"
 	"github.com/gmhelper/notify-api/internal/domain"
+	"github.com/gmhelper/notify-api/internal/http/middleware"
 	"github.com/gmhelper/notify-api/internal/http/response"
 	"github.com/gmhelper/notify-api/internal/infra/logger"
 )
@@ -76,9 +77,14 @@ func (h *DirectNotificationHandler) Create(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	externalUserID := req.ExternalUserID
+	if principal, ok := middleware.GetPrincipal(r.Context()); ok && principal.UserID != "" {
+		externalUserID = principal.UserID
+	}
+
 	input := direct.CreateInput{
 		TemplateID:       req.TemplateID,
-		ExternalUserID:   req.ExternalUserID,
+		ExternalUserID:   externalUserID,
 		RecipientEmail:   req.RecipientEmail,
 		RecipientName:    req.RecipientName,
 		NotificationType: domain.NotificationType(req.NotificationType),

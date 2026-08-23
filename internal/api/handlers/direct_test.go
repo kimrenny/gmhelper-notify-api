@@ -13,6 +13,7 @@ import (
 	"github.com/gmhelper/notify-api/internal/app/direct"
 	"github.com/gmhelper/notify-api/internal/app/email"
 	"github.com/gmhelper/notify-api/internal/domain"
+	"github.com/gmhelper/notify-api/internal/http/middleware"
 	"github.com/gmhelper/notify-api/internal/http/response"
 	"github.com/gmhelper/notify-api/internal/infra/logger"
 )
@@ -493,5 +494,46 @@ func TestDirectNotificationHandler_Deliver_SuccessAndFailure(t *testing.T) {
 
 	if recMissing.Code != http.StatusNotFound {
 		t.Errorf("expected status 404 on missing notification delivery, got %d", recMissing.Code)
+	}
+}
+
+func TestDirectNotificationHandler_Create_AuthenticatedPrincipalOverridesBodyUserID(t *testing.T) {
+	router, _, _, tplRepo, _ := setupDirectTestRouter()
+
+	activeTpl := &domain.EmailTemplate{
+		ID:       "tpl-200",
+		Subject:  "Hello",
+		HTMLBody: "<p>Hello</p>",
+		Status:   domain.TemplateStatusActive,
+		Version:  1,
+	}
+	tplRepo.templates[activeTpl.ID] = activeTpl
+
+	reqBody := CreateDirectNotificationRequest{
+		TemplateID:     activeTpl.ID,
+		ExternalUserID: "untrusted-client-user-id",
+		RecipientEmail: "user@example.com",
+	}
+	raw, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/notifications/direct", bytes.NewReader(raw))
+	// Inject verified principal into context
+	ctx := middleware.ContextWithPrincipal(req.Context(), &domain.Principal{
+		UserID: "verified-auth-user-999",
+		Role:   "service",
+	})
+	req = req.WithContext(ctx)
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected HTTP 201 Created, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp DirectNotificationResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.ExternalUserID != "verified-auth-user-999" {
+		t.Errorf("expected ExternalUserID 'verified-auth-user-999', got '%s'", resp.ExternalUserID)
 	}
 }

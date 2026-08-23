@@ -19,6 +19,9 @@ type Config struct {
 	SMTPFrom           string
 	LogLevel           string
 	AllowedCORSOrigins string
+	AuthIssuer         string
+	AuthAudience       string
+	AuthSecret         string
 }
 
 func Load() (*Config, error) {
@@ -59,6 +62,9 @@ func Load() (*Config, error) {
 		SMTPFrom:           smtpFrom,
 		LogLevel:           envOrDefault("LOG_LEVEL", "info"),
 		AllowedCORSOrigins: envOrDefault("ALLOWED_CORS_ORIGINS", "*"),
+		AuthIssuer:         envOrDefault("NOTIFY_AUTH_ISSUER", "gmhelper-api"),
+		AuthAudience:       envOrDefault("NOTIFY_AUTH_AUDIENCE", "gmhelper-notify-api"),
+		AuthSecret:         envOrDefault("NOTIFY_AUTH_SECRET", "gmhelper-secret-key-change-in-production"),
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -128,6 +134,14 @@ func (c *Config) Validate() error {
 	}
 	if strings.TrimSpace(c.SMTPFrom) == "" {
 		return fmt.Errorf("SMTP_FROM cannot be empty")
+	}
+	if c.Env == "production" {
+		if strings.TrimSpace(c.AuthSecret) == "" || c.AuthSecret == "gmhelper-secret-key-change-in-production" {
+			return fmt.Errorf("NOTIFY_AUTH_SECRET must be explicitly configured in production environment")
+		}
+	}
+	if strings.TrimSpace(c.AuthSecret) == "" {
+		return fmt.Errorf("NOTIFY_AUTH_SECRET cannot be empty")
 	}
 	return nil
 }
