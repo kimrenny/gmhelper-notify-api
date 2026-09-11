@@ -31,7 +31,7 @@ import (
 )
 
 const (
-	intTestSecret   = "integration-test-secret-key-32-chars!"
+	intTestSecret   = "aW50ZWdyYXRpb24tdGVzdC1zZWNyZXQtMzItYnl0ZXMh"
 	intTestIssuer   = "gmhelper-api"
 	intTestAudience = "gmhelper-notify-api"
 )
@@ -99,7 +99,7 @@ func setupIntegrationServer(
 	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, templateRepo, smtpClient)
 	directHandler := handlers.NewDirectNotificationHandler(directService, deliveryService, log)
 
-	jwtVerifier := auth.NewJWTVerifier(intTestSecret, intTestIssuer, intTestAudience)
+	jwtVerifier := auth.MustNewJWTVerifier(intTestSecret, intTestIssuer, intTestAudience)
 	authMiddleware := middleware.Authenticate(jwtVerifier, log)
 
 	router := NewRouter(healthHandler, templateHandler, directHandler, authMiddleware)

@@ -14,14 +14,14 @@ import (
 )
 
 const (
-	mwSecret   = "middleware-secret-key-32-chars!"
+	mwSecret   = "bWlkZGxld2FyZS1zZWNyZXQta2V5LTMyLWNoYXJzISE="
 	mwIssuer   = "gmhelper-api"
 	mwAudience = "gmhelper-notify-api"
 )
 
 func setupAuthMiddlewareTest() (Middleware, auth.TokenVerifier) {
 	log, _ := logger.NewLogger("info")
-	verifier := auth.NewJWTVerifier(mwSecret, mwIssuer, mwAudience)
+	verifier := auth.MustNewJWTVerifier(mwSecret, mwIssuer, mwAudience)
 	mw := Authenticate(verifier, log)
 	return mw, verifier
 }
