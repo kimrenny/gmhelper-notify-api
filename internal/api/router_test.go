@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	routerTestSecret   = "router-test-secret-key-32-chars"
+	routerTestSecret   = "cm91dGVyLXRlc3Qtc2VjcmV0LWtleS0zMi1jaGFycyE="
 	routerTestIssuer   = "gmhelper-api"
 	routerTestAudience = "gmhelper-notify-api"
 )
@@ -198,7 +198,7 @@ func TestRouter_DirectNotificationsRouting_AuthAndPrecedence(t *testing.T) {
 	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, tplRepo, sender)
 	directHandler := handlers.NewDirectNotificationHandler(directService, deliveryService, log)
 
-	verifier := auth.NewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
+	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.Authenticate(verifier, log)
 
 	router := NewRouter(nil, nil, directHandler, authMw)

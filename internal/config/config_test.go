@@ -99,7 +99,7 @@ func TestConfigValidate_ProductionAuthSecretRequired(t *testing.T) {
 		SMTPFrom:    "test@example.com",
 		HTTPPort:    8080,
 		SMTPPort:    587,
-		AuthSecret:  "gmhelper-secret-key-change-in-production",
+		AuthSecret:  "Z21oZWxwZXItZGVmYXVsdC1qd3Qtc2VjcmV0LTMyYiE=",
 	}
 	if err := cfgDefaultSecret.Validate(); err == nil {
 		t.Fatal("expected error in production when using default secret, got nil")
@@ -119,6 +119,20 @@ func TestConfigValidate_ProductionAuthSecretRequired(t *testing.T) {
 		t.Fatal("expected error in production when auth secret is empty, got nil")
 	}
 
+	// Invalid base64 secret rejected
+	cfgInvalidBase64 := &Config{
+		Env:         "production",
+		DatabaseURL: "postgres://localhost/test",
+		SMTPHost:    "smtp.example.com",
+		SMTPFrom:    "test@example.com",
+		HTTPPort:    8080,
+		SMTPPort:    587,
+		AuthSecret:  "not-valid-base64-secret!!",
+	}
+	if err := cfgInvalidBase64.Validate(); err == nil {
+		t.Fatal("expected error when auth secret is invalid base64, got nil")
+	}
+
 	// Explicit production secret allowed
 	cfgValidProd := &Config{
 		Env:         "production",
@@ -127,7 +141,7 @@ func TestConfigValidate_ProductionAuthSecretRequired(t *testing.T) {
 		SMTPFrom:    "test@example.com",
 		HTTPPort:    8080,
 		SMTPPort:    587,
-		AuthSecret:  "super-secure-production-secret-value-32-chars",
+		AuthSecret:  "c3VwZXItc2VjdXJlLXByb2R1Y3Rpb24tc2VjcmV0LXZhbHVl",
 	}
 	if err := cfgValidProd.Validate(); err != nil {
 		t.Fatalf("expected valid production config, got: %v", err)
@@ -135,6 +149,8 @@ func TestConfigValidate_ProductionAuthSecretRequired(t *testing.T) {
 }
 
 func TestConfigValidate_WorkerSettings(t *testing.T) {
+	validSecret := "dGVzdC1zZWNyZXQta2V5LTMyLWJ5dGVzLWxvbmchIQ=="
+
 	// Worker enabled with zero/negative interval -> error
 	cfgInvalidInterval := &Config{
 		DatabaseURL:    "postgres://localhost/test",
@@ -142,7 +158,7 @@ func TestConfigValidate_WorkerSettings(t *testing.T) {
 		SMTPFrom:       "test@example.com",
 		HTTPPort:       8080,
 		SMTPPort:       587,
-		AuthSecret:     "secret-32-chars-long-here!!!!!!",
+		AuthSecret:     validSecret,
 		WorkerEnabled:  true,
 		WorkerInterval: 0,
 	}
@@ -157,7 +173,7 @@ func TestConfigValidate_WorkerSettings(t *testing.T) {
 		SMTPFrom:       "test@example.com",
 		HTTPPort:       8080,
 		SMTPPort:       587,
-		AuthSecret:     "secret-32-chars-long-here!!!!!!",
+		AuthSecret:     validSecret,
 		WorkerEnabled:  false,
 		WorkerInterval: 0,
 	}
@@ -172,7 +188,7 @@ func TestConfigValidate_WorkerSettings(t *testing.T) {
 		SMTPFrom:           "test@example.com",
 		HTTPPort:           8080,
 		SMTPPort:           587,
-		AuthSecret:         "secret-32-chars-long-here!!!!!!",
+		AuthSecret:         validSecret,
 		WorkerEnabled:      true,
 		WorkerInterval:     5 * time.Second,
 		WorkerStaleTimeout: 0,
@@ -188,7 +204,7 @@ func TestConfigValidate_WorkerSettings(t *testing.T) {
 		SMTPFrom:           "test@example.com",
 		HTTPPort:           8080,
 		SMTPPort:           587,
-		AuthSecret:         "secret-32-chars-long-here!!!!!!",
+		AuthSecret:         validSecret,
 		WorkerEnabled:      true,
 		WorkerInterval:     5 * time.Second,
 		WorkerStaleTimeout: 5 * time.Minute,
@@ -205,7 +221,7 @@ func TestConfigValidate_WorkerSettings(t *testing.T) {
 		SMTPFrom:           "test@example.com",
 		HTTPPort:           8080,
 		SMTPPort:           587,
-		AuthSecret:         "secret-32-chars-long-here!!!!!!",
+		AuthSecret:         validSecret,
 		WorkerEnabled:      true,
 		WorkerInterval:     5 * time.Second,
 		WorkerStaleTimeout: 5 * time.Minute,

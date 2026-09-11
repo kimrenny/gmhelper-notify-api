@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gmhelper/notify-api/internal/infra/auth"
 )
 
 type Config struct {
@@ -84,7 +86,7 @@ func Load() (*Config, error) {
 		AllowedCORSOrigins: envOrDefault("ALLOWED_CORS_ORIGINS", "*"),
 		AuthIssuer:         envOrDefault("NOTIFY_AUTH_ISSUER", "gmhelper-api"),
 		AuthAudience:       envOrDefault("NOTIFY_AUTH_AUDIENCE", "gmhelper-notify-api"),
-		AuthSecret:         envOrDefault("NOTIFY_AUTH_SECRET", "gmhelper-secret-key-change-in-production"),
+		AuthSecret:         envOrDefault("NOTIFY_AUTH_SECRET", "Z21oZWxwZXItZGVmYXVsdC1qd3Qtc2VjcmV0LTMyYiE="),
 		WorkerEnabled:      parseBoolEnv("NOTIFY_WORKER_ENABLED", true),
 		WorkerInterval:     workerInterval,
 		WorkerStaleTimeout: workerStaleTimeout,
@@ -160,12 +162,15 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("SMTP_FROM cannot be empty")
 	}
 	if c.Env == "production" {
-		if strings.TrimSpace(c.AuthSecret) == "" || c.AuthSecret == "gmhelper-secret-key-change-in-production" {
+		if strings.TrimSpace(c.AuthSecret) == "" || c.AuthSecret == "Z21oZWxwZXItZGVmYXVsdC1qd3Qtc2VjcmV0LTMyYiE=" {
 			return fmt.Errorf("NOTIFY_AUTH_SECRET must be explicitly configured in production environment")
 		}
 	}
 	if strings.TrimSpace(c.AuthSecret) == "" {
 		return fmt.Errorf("NOTIFY_AUTH_SECRET cannot be empty")
+	}
+	if _, err := auth.DecodeSecretKey(c.AuthSecret); err != nil {
+		return fmt.Errorf("NOTIFY_AUTH_SECRET is invalid: %w", err)
 	}
 	if c.WorkerEnabled && c.WorkerInterval <= 0 {
 		return fmt.Errorf("NOTIFY_WORKER_INTERVAL must be a positive duration when worker is enabled")
