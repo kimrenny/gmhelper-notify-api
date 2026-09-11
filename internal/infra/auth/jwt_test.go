@@ -417,4 +417,3 @@ func TestJWTVerifier_Verify_MalformedTokens(t *testing.T) {
 		})
 	}
 }
-
