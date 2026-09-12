@@ -34,21 +34,12 @@ func NewRouter(
 		apiV1Mux.HandleFunc("DELETE /templates/{id}", templateHandler.Delete)
 	}
 
-	// Direct Notification endpoints (Protected by service-to-service auth)
+	// Direct Notification endpoints
 	if directHandler != nil {
-		directMux := http.NewServeMux()
-		directMux.HandleFunc("POST /notifications/direct", directHandler.Create)
-		directMux.HandleFunc("GET /notifications/direct/pending", directHandler.ListPending)
-		directMux.HandleFunc("GET /notifications/direct/{id}", directHandler.GetByID)
-		directMux.HandleFunc("POST /notifications/direct/{id}/deliver", directHandler.Deliver)
-
-		var directHandlerWrapper http.Handler = directMux
-		if authMiddleware != nil {
-			directHandlerWrapper = authMiddleware(directMux)
-		}
-
-		apiV1Mux.Handle("/notifications/direct", directHandlerWrapper)
-		apiV1Mux.Handle("/notifications/direct/", directHandlerWrapper)
+		apiV1Mux.HandleFunc("POST /notifications/direct", directHandler.Create)
+		apiV1Mux.HandleFunc("GET /notifications/direct/pending", directHandler.ListPending)
+		apiV1Mux.HandleFunc("GET /notifications/direct/{id}", directHandler.GetByID)
+		apiV1Mux.HandleFunc("POST /notifications/direct/{id}/deliver", directHandler.Deliver)
 	}
 
 	// Fallback for unhandled /api/v1/ routes
@@ -56,7 +47,12 @@ func NewRouter(
 		Error(w, http.StatusNotFound, "NOT_FOUND", "resource not found")
 	})
 
-	mux.Handle("/api/v1/", http.StripPrefix("/api/v1", apiV1Mux))
+	var apiV1Handler http.Handler = apiV1Mux
+	if authMiddleware != nil {
+		apiV1Handler = authMiddleware(apiV1Mux)
+	}
+
+	mux.Handle("/api/v1/", http.StripPrefix("/api/v1", apiV1Handler))
 
 	// Root fallback for unmapped non-API paths
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

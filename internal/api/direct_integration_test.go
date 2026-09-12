@@ -100,7 +100,7 @@ func setupIntegrationServer(
 	directHandler := handlers.NewDirectNotificationHandler(directService, deliveryService, log)
 
 	jwtVerifier := auth.MustNewJWTVerifier(intTestSecret, intTestIssuer, intTestAudience)
-	authMiddleware := middleware.Authenticate(jwtVerifier, log)
+	authMiddleware := middleware.AdminAuth(jwtVerifier, log)
 
 	router := NewRouter(healthHandler, templateHandler, directHandler, authMiddleware)
 	return router, templateRepo, directRepo, attemptRepo
@@ -513,6 +513,16 @@ func TestIntegration_DirectNotification_Authentication_Security(t *testing.T) {
 
 	// Clean up created direct notification
 	cleanupRecords(t, db, []string{spoofResp.ID}, nil)
+
+	// 14. Non-Admin Role (e.g. role "user") -> 403 Forbidden
+	userRoleToken, _ := auth.GenerateToken(intTestSecret, intTestIssuer, intTestAudience, "user-unauthorized", "user", time.Hour)
+	reqUserRole := httptest.NewRequest(http.MethodPost, "/api/v1/notifications/direct", bytes.NewReader(validBody))
+	reqUserRole.Header.Set("Authorization", "Bearer "+userRoleToken)
+	recUserRole := httptest.NewRecorder()
+	router.ServeHTTP(recUserRole, reqUserRole)
+	if recUserRole.Code != http.StatusForbidden {
+		t.Errorf("expected 403 Forbidden for non-admin role 'user', got %d", recUserRole.Code)
+	}
 }
 
 func TestIntegration_DirectNotification_Create_InvalidScenarios(t *testing.T) {
