@@ -59,3 +59,44 @@ func Authenticate(verifier auth.TokenVerifier, log logger.Logger) Middleware {
 		})
 	}
 }
+
+// DefaultAdminRoles lists the standard administrative roles in the GMHelper ecosystem.
+var DefaultAdminRoles = []string{"admin", "owner", "service"}
+
+// RequireRole checks if the authenticated principal has one of the specified allowed roles.
+// Returns 401 Unauthorized if no principal is present in the request context.
+// Returns 403 Forbidden if the principal's role is not within allowedRoles.
+func RequireRole(allowedRoles ...string) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			principal, ok := GetPrincipal(r.Context())
+			if !ok || principal == nil {
+				response.Error(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
+				return
+			}
+
+			userRole := strings.TrimSpace(principal.Role)
+			for _, allowed := range allowedRoles {
+				if strings.EqualFold(userRole, strings.TrimSpace(allowed)) {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+
+			response.Error(w, http.StatusForbidden, "FORBIDDEN", "insufficient permissions")
+		})
+	}
+}
+
+// RequireAdminRole restricts access to principals with administrative roles (admin, owner, service).
+func RequireAdminRole() Middleware {
+	return RequireRole(DefaultAdminRoles...)
+}
+
+// AdminAuth combines authentication via JWT and role-based authorization for administrative access.
+func AdminAuth(verifier auth.TokenVerifier, log logger.Logger) Middleware {
+	return Combine(
+		Authenticate(verifier, log),
+		RequireAdminRole(),
+	)
+}

@@ -10,3 +10,10 @@ func Chain(handler http.Handler, middlewares ...Middleware) http.Handler {
 	}
 	return handler
 }
+
+// Combine merges multiple middlewares into a single Middleware applied in sequential order.
+func Combine(middlewares ...Middleware) Middleware {
+	return func(finalHandler http.Handler) http.Handler {
+		return Chain(finalHandler, middlewares...)
+	}
+}

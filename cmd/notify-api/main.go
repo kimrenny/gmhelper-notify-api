@@ -78,7 +78,7 @@ func main() {
 	if err != nil {
 		log.Fatal("failed to initialize jwt verifier", zapError(err))
 	}
-	authMiddleware := middleware.Authenticate(jwtVerifier, log)
+	authMiddleware := middleware.AdminAuth(jwtVerifier, log)
 
 	router := api.NewRouter(healthHandler, templateHandler, directHandler, authMiddleware)
 	handler := middleware.Chain(router,

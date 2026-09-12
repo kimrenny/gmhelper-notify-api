@@ -13,6 +13,7 @@ import (
 	"github.com/gmhelper/notify-api/internal/app/direct"
 	"github.com/gmhelper/notify-api/internal/app/email"
 	"github.com/gmhelper/notify-api/internal/app/health"
+	"github.com/gmhelper/notify-api/internal/app/template"
 	"github.com/gmhelper/notify-api/internal/domain"
 	"github.com/gmhelper/notify-api/internal/http/middleware"
 	"github.com/gmhelper/notify-api/internal/infra/auth"
@@ -251,5 +252,146 @@ func TestRouter_DirectNotificationsRouting_AuthAndPrecedence(t *testing.T) {
 	}
 	if single.ID != "actual-id-1" {
 		t.Errorf("expected ID actual-id-1, got %s", single.ID)
+	}
+}
+
+func TestRouter_AdministrativeRoutes_SecurityMatrix(t *testing.T) {
+	log, _ := logger.NewLogger("info")
+	directRepo := &routerMockDirectRepo{
+		notifications: map[string]*domain.DirectNotification{
+			"test-notif-1": {
+				ID:             "test-notif-1",
+				RecipientEmail: "recipient@example.com",
+				DeliveryStatus: domain.DeliveryStatusPending,
+			},
+		},
+	}
+	attemptRepo := &routerMockAttemptRepo{}
+	tplRepo := &routerMockTplRepo{}
+	sender := &routerMockSender{}
+
+	directService := direct.NewService(tplRepo, directRepo)
+	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, tplRepo, sender)
+	directHandler := handlers.NewDirectNotificationHandler(directService, deliveryService, log)
+
+	templateService := template.NewService(tplRepo)
+	templateHandler := handlers.NewTemplateHandler(templateService, log)
+
+	pinger := &dummyPinger{err: nil}
+	readiness := health.NewReadinessService(pinger)
+	healthHandler := handlers.NewHealthHandler(readiness, log)
+
+	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
+	authMw := middleware.AdminAuth(verifier, log)
+
+	router := NewRouter(healthHandler, templateHandler, directHandler, authMw)
+
+	adminToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-admin", "admin", 15*time.Minute)
+	ownerToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-owner", "owner", 15*time.Minute)
+	serviceToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-svc", "service", 15*time.Minute)
+	userToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-regular", "user", 15*time.Minute)
+	expiredToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-admin", "admin", -5*time.Minute)
+	badSigToken, _ := auth.GenerateToken("wrong-key-with-32-characters!!!!", routerTestIssuer, routerTestAudience, "u-admin", "admin", 15*time.Minute)
+
+	type endpointTest struct {
+		method string
+		path   string
+	}
+
+	endpoints := []endpointTest{
+		{method: http.MethodGet, path: "/api/v1/templates"},
+		{method: http.MethodPost, path: "/api/v1/templates"},
+		{method: http.MethodGet, path: "/api/v1/templates/tpl-123"},
+		{method: http.MethodPut, path: "/api/v1/templates/tpl-123"},
+		{method: http.MethodDelete, path: "/api/v1/templates/tpl-123"},
+		{method: http.MethodPost, path: "/api/v1/notifications/direct"},
+		{method: http.MethodGet, path: "/api/v1/notifications/direct/pending"},
+		{method: http.MethodGet, path: "/api/v1/notifications/direct/test-notif-1"},
+		{method: http.MethodPost, path: "/api/v1/notifications/direct/test-notif-1/deliver"},
+	}
+
+	for _, ep := range endpoints {
+		// 1. Unauthenticated -> 401
+		t.Run(ep.method+" "+ep.path+" [Unauthenticated -> 401]", func(t *testing.T) {
+			req := httptest.NewRequest(ep.method, ep.path, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("expected 401 Unauthorized, got %d (body: %s)", rec.Code, rec.Body.String())
+			}
+		})
+
+		// 2. Expired Token -> 401
+		t.Run(ep.method+" "+ep.path+" [Expired JWT -> 401]", func(t *testing.T) {
+			req := httptest.NewRequest(ep.method, ep.path, nil)
+			req.Header.Set("Authorization", "Bearer "+expiredToken)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("expected 401 Unauthorized for expired token, got %d", rec.Code)
+			}
+		})
+
+		// 3. Bad Signature -> 401
+		t.Run(ep.method+" "+ep.path+" [Bad Signature -> 401]", func(t *testing.T) {
+			req := httptest.NewRequest(ep.method, ep.path, nil)
+			req.Header.Set("Authorization", "Bearer "+badSigToken)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("expected 401 Unauthorized for bad signature, got %d", rec.Code)
+			}
+		})
+
+		// 4. Non-Admin Role (user) -> 403 Forbidden
+		t.Run(ep.method+" "+ep.path+" [Role User -> 403]", func(t *testing.T) {
+			req := httptest.NewRequest(ep.method, ep.path, nil)
+			req.Header.Set("Authorization", "Bearer "+userToken)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("expected 403 Forbidden for role 'user', got %d (body: %s)", rec.Code, rec.Body.String())
+			}
+		})
+
+		// 5. Admin Role -> Authorized (passes auth boundary)
+		t.Run(ep.method+" "+ep.path+" [Role Admin -> Allowed]", func(t *testing.T) {
+			req := httptest.NewRequest(ep.method, ep.path, nil)
+			req.Header.Set("Authorization", "Bearer "+adminToken)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
+				t.Errorf("expected request to pass auth boundary for admin role, got %d", rec.Code)
+			}
+		})
+
+		// 6. Owner Role -> Authorized (passes auth boundary)
+		t.Run(ep.method+" "+ep.path+" [Role Owner -> Allowed]", func(t *testing.T) {
+			req := httptest.NewRequest(ep.method, ep.path, nil)
+			req.Header.Set("Authorization", "Bearer "+ownerToken)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
+				t.Errorf("expected request to pass auth boundary for owner role, got %d", rec.Code)
+			}
+		})
+
+		// 7. Service Role -> Authorized (passes auth boundary)
+		t.Run(ep.method+" "+ep.path+" [Role Service -> Allowed]", func(t *testing.T) {
+			req := httptest.NewRequest(ep.method, ep.path, nil)
+			req.Header.Set("Authorization", "Bearer "+serviceToken)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
+				t.Errorf("expected request to pass auth boundary for service role, got %d", rec.Code)
+			}
+		})
 	}
 }
