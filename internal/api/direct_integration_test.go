@@ -26,6 +26,7 @@ import (
 	"github.com/gmhelper/notify-api/internal/infra/postgres"
 	infrasmtp "github.com/gmhelper/notify-api/internal/infra/smtp"
 	"github.com/gmhelper/notify-api/internal/infra/smtp/testserver"
+	"github.com/gmhelper/notify-api/internal/infra/userclient"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 )
@@ -95,7 +96,7 @@ func setupIntegrationServer(
 	attemptRepo := postgres.NewDeliveryAttemptRepository(db)
 	smtpClient := infrasmtp.NewClient(smtpServer.Host, smtpServer.Port, "", "", "no-reply@gmhelper.local")
 
-	directService := direct.NewService(templateRepo, directRepo)
+	directService := direct.NewService(templateRepo, directRepo, &testUserResolver{})
 	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, templateRepo, smtpClient)
 	directHandler := handlers.NewDirectNotificationHandler(directService, deliveryService, log)
 
@@ -104,6 +105,16 @@ func setupIntegrationServer(
 
 	router := NewRouter(healthHandler, templateHandler, directHandler, authMiddleware)
 	return router, templateRepo, directRepo, attemptRepo
+}
+
+type testUserResolver struct{}
+
+func (t *testUserResolver) GetUserByID(ctx context.Context, id string) (*userclient.User, error) {
+	return &userclient.User{
+		ID:       id,
+		Username: "user_" + id,
+		Email:    id + "@example.com",
+	}, nil
 }
 
 type testPinger struct {

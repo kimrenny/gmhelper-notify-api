@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gmhelper/notify-api/internal/domain"
+	"github.com/gmhelper/notify-api/internal/infra/userclient"
 )
 
 type mockTemplateRepo struct {
@@ -130,7 +131,22 @@ func (m *mockDirectRepo) UpdateStatus(ctx context.Context, id string, status dom
 	return nil
 }
 
-func setupTestService() (*Service, *mockTemplateRepo, *mockDirectRepo) {
+type mockUserResolver struct {
+	getUserByIDFunc func(ctx context.Context, id string) (*userclient.User, error)
+}
+
+func (m *mockUserResolver) GetUserByID(ctx context.Context, id string) (*userclient.User, error) {
+	if m.getUserByIDFunc != nil {
+		return m.getUserByIDFunc(ctx, id)
+	}
+	return &userclient.User{
+		ID:       id,
+		Username: "user_" + id,
+		Email:    id + "@example.com",
+	}, nil
+}
+
+func setupTestService(resolvers ...UserResolver) (*Service, *mockTemplateRepo, *mockDirectRepo) {
 	tplRepo := &mockTemplateRepo{
 		templates: make(map[string]*domain.EmailTemplate),
 	}
@@ -138,7 +154,11 @@ func setupTestService() (*Service, *mockTemplateRepo, *mockDirectRepo) {
 		notifications: make(map[string]*domain.DirectNotification),
 		attempts:      make(map[string]*domain.DeliveryAttempt),
 	}
-	svc := NewService(tplRepo, directRepo)
+	var resolver UserResolver = &mockUserResolver{}
+	if len(resolvers) > 0 {
+		resolver = resolvers[0]
+	}
+	svc := NewService(tplRepo, directRepo, resolver)
 	return svc, tplRepo, directRepo
 }
 
@@ -377,5 +397,161 @@ func TestService_GetByID_And_ListPending(t *testing.T) {
 	}
 	if len(pending) != 1 {
 		t.Errorf("expected 1 pending notification, got %d", len(pending))
+	}
+}
+
+func TestService_CreateDirectNotification_ExternalUser_Success(t *testing.T) {
+	type ctxKey struct{}
+	var passedID string
+	var passedCtx context.Context
+
+	mockResolver := &mockUserResolver{
+		getUserByIDFunc: func(ctx context.Context, id string) (*userclient.User, error) {
+			passedID = id
+			passedCtx = ctx
+			return &userclient.User{
+				ID:       id,
+				Username: "bob_the_builder",
+				Email:    "bob@example.com",
+				Role:     "User",
+				IsActive: true,
+			}, nil
+		},
+	}
+
+	svc, tplRepo, _ := setupTestService(mockResolver)
+
+	activeTpl := &domain.EmailTemplate{
+		ID:       "tpl-ext-1",
+		Subject:  "Hello {{name}}",
+		HTMLBody: "<p>Hello {{name}}</p>",
+		Status:   domain.TemplateStatusActive,
+		Version:  1,
+	}
+	tplRepo.templates[activeTpl.ID] = activeTpl
+
+	reqCtx := context.WithValue(context.Background(), ctxKey{}, "trace-999")
+	input := CreateInput{
+		TemplateID:     activeTpl.ID,
+		ExternalUserID: "user-ext-123",
+		RecipientEmail: "bob@example.com",
+		Payload: map[string]any{
+			"name": "Bob",
+		},
+	}
+
+	res, err := svc.Create(reqCtx, input)
+	if err != nil {
+		t.Fatalf("expected Create success with external user, got: %v", err)
+	}
+
+	if passedID != "user-ext-123" {
+		t.Errorf("expected resolver called with user-ext-123, got: %s", passedID)
+	}
+	if passedCtx == nil || passedCtx.Value(ctxKey{}) != "trace-999" {
+		t.Errorf("expected request context to be forwarded to user resolver")
+	}
+	if res.ResolvedUser == nil || res.ResolvedUser.Username != "bob_the_builder" {
+		t.Errorf("expected ResolvedUser populated in CreateResult, got: %+v", res.ResolvedUser)
+	}
+	if res.Notification.ExternalUserID != "user-ext-123" {
+		t.Errorf("expected notification ExternalUserID user-ext-123, got: %s", res.Notification.ExternalUserID)
+	}
+}
+
+func TestService_CreateDirectNotification_ExternalUser_ErrorPropagation(t *testing.T) {
+	mockResolver := &mockUserResolver{
+		getUserByIDFunc: func(ctx context.Context, id string) (*userclient.User, error) {
+			return nil, userclient.ErrNotFound
+		},
+	}
+
+	svc, tplRepo, _ := setupTestService(mockResolver)
+
+	activeTpl := &domain.EmailTemplate{
+		ID:       "tpl-ext-err",
+		Subject:  "Subject",
+		HTMLBody: "<p>Body</p>",
+		Status:   domain.TemplateStatusActive,
+		Version:  1,
+	}
+	tplRepo.templates[activeTpl.ID] = activeTpl
+
+	input := CreateInput{
+		TemplateID:     activeTpl.ID,
+		ExternalUserID: "non-existent-user",
+		RecipientEmail: "user@example.com",
+	}
+
+	_, err := svc.Create(context.Background(), input)
+	if err == nil {
+		t.Fatal("expected error when user resolution fails, got nil")
+	}
+	if !errors.Is(err, userclient.ErrNotFound) {
+		t.Errorf("expected wrapped userclient.ErrNotFound, got: %v", err)
+	}
+}
+
+func TestService_CreateDirectNotification_NoExternalUser_ResolverNotCalled(t *testing.T) {
+	var resolverCalled bool
+	mockResolver := &mockUserResolver{
+		getUserByIDFunc: func(ctx context.Context, id string) (*userclient.User, error) {
+			resolverCalled = true
+			return nil, nil
+		},
+	}
+
+	svc, tplRepo, _ := setupTestService(mockResolver)
+
+	activeTpl := &domain.EmailTemplate{
+		ID:       "tpl-ext-no-call",
+		Subject:  "Subject",
+		HTMLBody: "<p>Body</p>",
+		Status:   domain.TemplateStatusActive,
+		Version:  1,
+	}
+	tplRepo.templates[activeTpl.ID] = activeTpl
+
+	input := CreateInput{
+		TemplateID:     activeTpl.ID,
+		ExternalUserID: "", // empty
+		RecipientEmail: "user@example.com",
+	}
+
+	res, err := svc.Create(context.Background(), input)
+	if err != nil {
+		t.Fatalf("expected Create success without external user, got: %v", err)
+	}
+
+	if resolverCalled {
+		t.Error("expected resolver NOT to be called when ExternalUserID is empty")
+	}
+	if res.ResolvedUser != nil {
+		t.Errorf("expected ResolvedUser to be nil when not provided, got: %+v", res.ResolvedUser)
+	}
+}
+
+func TestService_CreateDirectNotification_ResolverUnavailable(t *testing.T) {
+	// Service with nil userResolver
+	svc, tplRepo, _ := setupTestService(nil)
+
+	activeTpl := &domain.EmailTemplate{
+		ID:       "tpl-nil-resolver",
+		Subject:  "Subject",
+		HTMLBody: "<p>Body</p>",
+		Status:   domain.TemplateStatusActive,
+		Version:  1,
+	}
+	tplRepo.templates[activeTpl.ID] = activeTpl
+
+	input := CreateInput{
+		TemplateID:     activeTpl.ID,
+		ExternalUserID: "user-123",
+		RecipientEmail: "user@example.com",
+	}
+
+	_, err := svc.Create(context.Background(), input)
+	if !errors.Is(err, ErrUserResolverUnavailable) {
+		t.Fatalf("expected ErrUserResolverUnavailable when resolver is nil and external user requested, got: %v", err)
 	}
 }

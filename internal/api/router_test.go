@@ -195,7 +195,7 @@ func TestRouter_DirectNotificationsRouting_AuthAndPrecedence(t *testing.T) {
 	tplRepo := &routerMockTplRepo{}
 	sender := &routerMockSender{}
 
-	directService := direct.NewService(tplRepo, directRepo)
+	directService := direct.NewService(tplRepo, directRepo, nil)
 	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, tplRepo, sender)
 	directHandler := handlers.NewDirectNotificationHandler(directService, deliveryService, log)
 
@@ -270,7 +270,7 @@ func TestRouter_AdministrativeRoutes_SecurityMatrix(t *testing.T) {
 	tplRepo := &routerMockTplRepo{}
 	sender := &routerMockSender{}
 
-	directService := direct.NewService(tplRepo, directRepo)
+	directService := direct.NewService(tplRepo, directRepo, nil)
 	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, tplRepo, sender)
 	directHandler := handlers.NewDirectNotificationHandler(directService, deliveryService, log)
 

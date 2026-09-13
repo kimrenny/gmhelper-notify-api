@@ -72,16 +72,6 @@ func main() {
 	attemptRepo := postgres.NewDeliveryAttemptRepository(db.DB())
 	smtpSender := smtp.NewClient(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom)
 
-	directService := direct.NewService(templateRepo, directRepo)
-	deliveryService := direct.NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, templateRepo, smtpSender, cfg.WorkerMaxAttempts)
-	directHandler := handlers.NewDirectNotificationHandler(directService, deliveryService, log)
-
-	jwtVerifier, err := auth.NewJWTVerifier(cfg.AuthSecret, cfg.AuthIssuer, cfg.AuthAudience)
-	if err != nil {
-		log.Fatal("failed to initialize jwt verifier", zapError(err))
-	}
-	authMiddleware := middleware.AdminAuth(jwtVerifier, log)
-
 	serviceTokenProvider, err := auth.NewServiceTokenProvider(auth.ServiceTokenProviderConfig{
 		Secret:   cfg.ServiceAuthSecret,
 		Issuer:   cfg.AuthIssuer,
@@ -101,11 +91,20 @@ func main() {
 		if err != nil {
 			log.Fatal("failed to initialize user service", zapError(err))
 		}
-		_ = userService
 		log.Info("gmhelper-api user resolution service initialized", zapString("baseURL", cfg.GMHelperAPIBaseURL))
 	} else {
 		log.Info("gmhelper-api base URL not configured; user resolution service is disabled")
 	}
+
+	directService := direct.NewService(templateRepo, directRepo, userService)
+	deliveryService := direct.NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, templateRepo, smtpSender, cfg.WorkerMaxAttempts)
+	directHandler := handlers.NewDirectNotificationHandler(directService, deliveryService, log)
+
+	jwtVerifier, err := auth.NewJWTVerifier(cfg.AuthSecret, cfg.AuthIssuer, cfg.AuthAudience)
+	if err != nil {
+		log.Fatal("failed to initialize jwt verifier", zapError(err))
+	}
+	authMiddleware := middleware.AdminAuth(jwtVerifier, log)
 
 	router := api.NewRouter(healthHandler, templateHandler, directHandler, authMiddleware)
 	handler := middleware.Chain(router,
