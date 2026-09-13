@@ -10,14 +10,18 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/gmhelper/notify-api/internal/infra/auth"
 )
 
 var (
-	ErrNotFound        = errors.New("user not found")
-	ErrInvalidInput    = errors.New("invalid user id")
-	ErrServer          = errors.New("gmhelper-api server error")
-	ErrUnexpected      = errors.New("unexpected response from gmhelper-api")
-	ErrAPIUnsuccessful = errors.New("gmhelper-api returned unsuccessful response")
+	ErrNotFound             = errors.New("user not found")
+	ErrInvalidInput         = errors.New("invalid user id")
+	ErrServer               = errors.New("gmhelper-api server error")
+	ErrUnexpected           = errors.New("unexpected response from gmhelper-api")
+	ErrAPIUnsuccessful      = errors.New("gmhelper-api returned unsuccessful response")
+	ErrMissingTokenProvider = errors.New("tokenProvider cannot be nil")
+	ErrTokenAcquisition     = errors.New("failed to obtain service token")
 )
 
 // User represents the authoritative user profile returned by gmhelper-api.
@@ -45,15 +49,16 @@ type Client interface {
 
 // HTTPClient implements Client using HTTP requests to gmhelper-api.
 type HTTPClient struct {
-	baseURL    string
-	httpClient *http.Client
+	baseURL       string
+	httpClient    *http.Client
+	tokenProvider auth.ServiceTokenProvider
 }
 
 const defaultTimeout = 10 * time.Second
 
-// NewClient constructs a new HTTPClient with the given baseURL and optional http.Client.
+// NewClient constructs a new HTTPClient with the given baseURL, optional http.Client, and required auth.ServiceTokenProvider.
 // If httpClient is nil, a default http.Client with a 10-second timeout is used.
-func NewClient(baseURL string, httpClient *http.Client) (*HTTPClient, error) {
+func NewClient(baseURL string, httpClient *http.Client, tokenProvider auth.ServiceTokenProvider) (*HTTPClient, error) {
 	trimmedURL := strings.TrimSpace(baseURL)
 	if trimmedURL == "" {
 		return nil, errors.New("baseURL cannot be empty")
@@ -72,6 +77,10 @@ func NewClient(baseURL string, httpClient *http.Client) (*HTTPClient, error) {
 		return nil, errors.New("baseURL must have a host")
 	}
 
+	if tokenProvider == nil {
+		return nil, ErrMissingTokenProvider
+	}
+
 	cl := httpClient
 	if cl == nil {
 		cl = &http.Client{
@@ -80,8 +89,9 @@ func NewClient(baseURL string, httpClient *http.Client) (*HTTPClient, error) {
 	}
 
 	return &HTTPClient{
-		baseURL:    strings.TrimRight(trimmedURL, "/"),
-		httpClient: cl,
+		baseURL:       strings.TrimRight(trimmedURL, "/"),
+		httpClient:    cl,
+		tokenProvider: tokenProvider,
 	}, nil
 }
 
@@ -92,6 +102,15 @@ func (c *HTTPClient) GetUserByID(ctx context.Context, id string) (*User, error) 
 		return nil, fmt.Errorf("%w: user id cannot be empty", ErrInvalidInput)
 	}
 
+	token, err := c.tokenProvider.Token(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrTokenAcquisition, err)
+	}
+	trimmedToken := strings.TrimSpace(token)
+	if trimmedToken == "" {
+		return nil, fmt.Errorf("%w: returned empty token", ErrTokenAcquisition)
+	}
+
 	endpoint := fmt.Sprintf("%s/api/v1/internal/users/%s", c.baseURL, url.PathEscape(trimmedID))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -99,6 +118,7 @@ func (c *HTTPClient) GetUserByID(ctx context.Context, id string) (*User, error) 
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
+	req.Header.Set("Authorization", "Bearer "+trimmedToken)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.httpClient.Do(req)
