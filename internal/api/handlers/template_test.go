@@ -91,6 +91,7 @@ func setupTestRouter(repo domain.EmailTemplateRepository) http.Handler {
 	mux.HandleFunc("POST /api/v1/templates", handler.Create)
 	mux.HandleFunc("PUT /api/v1/templates/{id}", handler.Update)
 	mux.HandleFunc("DELETE /api/v1/templates/{id}", handler.Delete)
+	mux.HandleFunc("POST /api/v1/templates/{id}/preview", handler.Preview)
 	return mux
 }
 
@@ -395,5 +396,156 @@ func TestTemplateHandler_Delete_SuccessAndNotFound(t *testing.T) {
 
 	if recMissing.Code != http.StatusNotFound {
 		t.Fatalf("expected status 404, got %d", recMissing.Code)
+	}
+}
+
+func TestTemplateHandler_Preview_SuccessAndHTMLEscaping(t *testing.T) {
+	repo := newMockRepo()
+	tpl := &domain.EmailTemplate{
+		ID:            "tpl-preview-1",
+		TemplateKey:   "welcome_user",
+		Name:          "Welcome Template",
+		Subject:       "Welcome, {{username}}!",
+		HTMLBody:      "<h1>Hello, {{username}}!</h1><p>Email: {{email}}</p>",
+		PlainTextBody: "Hello, {{username}}!\nEmail: {{email}}",
+		Locale:        "en",
+		Status:        domain.TemplateStatusActive,
+		Version:       1,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+	repo.templates[tpl.ID] = tpl
+
+	router := setupTestRouter(repo)
+
+	// Test payload with HTML special characters to verify escaping
+	previewReq := PreviewTemplateRequest{
+		Variables: map[string]any{
+			"username": "<script>alert('xss')</script>",
+			"email":    "john@example.com",
+		},
+	}
+	body, _ := json.Marshal(previewReq)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/templates/tpl-preview-1/preview", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp PreviewTemplateResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// 1. Subject has raw variable substitution
+	expectedSubject := "Welcome, <script>alert('xss')</script>!"
+	if resp.Subject != expectedSubject {
+		t.Errorf("expected subject '%s', got '%s'", expectedSubject, resp.Subject)
+	}
+
+	// 2. HTML body has HTML-escaped variable substitution
+	expectedHTML := "<h1>Hello, &lt;script&gt;alert(&#39;xss&#39;)&lt;/script&gt;!</h1><p>Email: john@example.com</p>"
+	if resp.HTMLBody != expectedHTML {
+		t.Errorf("expected escaped HTML body '%s', got '%s'", expectedHTML, resp.HTMLBody)
+	}
+
+	// 3. Plain-text body has raw variable substitution
+	expectedPlain := "Hello, <script>alert('xss')</script>!\nEmail: john@example.com"
+	if resp.PlainTextBody != expectedPlain {
+		t.Errorf("expected plain text '%s', got '%s'", expectedPlain, resp.PlainTextBody)
+	}
+}
+
+func TestTemplateHandler_Preview_NotFound(t *testing.T) {
+	repo := newMockRepo()
+	router := setupTestRouter(repo)
+
+	previewReq := PreviewTemplateRequest{
+		Variables: map[string]any{"username": "John"},
+	}
+	body, _ := json.Marshal(previewReq)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/templates/nonexistent-id/preview", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d", rec.Code)
+	}
+
+	var errResp response.ErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if errResp.Error.Code != "NOT_FOUND" {
+		t.Errorf("expected error code NOT_FOUND, got %s", errResp.Error.Code)
+	}
+}
+
+func TestTemplateHandler_Preview_MissingVariable(t *testing.T) {
+	repo := newMockRepo()
+	tpl := &domain.EmailTemplate{
+		ID:          "tpl-preview-2",
+		TemplateKey: "req_var_tpl",
+		Name:        "Req Var Template",
+		Subject:     "Subject {{code}}",
+		HTMLBody:    "<p>Your code is: {{code}}</p>",
+		Locale:      "en",
+		Status:      domain.TemplateStatusActive,
+		Version:     1,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+	repo.templates[tpl.ID] = tpl
+
+	router := setupTestRouter(repo)
+
+	// Missing "code" variable in payload
+	previewReq := PreviewTemplateRequest{
+		Variables: map[string]any{"other_var": "val"},
+	}
+	body, _ := json.Marshal(previewReq)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/templates/tpl-preview-2/preview", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 Bad Request on missing template variable, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	var errResp response.ErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if errResp.Error.Code != "BAD_REQUEST" {
+		t.Errorf("expected error code BAD_REQUEST, got %s", errResp.Error.Code)
+	}
+}
+
+func TestTemplateHandler_Preview_InvalidJSONAndEmptyBody(t *testing.T) {
+	repo := newMockRepo()
+	router := setupTestRouter(repo)
+
+	// 1. Invalid JSON
+	reqBadJSON := httptest.NewRequest(http.MethodPost, "/api/v1/templates/tpl-1/preview", bytes.NewReader([]byte("{invalid-json")))
+	recBadJSON := httptest.NewRecorder()
+	router.ServeHTTP(recBadJSON, reqBadJSON)
+
+	if recBadJSON.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 on bad JSON, got %d", recBadJSON.Code)
+	}
+
+	// 2. Empty Body
+	reqEmpty := httptest.NewRequest(http.MethodPost, "/api/v1/templates/tpl-1/preview", bytes.NewReader([]byte("")))
+	recEmpty := httptest.NewRecorder()
+	router.ServeHTTP(recEmpty, reqEmpty)
+
+	if recEmpty.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 on empty body, got %d", recEmpty.Code)
 	}
 }

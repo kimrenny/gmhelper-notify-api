@@ -94,3 +94,24 @@ ORDER BY scheduled_at ASC`, after)
 	}
 	return campaigns, rows.Err()
 }
+
+func (r *NotificationCampaignRepository) List(ctx context.Context) ([]*domain.NotificationCampaign, error) {
+	rows, err := r.db.QueryContext(ctx, `
+SELECT id, name, template_id, campaign_type, status, scheduled_at, started_at, completed_at, created_at, updated_at
+FROM notification_campaigns
+ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	campaigns := []*domain.NotificationCampaign{}
+	for rows.Next() {
+		campaign := &domain.NotificationCampaign{}
+		if err := rows.Scan(&campaign.ID, &campaign.Name, &campaign.TemplateID, &campaign.CampaignType, &campaign.Status, &campaign.ScheduledAt, &campaign.StartedAt, &campaign.CompletedAt, &campaign.CreatedAt, &campaign.UpdatedAt); err != nil {
+			return nil, err
+		}
+		campaigns = append(campaigns, campaign)
+	}
+	return campaigns, rows.Err()
+}

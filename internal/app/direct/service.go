@@ -10,15 +10,22 @@ import (
 	"time"
 
 	"github.com/gmhelper/notify-api/internal/domain"
+	"github.com/gmhelper/notify-api/internal/infra/userclient"
 	"github.com/google/uuid"
 )
 
 var (
-	ErrInvalidInput     = errors.New("invalid direct notification input")
-	ErrTemplateInactive = errors.New("template is not active for delivery")
-	ErrMissingVariable  = errors.New("missing required template variable")
-	ErrNotFound         = domain.ErrNotFound
+	ErrInvalidInput            = errors.New("invalid direct notification input")
+	ErrTemplateInactive        = errors.New("template is not active for delivery")
+	ErrMissingVariable         = errors.New("missing required template variable")
+	ErrNotFound                = domain.ErrNotFound
+	ErrUserResolverUnavailable = errors.New("user resolution service is unavailable")
 )
+
+// UserResolver defines the interface required by direct.Service to resolve external users.
+type UserResolver interface {
+	GetUserByID(ctx context.Context, id string) (*userclient.User, error)
+}
 
 type CreateInput struct {
 	TemplateID       string                  `json:"templateId"`
@@ -32,17 +39,20 @@ type CreateInput struct {
 type CreateResult struct {
 	Notification *domain.DirectNotification
 	Rendered     *RenderedEmail
+	ResolvedUser *userclient.User
 }
 
 type Service struct {
 	templateRepo domain.EmailTemplateRepository
 	directRepo   domain.DirectNotificationRepository
+	userResolver UserResolver
 }
 
-func NewService(templateRepo domain.EmailTemplateRepository, directRepo domain.DirectNotificationRepository) *Service {
+func NewService(templateRepo domain.EmailTemplateRepository, directRepo domain.DirectNotificationRepository, userResolver UserResolver) *Service {
 	return &Service{
 		templateRepo: templateRepo,
 		directRepo:   directRepo,
+		userResolver: userResolver,
 	}
 }
 
@@ -80,26 +90,45 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*CreateResult,
 		return nil, fmt.Errorf("%w: invalid notification type '%s'", ErrInvalidInput, notificationType)
 	}
 
-	// 1. Resolve template
+	// 1. Resolve user if externalUserId is provided
+	var resolvedUser *userclient.User
+	if externalUserID != "" {
+		if s.userResolver == nil {
+			return nil, ErrUserResolverUnavailable
+		}
+		user, err := s.userResolver.GetUserByID(ctx, externalUserID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve external user %s: %w", externalUserID, err)
+		}
+		resolvedUser = user
+	}
+
+	// 2. Resolve template
 	tpl, err := s.templateRepo.GetByID(ctx, templateID)
 	if err != nil {
 		return nil, err
 	}
 
-	// 2. Validate template status for delivery
+	// 3. Validate template status for delivery
 	if tpl.Status != domain.TemplateStatusActive {
 		return nil, fmt.Errorf("%w: template '%s' has status '%s'", ErrTemplateInactive, tpl.ID, tpl.Status)
 	}
 
-	// 3. Render email content with payload variables for validation
-	rendered, err := RenderEmail(tpl.Subject, tpl.HTMLBody, tpl.PlainTextBody, input.Payload)
+	// 4. Merge resolved user variables with explicitly provided payload (explicit variables take precedence)
+	renderPayload := input.Payload
+	if resolvedUser != nil {
+		renderPayload = MergeUserPayload(resolvedUser, input.Payload)
+	}
+
+	// 5. Render email content with payload variables for validation
+	rendered, err := RenderEmail(tpl.Subject, tpl.HTMLBody, tpl.PlainTextBody, renderPayload)
 	if err != nil {
 		return nil, err
 	}
 
 	var payloadBytes json.RawMessage
-	if input.Payload != nil {
-		bytes, err := json.Marshal(input.Payload)
+	if renderPayload != nil {
+		bytes, err := json.Marshal(renderPayload)
 		if err != nil {
 			return nil, fmt.Errorf("%w: failed to serialize payload: %v", ErrInvalidInput, err)
 		}
@@ -132,7 +161,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*CreateResult,
 		CreatedAt:     now,
 	}
 
-	// 4. Atomically persist notification and initial attempt
+	// 5. Atomically persist notification and initial attempt
 	if err := s.directRepo.CreateWithInitialAttempt(ctx, notification, attempt); err != nil {
 		return nil, err
 	}
@@ -140,6 +169,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*CreateResult,
 	return &CreateResult{
 		Notification: notification,
 		Rendered:     rendered,
+		ResolvedUser: resolvedUser,
 	}, nil
 }
 
@@ -156,4 +186,24 @@ func isValidEmail(email string) bool {
 		return false
 	}
 	return true
+}
+
+// MergeUserPayload maps approved user fields (username, email, role, language) into the template payload.
+// Explicit caller-provided payload variables take precedence over resolved user fields.
+func MergeUserPayload(u *userclient.User, payload map[string]any) map[string]any {
+	if u == nil {
+		return payload
+	}
+
+	merged := make(map[string]any, len(payload)+4)
+	merged["username"] = u.Username
+	merged["email"] = u.Email
+	merged["role"] = u.Role
+	merged["language"] = u.Language
+
+	for k, v := range payload {
+		merged[k] = v
+	}
+
+	return merged
 }

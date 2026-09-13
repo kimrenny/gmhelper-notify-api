@@ -135,16 +135,34 @@ func TestConfigValidate_ProductionAuthSecretRequired(t *testing.T) {
 
 	// Explicit production secret allowed
 	cfgValidProd := &Config{
-		Env:         "production",
-		DatabaseURL: "postgres://localhost/test",
-		SMTPHost:    "smtp.example.com",
-		SMTPFrom:    "test@example.com",
-		HTTPPort:    8080,
-		SMTPPort:    587,
-		AuthSecret:  "c3VwZXItc2VjdXJlLXByb2R1Y3Rpb24tc2VjcmV0LXZhbHVl",
+		Env:                 "production",
+		DatabaseURL:         "postgres://localhost/test",
+		SMTPHost:            "smtp.example.com",
+		SMTPFrom:            "test@example.com",
+		HTTPPort:            8080,
+		SMTPPort:            587,
+		AuthSecret:          "c3VwZXItc2VjdXJlLXByb2R1Y3Rpb24tc2VjcmV0LXZhbHVl",
+		ServiceAuthSecret:   "c3VwZXItc2VjdXJlLXByb2R1Y3Rpb24tc2VjcmV0LXZhbHVl",
+		ServiceAuthAudience: "gmhelper-api",
 	}
 	if err := cfgValidProd.Validate(); err != nil {
 		t.Fatalf("expected valid production config, got: %v", err)
+	}
+
+	// Default dev service secret rejected in production
+	cfgDefaultServiceSecret := &Config{
+		Env:                 "production",
+		DatabaseURL:         "postgres://localhost/test",
+		SMTPHost:            "smtp.example.com",
+		SMTPFrom:            "test@example.com",
+		HTTPPort:            8080,
+		SMTPPort:            587,
+		AuthSecret:          "c3VwZXItc2VjdXJlLXByb2R1Y3Rpb24tc2VjcmV0LXZhbHVl",
+		ServiceAuthSecret:   "Z21oZWxwZXItZGVmYXVsdC1qd3Qtc2VjcmV0LTMyYiE=",
+		ServiceAuthAudience: "gmhelper-api",
+	}
+	if err := cfgDefaultServiceSecret.Validate(); err == nil {
+		t.Fatal("expected error in production when using default service auth secret, got nil")
 	}
 }
 
@@ -229,5 +247,51 @@ func TestConfigValidate_WorkerSettings(t *testing.T) {
 	}
 	if err := cfgValidWorker.Validate(); err != nil {
 		t.Fatalf("expected valid config for enabled worker with positive interval, stale timeout, and max attempts, got: %v", err)
+	}
+}
+
+func TestConfigValidate_GMHelperAPIBaseURL(t *testing.T) {
+	validSecret := "dGVzdC1zZWNyZXQta2V5LTMyLWJ5dGVzLWxvbmchIQ=="
+
+	// 1. Empty URL is valid (integration is optional)
+	cfgEmptyURL := &Config{
+		DatabaseURL:        "postgres://localhost/test",
+		SMTPHost:           "smtp.example.com",
+		SMTPFrom:           "test@example.com",
+		HTTPPort:           8080,
+		SMTPPort:           587,
+		AuthSecret:         validSecret,
+		GMHelperAPIBaseURL: "",
+	}
+	if err := cfgEmptyURL.Validate(); err != nil {
+		t.Fatalf("expected valid config with empty GMHelperAPIBaseURL, got: %v", err)
+	}
+
+	// 2. Valid HTTP/HTTPS URL
+	cfgValidURL := &Config{
+		DatabaseURL:        "postgres://localhost/test",
+		SMTPHost:           "smtp.example.com",
+		SMTPFrom:           "test@example.com",
+		HTTPPort:           8080,
+		SMTPPort:           587,
+		AuthSecret:         validSecret,
+		GMHelperAPIBaseURL: "http://gmhelper-api:5000",
+	}
+	if err := cfgValidURL.Validate(); err != nil {
+		t.Fatalf("expected valid config with valid GMHelperAPIBaseURL, got: %v", err)
+	}
+
+	// 3. Invalid URL scheme / missing host
+	cfgInvalidURL := &Config{
+		DatabaseURL:        "postgres://localhost/test",
+		SMTPHost:           "smtp.example.com",
+		SMTPFrom:           "test@example.com",
+		HTTPPort:           8080,
+		SMTPPort:           587,
+		AuthSecret:         validSecret,
+		GMHelperAPIBaseURL: "ftp://invalid-scheme",
+	}
+	if err := cfgInvalidURL.Validate(); err == nil {
+		t.Fatal("expected error for invalid GMHelperAPIBaseURL scheme, got nil")
 	}
 }

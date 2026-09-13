@@ -219,3 +219,84 @@ func TestService_Delete_SuccessAndNotFound(t *testing.T) {
 		t.Fatalf("expected ErrNotFound on second delete, got %v", err)
 	}
 }
+
+func TestService_Preview_SuccessAndHTMLEscaping(t *testing.T) {
+	repo := newMockTemplateRepo()
+	svc := NewService(repo)
+
+	tpl := &domain.EmailTemplate{
+		ID:            "tpl-preview-1",
+		TemplateKey:   "welcome_user",
+		Name:          "Welcome Template",
+		Subject:       "Welcome, {{username}}!",
+		HTMLBody:      "<h1>Hello, {{username}}!</h1><p>Email: {{email}}</p>",
+		PlainTextBody: "Hello, {{username}}! Email: {{email}}",
+		Locale:        "en",
+		Status:        domain.TemplateStatusActive,
+		Version:       1,
+	}
+	repo.templates[tpl.ID] = tpl
+
+	// 1. Success with variable substitution and HTML escaping
+	vars := map[string]any{
+		"username": "<b>John & Jane</b>",
+		"email":    "john@example.com",
+	}
+
+	res, err := svc.Preview(context.Background(), "tpl-preview-1", vars)
+	if err != nil {
+		t.Fatalf("expected preview success, got %v", err)
+	}
+
+	// Subject: raw replacement
+	if res.Subject != "Welcome, <b>John & Jane</b>!" {
+		t.Errorf("expected raw subject, got: %s", res.Subject)
+	}
+
+	// HTMLBody: HTML-escaped variables
+	expectedHTML := "<h1>Hello, &lt;b&gt;John &amp; Jane&lt;/b&gt;!</h1><p>Email: john@example.com</p>"
+	if res.HTMLBody != expectedHTML {
+		t.Errorf("expected escaped HTML body '%s', got '%s'", expectedHTML, res.HTMLBody)
+	}
+
+	// PlainTextBody: raw replacement
+	expectedPlain := "Hello, <b>John & Jane</b>! Email: john@example.com"
+	if res.PlainTextBody != expectedPlain {
+		t.Errorf("expected plain text '%s', got '%s'", expectedPlain, res.PlainTextBody)
+	}
+}
+
+func TestService_Preview_MissingVariablesAndNotFound(t *testing.T) {
+	repo := newMockTemplateRepo()
+	svc := NewService(repo)
+
+	tpl := &domain.EmailTemplate{
+		ID:          "tpl-preview-2",
+		TemplateKey: "req_vars",
+		Name:        "Required Vars",
+		Subject:     "Subject {{code}}",
+		HTMLBody:    "<p>{{code}}</p>",
+		Locale:      "en",
+		Status:      domain.TemplateStatusActive,
+		Version:     1,
+	}
+	repo.templates[tpl.ID] = tpl
+
+	// 1. Missing variable returns ErrMissingVariable
+	_, err := svc.Preview(context.Background(), "tpl-preview-2", map[string]any{})
+	if !errors.Is(err, ErrMissingVariable) {
+		t.Fatalf("expected ErrMissingVariable, got %v", err)
+	}
+
+	// 2. Non-existent template returns ErrNotFound
+	_, err = svc.Preview(context.Background(), "non-existent-id", map[string]any{"code": "123"})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+
+	// 3. Empty ID returns ErrInvalidInput
+	_, err = svc.Preview(context.Background(), "", map[string]any{"code": "123"})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput, got %v", err)
+	}
+}

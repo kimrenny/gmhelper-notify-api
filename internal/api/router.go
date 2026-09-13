@@ -11,7 +11,9 @@ import (
 func NewRouter(
 	healthHandler *handlers.HealthHandler,
 	templateHandler *handlers.TemplateHandler,
+	campaignHandler *handlers.CampaignHandler,
 	directHandler *handlers.DirectNotificationHandler,
+	userHandler *handlers.UserHandler,
 	authMiddleware middleware.Middleware,
 ) http.Handler {
 	mux := http.NewServeMux()
@@ -32,6 +34,14 @@ func NewRouter(
 		apiV1Mux.HandleFunc("POST /templates", templateHandler.Create)
 		apiV1Mux.HandleFunc("PUT /templates/{id}", templateHandler.Update)
 		apiV1Mux.HandleFunc("DELETE /templates/{id}", templateHandler.Delete)
+		apiV1Mux.HandleFunc("POST /templates/{id}/preview", templateHandler.Preview)
+	}
+
+	// Campaign endpoints
+	if campaignHandler != nil {
+		apiV1Mux.HandleFunc("GET /campaigns", campaignHandler.List)
+		apiV1Mux.HandleFunc("GET /campaigns/{id}", campaignHandler.GetByID)
+		apiV1Mux.HandleFunc("POST /campaigns", campaignHandler.Create)
 	}
 
 	// Direct Notification endpoints
@@ -40,6 +50,11 @@ func NewRouter(
 		apiV1Mux.HandleFunc("GET /notifications/direct/pending", directHandler.ListPending)
 		apiV1Mux.HandleFunc("GET /notifications/direct/{id}", directHandler.GetByID)
 		apiV1Mux.HandleFunc("POST /notifications/direct/{id}/deliver", directHandler.Deliver)
+	}
+
+	// User resolution & search endpoints
+	if userHandler != nil {
+		apiV1Mux.HandleFunc("GET /users/search", userHandler.Search)
 	}
 
 	// Fallback for unhandled /api/v1/ routes

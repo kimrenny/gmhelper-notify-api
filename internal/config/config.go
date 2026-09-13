@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -11,24 +12,27 @@ import (
 )
 
 type Config struct {
-	Env                string
-	HTTPHost           string
-	HTTPPort           int
-	DatabaseURL        string
-	SMTPHost           string
-	SMTPPort           int
-	SMTPUsername       string
-	SMTPPassword       string
-	SMTPFrom           string
-	LogLevel           string
-	AllowedCORSOrigins string
-	AuthIssuer         string
-	AuthAudience       string
-	AuthSecret         string
-	WorkerEnabled      bool
-	WorkerInterval     time.Duration
-	WorkerStaleTimeout time.Duration
-	WorkerMaxAttempts  int
+	Env                 string
+	HTTPHost            string
+	HTTPPort            int
+	DatabaseURL         string
+	SMTPHost            string
+	SMTPPort            int
+	SMTPUsername        string
+	SMTPPassword        string
+	SMTPFrom            string
+	LogLevel            string
+	AllowedCORSOrigins  string
+	AuthIssuer          string
+	AuthAudience        string
+	AuthSecret          string
+	ServiceAuthSecret   string
+	ServiceAuthAudience string
+	WorkerEnabled       bool
+	WorkerInterval      time.Duration
+	WorkerStaleTimeout  time.Duration
+	WorkerMaxAttempts   int
+	GMHelperAPIBaseURL  string
 }
 
 func Load() (*Config, error) {
@@ -72,25 +76,31 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	authSecret := envOrDefault("NOTIFY_AUTH_SECRET", "Z21oZWxwZXItZGVmYXVsdC1qd3Qtc2VjcmV0LTMyYiE=")
+	serviceAuthSecret := envOrDefault("NOTIFY_SERVICE_AUTH_SECRET", authSecret)
+
 	cfg := &Config{
-		Env:                envOrDefault("APP_ENV", "development"),
-		HTTPHost:           envOrDefault("HTTP_HOST", "0.0.0.0"),
-		HTTPPort:           port,
-		DatabaseURL:        databaseURL,
-		SMTPHost:           smtpHost,
-		SMTPPort:           smtpPort,
-		SMTPUsername:       os.Getenv("SMTP_USERNAME"),
-		SMTPPassword:       os.Getenv("SMTP_PASSWORD"),
-		SMTPFrom:           smtpFrom,
-		LogLevel:           envOrDefault("LOG_LEVEL", "info"),
-		AllowedCORSOrigins: envOrDefault("ALLOWED_CORS_ORIGINS", "*"),
-		AuthIssuer:         envOrDefault("NOTIFY_AUTH_ISSUER", "gmhelper-api"),
-		AuthAudience:       envOrDefault("NOTIFY_AUTH_AUDIENCE", "gmhelper-notify-api"),
-		AuthSecret:         envOrDefault("NOTIFY_AUTH_SECRET", "Z21oZWxwZXItZGVmYXVsdC1qd3Qtc2VjcmV0LTMyYiE="),
-		WorkerEnabled:      parseBoolEnv("NOTIFY_WORKER_ENABLED", true),
-		WorkerInterval:     workerInterval,
-		WorkerStaleTimeout: workerStaleTimeout,
-		WorkerMaxAttempts:  workerMaxAttempts,
+		Env:                 envOrDefault("APP_ENV", "development"),
+		HTTPHost:            envOrDefault("HTTP_HOST", "0.0.0.0"),
+		HTTPPort:            port,
+		DatabaseURL:         databaseURL,
+		SMTPHost:            smtpHost,
+		SMTPPort:            smtpPort,
+		SMTPUsername:        os.Getenv("SMTP_USERNAME"),
+		SMTPPassword:        os.Getenv("SMTP_PASSWORD"),
+		SMTPFrom:            smtpFrom,
+		LogLevel:            envOrDefault("LOG_LEVEL", "info"),
+		AllowedCORSOrigins:  envOrDefault("ALLOWED_CORS_ORIGINS", "*"),
+		AuthIssuer:          envOrDefault("NOTIFY_AUTH_ISSUER", "gmhelper-api"),
+		AuthAudience:        envOrDefault("NOTIFY_AUTH_AUDIENCE", "gmhelper-notify-api"),
+		AuthSecret:          authSecret,
+		ServiceAuthSecret:   serviceAuthSecret,
+		ServiceAuthAudience: envOrDefault("NOTIFY_SERVICE_AUTH_AUDIENCE", "gmhelper-api"),
+		WorkerEnabled:       parseBoolEnv("NOTIFY_WORKER_ENABLED", true),
+		WorkerInterval:      workerInterval,
+		WorkerStaleTimeout:  workerStaleTimeout,
+		WorkerMaxAttempts:   workerMaxAttempts,
+		GMHelperAPIBaseURL:  envOrDefault("GMHELPER_API_BASE_URL", envOrDefault("NOTIFY_GMHELPER_API_BASE_URL", "")),
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -161,16 +171,31 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.SMTPFrom) == "" {
 		return fmt.Errorf("SMTP_FROM cannot be empty")
 	}
-	if c.Env == "production" {
-		if strings.TrimSpace(c.AuthSecret) == "" || c.AuthSecret == "Z21oZWxwZXItZGVmYXVsdC1qd3Qtc2VjcmV0LTMyYiE=" {
-			return fmt.Errorf("NOTIFY_AUTH_SECRET must be explicitly configured in production environment")
-		}
-	}
 	if strings.TrimSpace(c.AuthSecret) == "" {
 		return fmt.Errorf("NOTIFY_AUTH_SECRET cannot be empty")
 	}
 	if _, err := auth.DecodeSecretKey(c.AuthSecret); err != nil {
 		return fmt.Errorf("NOTIFY_AUTH_SECRET is invalid: %w", err)
+	}
+	if strings.TrimSpace(c.ServiceAuthSecret) == "" {
+		c.ServiceAuthSecret = c.AuthSecret
+	}
+	if strings.TrimSpace(c.ServiceAuthAudience) == "" {
+		c.ServiceAuthAudience = "gmhelper-api"
+	}
+	if c.Env == "production" {
+		if strings.TrimSpace(c.AuthSecret) == "" || c.AuthSecret == "Z21oZWxwZXItZGVmYXVsdC1qd3Qtc2VjcmV0LTMyYiE=" {
+			return fmt.Errorf("NOTIFY_AUTH_SECRET must be explicitly configured in production environment")
+		}
+		if strings.TrimSpace(c.ServiceAuthSecret) == "" || c.ServiceAuthSecret == "Z21oZWxwZXItZGVmYXVsdC1qd3Qtc2VjcmV0LTMyYiE=" {
+			return fmt.Errorf("NOTIFY_SERVICE_AUTH_SECRET must be explicitly configured in production environment")
+		}
+	}
+	if _, err := auth.DecodeSecretKey(c.ServiceAuthSecret); err != nil {
+		return fmt.Errorf("NOTIFY_SERVICE_AUTH_SECRET is invalid: %w", err)
+	}
+	if strings.TrimSpace(c.ServiceAuthAudience) == "" {
+		return fmt.Errorf("NOTIFY_SERVICE_AUTH_AUDIENCE cannot be empty")
 	}
 	if c.WorkerEnabled && c.WorkerInterval <= 0 {
 		return fmt.Errorf("NOTIFY_WORKER_INTERVAL must be a positive duration when worker is enabled")
@@ -180,6 +205,12 @@ func (c *Config) Validate() error {
 	}
 	if c.WorkerEnabled && c.WorkerMaxAttempts <= 0 {
 		return fmt.Errorf("NOTIFY_WORKER_MAX_ATTEMPTS must be a positive integer when worker is enabled")
+	}
+	if strings.TrimSpace(c.GMHelperAPIBaseURL) != "" {
+		parsed, err := url.ParseRequestURI(strings.TrimSpace(c.GMHelperAPIBaseURL))
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return fmt.Errorf("invalid GMHELPER_API_BASE_URL: must be a valid http or https URL with host")
+		}
 	}
 	return nil
 }

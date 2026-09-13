@@ -3,10 +3,12 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/gmhelper/notify-api/internal/app/direct"
 	"github.com/gmhelper/notify-api/internal/app/template"
 	"github.com/gmhelper/notify-api/internal/domain"
 	"github.com/gmhelper/notify-api/internal/http/response"
@@ -33,6 +35,16 @@ type UpdateTemplateRequest struct {
 	Locale        string `json:"locale,omitempty"`
 	Status        string `json:"status,omitempty"`
 	Version       int    `json:"version,omitempty"`
+}
+
+type PreviewTemplateRequest struct {
+	Variables map[string]any `json:"variables"`
+}
+
+type PreviewTemplateResponse struct {
+	Subject       string `json:"subject"`
+	HTMLBody      string `json:"htmlBody"`
+	PlainTextBody string `json:"plainTextBody,omitempty"`
 }
 
 type TemplateResponse struct {
@@ -206,6 +218,55 @@ func (h *TemplateHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *TemplateHandler) Preview(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "template id is required")
+		return
+	}
+
+	if r.Body == nil {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "request body cannot be empty")
+		return
+	}
+
+	var req PreviewTemplateRequest
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&req); err != nil {
+		if errors.Is(err, io.EOF) {
+			response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "request body cannot be empty")
+			return
+		}
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "malformed JSON payload")
+		return
+	}
+
+	rendered, err := h.service.Preview(r.Context(), id, req.Variables)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			response.Error(w, http.StatusNotFound, "NOT_FOUND", "template not found")
+			return
+		}
+		if errors.Is(err, template.ErrInvalidInput) {
+			response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid template id")
+			return
+		}
+		if errors.Is(err, direct.ErrMissingVariable) {
+			response.Error(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+			return
+		}
+		h.logger.Error("failed to preview email template", logger.String("id", id), logger.Error(err))
+		response.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to preview template")
+		return
+	}
+
+	response.JSON(w, http.StatusOK, PreviewTemplateResponse{
+		Subject:       rendered.Subject,
+		HTMLBody:      rendered.HTMLBody,
+		PlainTextBody: rendered.PlainTextBody,
+	})
 }
 
 func toTemplateResponse(t *domain.EmailTemplate) TemplateResponse {

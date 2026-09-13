@@ -16,7 +16,18 @@ import (
 	"github.com/gmhelper/notify-api/internal/http/middleware"
 	"github.com/gmhelper/notify-api/internal/http/response"
 	"github.com/gmhelper/notify-api/internal/infra/logger"
+	"github.com/gmhelper/notify-api/internal/infra/userclient"
 )
+
+type mockDirectUserResolver struct{}
+
+func (m *mockDirectUserResolver) GetUserByID(ctx context.Context, id string) (*userclient.User, error) {
+	return &userclient.User{
+		ID:       id,
+		Username: "user_" + id,
+		Email:    id + "@example.com",
+	}, nil
+}
 
 type mockDirectRepo struct {
 	notifications map[string]*domain.DirectNotification
@@ -190,7 +201,7 @@ func setupDirectTestRouter() (http.Handler, *mockDirectRepo, *mockDirectAttemptR
 	}
 	sender := &mockDirectSender{}
 
-	directService := direct.NewService(tplRepo, directRepo)
+	directService := direct.NewService(tplRepo, directRepo, &mockDirectUserResolver{})
 	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, tplRepo, sender)
 	handler := NewDirectNotificationHandler(directService, deliveryService, log)
 

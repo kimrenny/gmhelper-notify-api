@@ -1,0 +1,90 @@
+package campaign
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"time"
+
+	"github.com/gmhelper/notify-api/internal/domain"
+	"github.com/google/uuid"
+)
+
+var (
+	ErrInvalidInput = errors.New("invalid campaign input")
+	ErrNotFound     = domain.ErrNotFound
+)
+
+type CreateInput struct {
+	Name         string
+	TemplateID   string
+	CampaignType string
+	Status       string
+	ScheduledAt  *time.Time
+}
+
+type Service struct {
+	repo domain.NotificationCampaignRepository
+}
+
+func NewService(repo domain.NotificationCampaignRepository) *Service {
+	return &Service{repo: repo}
+}
+
+func (s *Service) List(ctx context.Context) ([]*domain.NotificationCampaign, error) {
+	return s.repo.List(ctx)
+}
+
+func (s *Service) GetByID(ctx context.Context, id string) (*domain.NotificationCampaign, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, ErrInvalidInput
+	}
+	return s.repo.GetByID(ctx, id)
+}
+
+func (s *Service) Create(ctx context.Context, input CreateInput) (*domain.NotificationCampaign, error) {
+	name := strings.TrimSpace(input.Name)
+	templateID := strings.TrimSpace(input.TemplateID)
+	campaignType := strings.TrimSpace(input.CampaignType)
+	statusStr := strings.TrimSpace(input.Status)
+
+	if name == "" || templateID == "" {
+		return nil, ErrInvalidInput
+	}
+
+	if campaignType == "" {
+		campaignType = "broadcast"
+	}
+
+	status := domain.CampaignStatusDraft
+	if statusStr != "" {
+		status = domain.CampaignStatus(statusStr)
+		if !status.IsValid() {
+			return nil, ErrInvalidInput
+		}
+	}
+
+	now := time.Now().UTC()
+	scheduledAt := now
+	if input.ScheduledAt != nil {
+		scheduledAt = *input.ScheduledAt
+	}
+
+	campaign := &domain.NotificationCampaign{
+		ID:           uuid.NewString(),
+		Name:         name,
+		TemplateID:   templateID,
+		CampaignType: campaignType,
+		Status:       status,
+		ScheduledAt:  scheduledAt,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+
+	if err := s.repo.Create(ctx, campaign); err != nil {
+		return nil, err
+	}
+
+	return campaign, nil
+}

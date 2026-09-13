@@ -6,15 +6,23 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gmhelper/notify-api/internal/app/direct"
 	"github.com/gmhelper/notify-api/internal/domain"
 	"github.com/google/uuid"
 )
 
 var (
-	ErrInvalidInput = errors.New("invalid template input")
-	ErrNotFound     = domain.ErrNotFound
-	ErrConflict     = domain.ErrConflict
+	ErrInvalidInput    = errors.New("invalid template input")
+	ErrNotFound        = domain.ErrNotFound
+	ErrConflict        = domain.ErrConflict
+	ErrMissingVariable = direct.ErrMissingVariable
 )
+
+type RenderedTemplate struct {
+	Subject       string `json:"subject"`
+	HTMLBody      string `json:"htmlBody"`
+	PlainTextBody string `json:"plainTextBody,omitempty"`
+}
 
 type CreateInput struct {
 	TemplateKey   string
@@ -171,4 +179,27 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 		return ErrInvalidInput
 	}
 	return s.repo.Delete(ctx, id)
+}
+
+func (s *Service) Preview(ctx context.Context, id string, vars map[string]any) (*RenderedTemplate, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, ErrInvalidInput
+	}
+
+	tpl, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	rendered, err := direct.RenderEmail(tpl.Subject, tpl.HTMLBody, tpl.PlainTextBody, vars)
+	if err != nil {
+		return nil, err
+	}
+
+	return &RenderedTemplate{
+		Subject:       rendered.Subject,
+		HTMLBody:      rendered.HTMLBody,
+		PlainTextBody: rendered.PlainTextBody,
+	}, nil
 }

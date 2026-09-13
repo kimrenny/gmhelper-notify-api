@@ -15,15 +15,18 @@ import (
 
 	"github.com/gmhelper/notify-api/internal/api"
 	"github.com/gmhelper/notify-api/internal/api/handlers"
+	"github.com/gmhelper/notify-api/internal/app/campaign"
 	"github.com/gmhelper/notify-api/internal/app/direct"
 	"github.com/gmhelper/notify-api/internal/app/health"
 	"github.com/gmhelper/notify-api/internal/app/template"
+	"github.com/gmhelper/notify-api/internal/app/user"
 	"github.com/gmhelper/notify-api/internal/config"
 	"github.com/gmhelper/notify-api/internal/http/middleware"
 	"github.com/gmhelper/notify-api/internal/infra/auth"
 	"github.com/gmhelper/notify-api/internal/infra/logger"
 	"github.com/gmhelper/notify-api/internal/infra/postgres"
 	"github.com/gmhelper/notify-api/internal/infra/smtp"
+	"github.com/gmhelper/notify-api/internal/infra/userclient"
 )
 
 func main() {
@@ -66,13 +69,46 @@ func main() {
 	templateService := template.NewService(templateRepo)
 	templateHandler := handlers.NewTemplateHandler(templateService, log)
 
+	campaignRepo := postgres.NewNotificationCampaignRepository(db.DB())
+	campaignService := campaign.NewService(campaignRepo)
+	campaignHandler := handlers.NewCampaignHandler(campaignService, log)
+
 	directRepo := postgres.NewDirectNotificationRepository(db.DB())
 	attemptRepo := postgres.NewDeliveryAttemptRepository(db.DB())
 	smtpSender := smtp.NewClient(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom)
 
-	directService := direct.NewService(templateRepo, directRepo)
+	serviceTokenProvider, err := auth.NewServiceTokenProvider(auth.ServiceTokenProviderConfig{
+		Secret:   cfg.ServiceAuthSecret,
+		Issuer:   cfg.AuthIssuer,
+		Audience: cfg.ServiceAuthAudience,
+	})
+	if err != nil {
+		log.Fatal("failed to initialize service token provider", zapError(err))
+	}
+
+	var userService *user.Service
+	if cfg.GMHelperAPIBaseURL != "" {
+		userHTTPClient, err := userclient.NewClient(cfg.GMHelperAPIBaseURL, nil, serviceTokenProvider)
+		if err != nil {
+			log.Fatal("failed to initialize gmhelper-api user client", zapError(err))
+		}
+		userService, err = user.NewService(userHTTPClient)
+		if err != nil {
+			log.Fatal("failed to initialize user service", zapError(err))
+		}
+		log.Info("gmhelper-api user resolution service initialized", zapString("baseURL", cfg.GMHelperAPIBaseURL))
+	} else {
+		log.Info("gmhelper-api base URL not configured; user resolution service is disabled")
+	}
+
+	directService := direct.NewService(templateRepo, directRepo, userService)
 	deliveryService := direct.NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, templateRepo, smtpSender, cfg.WorkerMaxAttempts)
 	directHandler := handlers.NewDirectNotificationHandler(directService, deliveryService, log)
+
+	var userHandler *handlers.UserHandler
+	if userService != nil {
+		userHandler = handlers.NewUserHandler(userService, log)
+	}
 
 	jwtVerifier, err := auth.NewJWTVerifier(cfg.AuthSecret, cfg.AuthIssuer, cfg.AuthAudience)
 	if err != nil {
@@ -80,7 +116,7 @@ func main() {
 	}
 	authMiddleware := middleware.AdminAuth(jwtVerifier, log)
 
-	router := api.NewRouter(healthHandler, templateHandler, directHandler, authMiddleware)
+	router := api.NewRouter(healthHandler, templateHandler, campaignHandler, directHandler, userHandler, authMiddleware)
 	handler := middleware.Chain(router,
 		middleware.RequestID(),
 		middleware.Logging(log),
