@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -29,6 +30,7 @@ type Config struct {
 	WorkerInterval     time.Duration
 	WorkerStaleTimeout time.Duration
 	WorkerMaxAttempts  int
+	GMHelperAPIBaseURL string
 }
 
 func Load() (*Config, error) {
@@ -91,6 +93,7 @@ func Load() (*Config, error) {
 		WorkerInterval:     workerInterval,
 		WorkerStaleTimeout: workerStaleTimeout,
 		WorkerMaxAttempts:  workerMaxAttempts,
+		GMHelperAPIBaseURL: envOrDefault("GMHELPER_API_BASE_URL", envOrDefault("NOTIFY_GMHELPER_API_BASE_URL", "")),
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -180,6 +183,12 @@ func (c *Config) Validate() error {
 	}
 	if c.WorkerEnabled && c.WorkerMaxAttempts <= 0 {
 		return fmt.Errorf("NOTIFY_WORKER_MAX_ATTEMPTS must be a positive integer when worker is enabled")
+	}
+	if strings.TrimSpace(c.GMHelperAPIBaseURL) != "" {
+		parsed, err := url.ParseRequestURI(strings.TrimSpace(c.GMHelperAPIBaseURL))
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return fmt.Errorf("invalid GMHELPER_API_BASE_URL: must be a valid http or https URL with host")
+		}
 	}
 	return nil
 }
