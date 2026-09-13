@@ -135,16 +135,34 @@ func TestConfigValidate_ProductionAuthSecretRequired(t *testing.T) {
 
 	// Explicit production secret allowed
 	cfgValidProd := &Config{
-		Env:         "production",
-		DatabaseURL: "postgres://localhost/test",
-		SMTPHost:    "smtp.example.com",
-		SMTPFrom:    "test@example.com",
-		HTTPPort:    8080,
-		SMTPPort:    587,
-		AuthSecret:  "c3VwZXItc2VjdXJlLXByb2R1Y3Rpb24tc2VjcmV0LXZhbHVl",
+		Env:                 "production",
+		DatabaseURL:         "postgres://localhost/test",
+		SMTPHost:            "smtp.example.com",
+		SMTPFrom:            "test@example.com",
+		HTTPPort:            8080,
+		SMTPPort:            587,
+		AuthSecret:          "c3VwZXItc2VjdXJlLXByb2R1Y3Rpb24tc2VjcmV0LXZhbHVl",
+		ServiceAuthSecret:   "c3VwZXItc2VjdXJlLXByb2R1Y3Rpb24tc2VjcmV0LXZhbHVl",
+		ServiceAuthAudience: "gmhelper-api",
 	}
 	if err := cfgValidProd.Validate(); err != nil {
 		t.Fatalf("expected valid production config, got: %v", err)
+	}
+
+	// Default dev service secret rejected in production
+	cfgDefaultServiceSecret := &Config{
+		Env:                 "production",
+		DatabaseURL:         "postgres://localhost/test",
+		SMTPHost:            "smtp.example.com",
+		SMTPFrom:            "test@example.com",
+		HTTPPort:            8080,
+		SMTPPort:            587,
+		AuthSecret:          "c3VwZXItc2VjdXJlLXByb2R1Y3Rpb24tc2VjcmV0LXZhbHVl",
+		ServiceAuthSecret:   "Z21oZWxwZXItZGVmYXVsdC1qd3Qtc2VjcmV0LTMyYiE=",
+		ServiceAuthAudience: "gmhelper-api",
+	}
+	if err := cfgDefaultServiceSecret.Validate(); err == nil {
+		t.Fatal("expected error in production when using default service auth secret, got nil")
 	}
 }
 
