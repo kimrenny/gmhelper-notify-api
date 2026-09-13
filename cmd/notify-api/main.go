@@ -18,12 +18,14 @@ import (
 	"github.com/gmhelper/notify-api/internal/app/direct"
 	"github.com/gmhelper/notify-api/internal/app/health"
 	"github.com/gmhelper/notify-api/internal/app/template"
+	"github.com/gmhelper/notify-api/internal/app/user"
 	"github.com/gmhelper/notify-api/internal/config"
 	"github.com/gmhelper/notify-api/internal/http/middleware"
 	"github.com/gmhelper/notify-api/internal/infra/auth"
 	"github.com/gmhelper/notify-api/internal/infra/logger"
 	"github.com/gmhelper/notify-api/internal/infra/postgres"
 	"github.com/gmhelper/notify-api/internal/infra/smtp"
+	"github.com/gmhelper/notify-api/internal/infra/userclient"
 )
 
 func main() {
@@ -79,6 +81,31 @@ func main() {
 		log.Fatal("failed to initialize jwt verifier", zapError(err))
 	}
 	authMiddleware := middleware.AdminAuth(jwtVerifier, log)
+
+	serviceTokenProvider, err := auth.NewServiceTokenProvider(auth.ServiceTokenProviderConfig{
+		Secret:   cfg.ServiceAuthSecret,
+		Issuer:   cfg.AuthIssuer,
+		Audience: cfg.ServiceAuthAudience,
+	})
+	if err != nil {
+		log.Fatal("failed to initialize service token provider", zapError(err))
+	}
+
+	var userService *user.Service
+	if cfg.GMHelperAPIBaseURL != "" {
+		userHTTPClient, err := userclient.NewClient(cfg.GMHelperAPIBaseURL, nil, serviceTokenProvider)
+		if err != nil {
+			log.Fatal("failed to initialize gmhelper-api user client", zapError(err))
+		}
+		userService, err = user.NewService(userHTTPClient)
+		if err != nil {
+			log.Fatal("failed to initialize user service", zapError(err))
+		}
+		_ = userService
+		log.Info("gmhelper-api user resolution service initialized", zapString("baseURL", cfg.GMHelperAPIBaseURL))
+	} else {
+		log.Info("gmhelper-api base URL not configured; user resolution service is disabled")
+	}
 
 	router := api.NewRouter(healthHandler, templateHandler, directHandler, authMiddleware)
 	handler := middleware.Chain(router,
