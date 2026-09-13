@@ -555,3 +555,197 @@ func TestService_CreateDirectNotification_ResolverUnavailable(t *testing.T) {
 		t.Fatalf("expected ErrUserResolverUnavailable when resolver is nil and external user requested, got: %v", err)
 	}
 }
+
+func TestService_CreateDirectNotification_UserVariables_Personalization(t *testing.T) {
+	mockResolver := &mockUserResolver{
+		getUserByIDFunc: func(ctx context.Context, id string) (*userclient.User, error) {
+			return &userclient.User{
+				ID:       id,
+				Username: "janedoe",
+				Email:    "jane@example.com",
+				Role:     "Manager",
+				Language: "fr",
+			}, nil
+		},
+	}
+
+	svc, tplRepo, _ := setupTestService(mockResolver)
+
+	activeTpl := &domain.EmailTemplate{
+		ID:            "tpl-user-vars",
+		TemplateKey:   "account_summary",
+		Subject:       "Summary for {{username}} (Role: {{role}})",
+		HTMLBody:      "<p>Email: {{email}}, Lang: {{language}}</p>",
+		PlainTextBody: "Email: {{email}}, Lang: {{language}}",
+		Status:        domain.TemplateStatusActive,
+		Version:       1,
+	}
+	tplRepo.templates[activeTpl.ID] = activeTpl
+
+	input := CreateInput{
+		TemplateID:     activeTpl.ID,
+		ExternalUserID: "user-456",
+		RecipientEmail: "jane@example.com",
+	}
+
+	res, err := svc.Create(context.Background(), input)
+	if err != nil {
+		t.Fatalf("expected Create success with resolved user variables, got: %v", err)
+	}
+
+	expectedSubject := "Summary for janedoe (Role: Manager)"
+	if res.Rendered.Subject != expectedSubject {
+		t.Errorf("expected subject '%s', got '%s'", expectedSubject, res.Rendered.Subject)
+	}
+
+	expectedHTML := "<p>Email: jane@example.com, Lang: fr</p>"
+	if res.Rendered.HTMLBody != expectedHTML {
+		t.Errorf("expected HTML body '%s', got '%s'", expectedHTML, res.Rendered.HTMLBody)
+	}
+
+	expectedPlain := "Email: jane@example.com, Lang: fr"
+	if res.Rendered.PlainTextBody != expectedPlain {
+		t.Errorf("expected plain body '%s', got '%s'", expectedPlain, res.Rendered.PlainTextBody)
+	}
+}
+
+func TestService_CreateDirectNotification_ExplicitVariablePrecedence(t *testing.T) {
+	mockResolver := &mockUserResolver{
+		getUserByIDFunc: func(ctx context.Context, id string) (*userclient.User, error) {
+			return &userclient.User{
+				ID:       id,
+				Username: "johndoe",
+				Email:    "john.original@example.com",
+				Role:     "User",
+				Language: "en",
+			}, nil
+		},
+	}
+
+	svc, tplRepo, _ := setupTestService(mockResolver)
+
+	activeTpl := &domain.EmailTemplate{
+		ID:            "tpl-precedence",
+		TemplateKey:   "welcome_precedence",
+		Subject:       "Hello {{username}}",
+		HTMLBody:      "<p>User: {{username}}, Email: {{email}}, Extra: {{extra}}</p>",
+		PlainTextBody: "User: {{username}}, Email: {{email}}, Extra: {{extra}}",
+		Status:        domain.TemplateStatusActive,
+		Version:       1,
+	}
+	tplRepo.templates[activeTpl.ID] = activeTpl
+
+	input := CreateInput{
+		TemplateID:     activeTpl.ID,
+		ExternalUserID: "user-789",
+		RecipientEmail: "custom@example.com",
+		Payload: map[string]any{
+			"username": "Custom Name",              // overrides resolved username
+			"email":    "custom.email@example.com", // overrides resolved email
+			"extra":    "Extra Value",
+		},
+	}
+
+	res, err := svc.Create(context.Background(), input)
+	if err != nil {
+		t.Fatalf("expected Create success, got: %v", err)
+	}
+
+	if res.Rendered.Subject != "Hello Custom Name" {
+		t.Errorf("expected explicit username precedence 'Hello Custom Name', got '%s'", res.Rendered.Subject)
+	}
+
+	expectedHTML := "<p>User: Custom Name, Email: custom.email@example.com, Extra: Extra Value</p>"
+	if res.Rendered.HTMLBody != expectedHTML {
+		t.Errorf("expected HTML body '%s', got '%s'", expectedHTML, res.Rendered.HTMLBody)
+	}
+}
+
+func TestService_CreateDirectNotification_UserVariables_HTMLEscaping(t *testing.T) {
+	mockResolver := &mockUserResolver{
+		getUserByIDFunc: func(ctx context.Context, id string) (*userclient.User, error) {
+			return &userclient.User{
+				ID:       id,
+				Username: "<script>alert('xss')</script>",
+				Email:    "test&user@example.com",
+				Role:     "<b>Admin</b>",
+				Language: "en",
+			}, nil
+		},
+	}
+
+	svc, tplRepo, _ := setupTestService(mockResolver)
+
+	activeTpl := &domain.EmailTemplate{
+		ID:            "tpl-html-escape",
+		TemplateKey:   "security_test",
+		Subject:       "User {{username}}",
+		HTMLBody:      "<p>Name: {{username}}, Email: {{email}}, Role: {{role}}</p>",
+		PlainTextBody: "Name: {{username}}, Email: {{email}}, Role: {{role}}",
+		Status:        domain.TemplateStatusActive,
+		Version:       1,
+	}
+	tplRepo.templates[activeTpl.ID] = activeTpl
+
+	input := CreateInput{
+		TemplateID:     activeTpl.ID,
+		ExternalUserID: "user-xss",
+		RecipientEmail: "test@example.com",
+	}
+
+	res, err := svc.Create(context.Background(), input)
+	if err != nil {
+		t.Fatalf("expected Create success, got: %v", err)
+	}
+
+	// HTML body MUST be escaped
+	expectedHTML := "<p>Name: &lt;script&gt;alert(&#39;xss&#39;)&lt;/script&gt;, Email: test&amp;user@example.com, Role: &lt;b&gt;Admin&lt;/b&gt;</p>"
+	if res.Rendered.HTMLBody != expectedHTML {
+		t.Errorf("expected escaped HTML '%s', got '%s'", expectedHTML, res.Rendered.HTMLBody)
+	}
+
+	// Plain text and subject MUST NOT be escaped
+	if res.Rendered.Subject != "User <script>alert('xss')</script>" {
+		t.Errorf("unexpected subject: %s", res.Rendered.Subject)
+	}
+	if res.Rendered.PlainTextBody != "Name: <script>alert('xss')</script>, Email: test&user@example.com, Role: <b>Admin</b>" {
+		t.Errorf("unexpected plain text body: %s", res.Rendered.PlainTextBody)
+	}
+}
+
+func TestMergeUserPayload_ApprovedFieldsOnly(t *testing.T) {
+	u := &userclient.User{
+		ID:               "secret-internal-id",
+		Username:         "alice",
+		Email:            "alice@example.com",
+		Role:             "Admin",
+		Language:         "en",
+		IsActive:         true,
+		IsBlocked:        false,
+		RegistrationDate: time.Now().UTC(),
+	}
+
+	merged := MergeUserPayload(u, nil)
+
+	// Ensure approved fields exist
+	if merged["username"] != "alice" {
+		t.Errorf("expected username alice, got %v", merged["username"])
+	}
+	if merged["email"] != "alice@example.com" {
+		t.Errorf("expected email alice@example.com, got %v", merged["email"])
+	}
+	if merged["role"] != "Admin" {
+		t.Errorf("expected role Admin, got %v", merged["role"])
+	}
+	if merged["language"] != "en" {
+		t.Errorf("expected language en, got %v", merged["language"])
+	}
+
+	// Ensure sensitive/unapproved fields are NOT mapped into template variables
+	unapprovedKeys := []string{"id", "ID", "password", "hash", "token", "isActive", "isBlocked", "registrationDate"}
+	for _, key := range unapprovedKeys {
+		if _, exists := merged[key]; exists {
+			t.Errorf("unapproved key '%s' must not be exposed in template variables", key)
+		}
+	}
+}

@@ -114,15 +114,21 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*CreateResult,
 		return nil, fmt.Errorf("%w: template '%s' has status '%s'", ErrTemplateInactive, tpl.ID, tpl.Status)
 	}
 
-	// 4. Render email content with payload variables for validation
-	rendered, err := RenderEmail(tpl.Subject, tpl.HTMLBody, tpl.PlainTextBody, input.Payload)
+	// 4. Merge resolved user variables with explicitly provided payload (explicit variables take precedence)
+	renderPayload := input.Payload
+	if resolvedUser != nil {
+		renderPayload = MergeUserPayload(resolvedUser, input.Payload)
+	}
+
+	// 5. Render email content with payload variables for validation
+	rendered, err := RenderEmail(tpl.Subject, tpl.HTMLBody, tpl.PlainTextBody, renderPayload)
 	if err != nil {
 		return nil, err
 	}
 
 	var payloadBytes json.RawMessage
-	if input.Payload != nil {
-		bytes, err := json.Marshal(input.Payload)
+	if renderPayload != nil {
+		bytes, err := json.Marshal(renderPayload)
 		if err != nil {
 			return nil, fmt.Errorf("%w: failed to serialize payload: %v", ErrInvalidInput, err)
 		}
@@ -180,4 +186,24 @@ func isValidEmail(email string) bool {
 		return false
 	}
 	return true
+}
+
+// MergeUserPayload maps approved user fields (username, email, role, language) into the template payload.
+// Explicit caller-provided payload variables take precedence over resolved user fields.
+func MergeUserPayload(u *userclient.User, payload map[string]any) map[string]any {
+	if u == nil {
+		return payload
+	}
+
+	merged := make(map[string]any, len(payload)+4)
+	merged["username"] = u.Username
+	merged["email"] = u.Email
+	merged["role"] = u.Role
+	merged["language"] = u.Language
+
+	for k, v := range payload {
+		merged[k] = v
+	}
+
+	return merged
 }
