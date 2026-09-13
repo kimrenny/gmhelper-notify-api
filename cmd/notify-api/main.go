@@ -100,13 +100,18 @@ func main() {
 	deliveryService := direct.NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, templateRepo, smtpSender, cfg.WorkerMaxAttempts)
 	directHandler := handlers.NewDirectNotificationHandler(directService, deliveryService, log)
 
+	var userHandler *handlers.UserHandler
+	if userService != nil {
+		userHandler = handlers.NewUserHandler(userService, log)
+	}
+
 	jwtVerifier, err := auth.NewJWTVerifier(cfg.AuthSecret, cfg.AuthIssuer, cfg.AuthAudience)
 	if err != nil {
 		log.Fatal("failed to initialize jwt verifier", zapError(err))
 	}
 	authMiddleware := middleware.AdminAuth(jwtVerifier, log)
 
-	router := api.NewRouter(healthHandler, templateHandler, directHandler, authMiddleware)
+	router := api.NewRouter(healthHandler, templateHandler, directHandler, userHandler, authMiddleware)
 	handler := middleware.Chain(router,
 		middleware.RequestID(),
 		middleware.Logging(log),

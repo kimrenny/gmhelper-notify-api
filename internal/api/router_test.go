@@ -14,10 +14,12 @@ import (
 	"github.com/gmhelper/notify-api/internal/app/email"
 	"github.com/gmhelper/notify-api/internal/app/health"
 	"github.com/gmhelper/notify-api/internal/app/template"
+	"github.com/gmhelper/notify-api/internal/app/user"
 	"github.com/gmhelper/notify-api/internal/domain"
 	"github.com/gmhelper/notify-api/internal/http/middleware"
 	"github.com/gmhelper/notify-api/internal/infra/auth"
 	"github.com/gmhelper/notify-api/internal/infra/logger"
+	"github.com/gmhelper/notify-api/internal/infra/userclient"
 )
 
 const (
@@ -120,7 +122,7 @@ func TestRouter_HealthAndReady(t *testing.T) {
 	pinger := &dummyPinger{err: nil}
 	readiness := health.NewReadinessService(pinger)
 	healthHandler := handlers.NewHealthHandler(readiness, log)
-	router := NewRouter(healthHandler, nil, nil, nil)
+	router := NewRouter(healthHandler, nil, nil, nil, nil)
 
 	// 1. GET /health
 	reqHealth := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -155,7 +157,7 @@ func TestRouter_NotFoundJSON(t *testing.T) {
 	pinger := &dummyPinger{err: nil}
 	readiness := health.NewReadinessService(pinger)
 	healthHandler := handlers.NewHealthHandler(readiness, log)
-	router := NewRouter(healthHandler, nil, nil, nil)
+	router := NewRouter(healthHandler, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/unknown-endpoint", nil)
 	rec := httptest.NewRecorder()
@@ -202,7 +204,7 @@ func TestRouter_DirectNotificationsRouting_AuthAndPrecedence(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.Authenticate(verifier, log)
 
-	router := NewRouter(nil, nil, directHandler, authMw)
+	router := NewRouter(nil, nil, directHandler, nil, authMw)
 
 	validToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -281,10 +283,14 @@ func TestRouter_AdministrativeRoutes_SecurityMatrix(t *testing.T) {
 	readiness := health.NewReadinessService(pinger)
 	healthHandler := handlers.NewHealthHandler(readiness, log)
 
+	mockResolver := &routerMockUserResolver{}
+	userService, _ := user.NewService(mockResolver)
+	userHandler := handlers.NewUserHandler(userService, log)
+
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(healthHandler, templateHandler, directHandler, authMw)
+	router := NewRouter(healthHandler, templateHandler, directHandler, userHandler, authMw)
 
 	adminToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-admin", "admin", 15*time.Minute)
 	ownerToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-owner", "owner", 15*time.Minute)
@@ -309,6 +315,7 @@ func TestRouter_AdministrativeRoutes_SecurityMatrix(t *testing.T) {
 		{method: http.MethodGet, path: "/api/v1/notifications/direct/pending"},
 		{method: http.MethodGet, path: "/api/v1/notifications/direct/test-notif-1"},
 		{method: http.MethodPost, path: "/api/v1/notifications/direct/test-notif-1/deliver"},
+		{method: http.MethodGet, path: "/api/v1/users/search"},
 	}
 
 	for _, ep := range endpoints {
@@ -394,5 +401,78 @@ func TestRouter_AdministrativeRoutes_SecurityMatrix(t *testing.T) {
 				t.Errorf("expected request to pass auth boundary for service role, got %d", rec.Code)
 			}
 		})
+	}
+}
+
+type routerMockUserResolver struct {
+	searchUsersFunc func(ctx context.Context, query string, limit int) ([]userclient.User, error)
+}
+
+func (m *routerMockUserResolver) GetUserByID(ctx context.Context, id string) (*userclient.User, error) {
+	return nil, nil
+}
+
+func (m *routerMockUserResolver) SearchUsers(ctx context.Context, query string, limit int) ([]userclient.User, error) {
+	if m.searchUsersFunc != nil {
+		return m.searchUsersFunc(ctx, query, limit)
+	}
+	return nil, nil
+}
+
+func TestRouter_UserSearchRouting(t *testing.T) {
+	log, _ := logger.NewLogger("info")
+	mockResolver := &routerMockUserResolver{
+		searchUsersFunc: func(ctx context.Context, query string, limit int) ([]userclient.User, error) {
+			if query == "alice" {
+				return []userclient.User{
+					{
+						ID:       "user-alice-id",
+						Username: "alice",
+						Email:    "alice@example.com",
+						Role:     "User",
+						Language: "EN",
+						IsActive: true,
+					},
+				}, nil
+			}
+			return []userclient.User{}, nil
+		},
+	}
+	userService, _ := user.NewService(mockResolver)
+	userHandler := handlers.NewUserHandler(userService, log)
+
+	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
+	authMw := middleware.AdminAuth(verifier, log)
+
+	router := NewRouter(nil, nil, nil, userHandler, authMw)
+
+	adminToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-admin", "admin", 15*time.Minute)
+
+	// 1. Search with matching query
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/search?q=alice", nil)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	var results []handlers.UserResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &results); err != nil {
+		t.Fatalf("failed to decode JSON: %v", err)
+	}
+	if len(results) != 1 || results[0].Username != "alice" {
+		t.Errorf("unexpected results: %+v", results)
+	}
+
+	// 2. Search without query -> 400 Bad Request
+	reqEmpty := httptest.NewRequest(http.MethodGet, "/api/v1/users/search", nil)
+	reqEmpty.Header.Set("Authorization", "Bearer "+adminToken)
+	recEmpty := httptest.NewRecorder()
+	router.ServeHTTP(recEmpty, reqEmpty)
+
+	if recEmpty.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 Bad Request for missing query, got %d", recEmpty.Code)
 	}
 }

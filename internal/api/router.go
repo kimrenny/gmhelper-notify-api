@@ -12,6 +12,7 @@ func NewRouter(
 	healthHandler *handlers.HealthHandler,
 	templateHandler *handlers.TemplateHandler,
 	directHandler *handlers.DirectNotificationHandler,
+	userHandler *handlers.UserHandler,
 	authMiddleware middleware.Middleware,
 ) http.Handler {
 	mux := http.NewServeMux()
@@ -41,6 +42,11 @@ func NewRouter(
 		apiV1Mux.HandleFunc("GET /notifications/direct/pending", directHandler.ListPending)
 		apiV1Mux.HandleFunc("GET /notifications/direct/{id}", directHandler.GetByID)
 		apiV1Mux.HandleFunc("POST /notifications/direct/{id}/deliver", directHandler.Deliver)
+	}
+
+	// User resolution & search endpoints
+	if userHandler != nil {
+		apiV1Mux.HandleFunc("GET /users/search", userHandler.Search)
 	}
 
 	// Fallback for unhandled /api/v1/ routes

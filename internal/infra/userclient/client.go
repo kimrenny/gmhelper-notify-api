@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,6 +46,7 @@ type apiResponse[T any] struct {
 // Client defines the interface for resolving user information from gmhelper-api.
 type Client interface {
 	GetUserByID(ctx context.Context, id string) (*User, error)
+	SearchUsers(ctx context.Context, query string, limit int) ([]User, error)
 }
 
 // HTTPClient implements Client using HTTP requests to gmhelper-api.
@@ -174,4 +176,83 @@ func (c *HTTPClient) GetUserByID(ctx context.Context, id string) (*User, error) 
 	}
 
 	return envelope.Data, nil
+}
+
+// SearchUsers queries gmhelper-api at GET /api/v1/internal/users/search?query={query}&limit={limit} and decodes matching users.
+func (c *HTTPClient) SearchUsers(ctx context.Context, query string, limit int) ([]User, error) {
+	trimmedQuery := strings.TrimSpace(query)
+	if trimmedQuery == "" {
+		return nil, fmt.Errorf("%w: search query cannot be empty", ErrInvalidInput)
+	}
+
+	token, err := c.tokenProvider.Token(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrTokenAcquisition, err)
+	}
+	trimmedToken := strings.TrimSpace(token)
+	if trimmedToken == "" {
+		return nil, fmt.Errorf("%w: returned empty token", ErrTokenAcquisition)
+	}
+
+	params := url.Values{}
+	params.Set("query", trimmedQuery)
+	if limit > 0 {
+		params.Set("limit", strconv.Itoa(limit))
+	}
+
+	endpoint := fmt.Sprintf("%s/api/v1/internal/users/search?%s", c.baseURL, params.Encode())
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+trimmedToken)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request to gmhelper-api failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB limit
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if resp.StatusCode >= 500 {
+		var errEnvelope apiResponse[any]
+		if len(bodyBytes) > 0 && json.Unmarshal(bodyBytes, &errEnvelope) == nil && errEnvelope.Message != nil && *errEnvelope.Message != "" {
+			return nil, fmt.Errorf("%w: status %d: %s", ErrServer, resp.StatusCode, *errEnvelope.Message)
+		}
+		return nil, fmt.Errorf("%w: status %d", ErrServer, resp.StatusCode)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var errEnvelope apiResponse[any]
+		if len(bodyBytes) > 0 && json.Unmarshal(bodyBytes, &errEnvelope) == nil && errEnvelope.Message != nil && *errEnvelope.Message != "" {
+			return nil, fmt.Errorf("%w: status %d: %s", ErrUnexpected, resp.StatusCode, *errEnvelope.Message)
+		}
+		return nil, fmt.Errorf("%w: status %d", ErrUnexpected, resp.StatusCode)
+	}
+
+	var envelope apiResponse[[]User]
+	if err := json.Unmarshal(bodyBytes, &envelope); err != nil {
+		return nil, fmt.Errorf("%w: failed to decode response JSON: %v", ErrUnexpected, err)
+	}
+
+	if !envelope.Success {
+		msg := "operation unsuccessful"
+		if envelope.Message != nil && *envelope.Message != "" {
+			msg = *envelope.Message
+		}
+		return nil, fmt.Errorf("%w: %s", ErrAPIUnsuccessful, msg)
+	}
+
+	if envelope.Data == nil {
+		return nil, fmt.Errorf("%w: response data is nil", ErrUnexpected)
+	}
+
+	return *envelope.Data, nil
 }

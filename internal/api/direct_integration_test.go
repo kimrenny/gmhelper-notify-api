@@ -103,7 +103,7 @@ func setupIntegrationServer(
 	jwtVerifier := auth.MustNewJWTVerifier(intTestSecret, intTestIssuer, intTestAudience)
 	authMiddleware := middleware.AdminAuth(jwtVerifier, log)
 
-	router := NewRouter(healthHandler, templateHandler, directHandler, authMiddleware)
+	router := NewRouter(healthHandler, templateHandler, directHandler, nil, authMiddleware)
 	return router, templateRepo, directRepo, attemptRepo
 }
 
@@ -114,6 +114,16 @@ func (t *testUserResolver) GetUserByID(ctx context.Context, id string) (*usercli
 		ID:       id,
 		Username: "user_" + id,
 		Email:    id + "@example.com",
+	}, nil
+}
+
+func (t *testUserResolver) SearchUsers(ctx context.Context, query string, limit int) ([]userclient.User, error) {
+	return []userclient.User{
+		{
+			ID:       "search-id-1",
+			Username: query,
+			Email:    query + "@example.com",
+		},
 	}, nil
 }
 

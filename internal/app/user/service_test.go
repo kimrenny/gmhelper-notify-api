@@ -11,11 +11,19 @@ import (
 
 type mockUserResolver struct {
 	getUserByIDFunc func(ctx context.Context, id string) (*userclient.User, error)
+	searchUsersFunc func(ctx context.Context, query string, limit int) ([]userclient.User, error)
 }
 
 func (m *mockUserResolver) GetUserByID(ctx context.Context, id string) (*userclient.User, error) {
 	if m.getUserByIDFunc != nil {
 		return m.getUserByIDFunc(ctx, id)
+	}
+	return nil, nil
+}
+
+func (m *mockUserResolver) SearchUsers(ctx context.Context, query string, limit int) ([]userclient.User, error) {
+	if m.searchUsersFunc != nil {
+		return m.searchUsersFunc(ctx, query, limit)
 	}
 	return nil, nil
 }
@@ -182,5 +190,128 @@ func TestService_GetUserByID_ResolverErrorPropagation(t *testing.T) {
 	_, err := svc.GetUserByID(context.Background(), "user-id-1")
 	if !errors.Is(err, customErr) {
 		t.Errorf("expected error %v, got %v", customErr, err)
+	}
+}
+
+func TestService_SearchUsers_Success(t *testing.T) {
+	expected := []userclient.User{
+		{ID: "u-1", Username: "alice", Email: "alice@example.com"},
+		{ID: "u-2", Username: "alicia", Email: "alicia@example.com"},
+	}
+
+	var capturedQuery string
+	var capturedLimit int
+
+	mock := &mockUserResolver{
+		searchUsersFunc: func(ctx context.Context, query string, limit int) ([]userclient.User, error) {
+			capturedQuery = query
+			capturedLimit = limit
+			return expected, nil
+		},
+	}
+
+	svc, _ := NewService(mock)
+
+	users, err := svc.SearchUsers(context.Background(), "  alice  ", 25)
+	if err != nil {
+		t.Fatalf("expected success, got error: %v", err)
+	}
+
+	if capturedQuery != "alice" {
+		t.Errorf("expected trimmed query 'alice', got '%s'", capturedQuery)
+	}
+	if capturedLimit != 25 {
+		t.Errorf("expected limit 25, got %d", capturedLimit)
+	}
+	if len(users) != 2 {
+		t.Errorf("expected 2 users, got %d", len(users))
+	}
+}
+
+func TestService_SearchUsers_EmptyOrWhitespaceQuery(t *testing.T) {
+	var invoked bool
+	mock := &mockUserResolver{
+		searchUsersFunc: func(ctx context.Context, query string, limit int) ([]userclient.User, error) {
+			invoked = true
+			return nil, nil
+		},
+	}
+
+	svc, _ := NewService(mock)
+
+	// Empty
+	_, err := svc.SearchUsers(context.Background(), "", 20)
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput for empty query, got: %v", err)
+	}
+
+	// Whitespace
+	_, err = svc.SearchUsers(context.Background(), "   \t\n   ", 20)
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput for whitespace query, got: %v", err)
+	}
+
+	if invoked {
+		t.Error("expected resolver NOT to be invoked on invalid query")
+	}
+}
+
+func TestService_SearchUsers_LimitClamping(t *testing.T) {
+	var passedLimit int
+	mock := &mockUserResolver{
+		searchUsersFunc: func(ctx context.Context, query string, limit int) ([]userclient.User, error) {
+			passedLimit = limit
+			return []userclient.User{}, nil
+		},
+	}
+
+	svc, _ := NewService(mock)
+
+	// 1. Limit <= 0 -> default 20
+	_, _ = svc.SearchUsers(context.Background(), "test", 0)
+	if passedLimit != DefaultSearchLimit {
+		t.Errorf("expected default limit %d for limit 0, got %d", DefaultSearchLimit, passedLimit)
+	}
+
+	_, _ = svc.SearchUsers(context.Background(), "test", -10)
+	if passedLimit != DefaultSearchLimit {
+		t.Errorf("expected default limit %d for negative limit, got %d", DefaultSearchLimit, passedLimit)
+	}
+
+	// 2. Limit > MaxSearchLimit (50) -> clamped to 50
+	_, _ = svc.SearchUsers(context.Background(), "test", 100)
+	if passedLimit != MaxSearchLimit {
+		t.Errorf("expected clamped limit %d for limit 100, got %d", MaxSearchLimit, passedLimit)
+	}
+
+	// 3. Valid limit preserved
+	_, _ = svc.SearchUsers(context.Background(), "test", 35)
+	if passedLimit != 35 {
+		t.Errorf("expected limit 35 to be preserved, got %d", passedLimit)
+	}
+}
+
+func TestService_SearchUsers_ContextAndErrorPropagation(t *testing.T) {
+	type traceKey struct{}
+	var receivedCtx context.Context
+	customErr := errors.New("upstream connection reset")
+
+	mock := &mockUserResolver{
+		searchUsersFunc: func(ctx context.Context, query string, limit int) ([]userclient.User, error) {
+			receivedCtx = ctx
+			return nil, customErr
+		},
+	}
+
+	svc, _ := NewService(mock)
+
+	reqCtx := context.WithValue(context.Background(), traceKey{}, "trace-val")
+	_, err := svc.SearchUsers(reqCtx, "alice", 20)
+
+	if !errors.Is(err, customErr) {
+		t.Errorf("expected error %v, got: %v", customErr, err)
+	}
+	if receivedCtx == nil || receivedCtx.Value(traceKey{}) != "trace-val" {
+		t.Errorf("expected context with trace value to be passed to resolver")
 	}
 }
