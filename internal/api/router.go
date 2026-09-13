@@ -11,6 +11,7 @@ import (
 func NewRouter(
 	healthHandler *handlers.HealthHandler,
 	templateHandler *handlers.TemplateHandler,
+	campaignHandler *handlers.CampaignHandler,
 	directHandler *handlers.DirectNotificationHandler,
 	userHandler *handlers.UserHandler,
 	authMiddleware middleware.Middleware,
@@ -34,6 +35,13 @@ func NewRouter(
 		apiV1Mux.HandleFunc("PUT /templates/{id}", templateHandler.Update)
 		apiV1Mux.HandleFunc("DELETE /templates/{id}", templateHandler.Delete)
 		apiV1Mux.HandleFunc("POST /templates/{id}/preview", templateHandler.Preview)
+	}
+
+	// Campaign endpoints
+	if campaignHandler != nil {
+		apiV1Mux.HandleFunc("GET /campaigns", campaignHandler.List)
+		apiV1Mux.HandleFunc("GET /campaigns/{id}", campaignHandler.GetByID)
+		apiV1Mux.HandleFunc("POST /campaigns", campaignHandler.Create)
 	}
 
 	// Direct Notification endpoints

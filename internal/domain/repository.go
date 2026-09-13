@@ -31,6 +31,7 @@ type NotificationCampaignRepository interface {
 	UpdateStatus(ctx context.Context, id string, status CampaignStatus, startedAt, completedAt *time.Time) error
 	ListByStatus(ctx context.Context, status CampaignStatus) ([]*NotificationCampaign, error)
 	ListScheduled(ctx context.Context, after time.Time) ([]*NotificationCampaign, error)
+	List(ctx context.Context) ([]*NotificationCampaign, error)
 }
 
 type CampaignRecipientRepository interface {

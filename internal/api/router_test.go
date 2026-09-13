@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gmhelper/notify-api/internal/api/handlers"
+	"github.com/gmhelper/notify-api/internal/app/campaign"
 	"github.com/gmhelper/notify-api/internal/app/direct"
 	"github.com/gmhelper/notify-api/internal/app/email"
 	"github.com/gmhelper/notify-api/internal/app/health"
@@ -111,6 +112,35 @@ func (m *routerMockTplRepo) List(ctx context.Context) ([]*domain.EmailTemplate, 
 	return nil, nil
 }
 
+type routerMockCampaignRepo struct {
+	campaigns map[string]*domain.NotificationCampaign
+}
+
+func (m *routerMockCampaignRepo) GetByID(ctx context.Context, id string) (*domain.NotificationCampaign, error) {
+	if c, ok := m.campaigns[id]; ok {
+		return c, nil
+	}
+	return nil, domain.ErrNotFound
+}
+func (m *routerMockCampaignRepo) Create(ctx context.Context, c *domain.NotificationCampaign) error {
+	m.campaigns[c.ID] = c
+	return nil
+}
+func (m *routerMockCampaignRepo) UpdateStatus(ctx context.Context, id string, status domain.CampaignStatus, startedAt, completedAt *time.Time) error {
+	return nil
+}
+func (m *routerMockCampaignRepo) ListByStatus(ctx context.Context, status domain.CampaignStatus) ([]*domain.NotificationCampaign, error) {
+	return nil, nil
+}
+func (m *routerMockCampaignRepo) ListScheduled(ctx context.Context, after time.Time) ([]*domain.NotificationCampaign, error) {
+	return nil, nil
+}
+func (m *routerMockCampaignRepo) List(ctx context.Context) ([]*domain.NotificationCampaign, error) {
+	return []*domain.NotificationCampaign{
+		{ID: "camp-1", Name: "Campaign 1", Status: domain.CampaignStatusDraft},
+	}, nil
+}
+
 type routerMockSender struct{}
 
 func (m *routerMockSender) Send(ctx context.Context, msg *email.Message) error {
@@ -122,7 +152,7 @@ func TestRouter_HealthAndReady(t *testing.T) {
 	pinger := &dummyPinger{err: nil}
 	readiness := health.NewReadinessService(pinger)
 	healthHandler := handlers.NewHealthHandler(readiness, log)
-	router := NewRouter(healthHandler, nil, nil, nil, nil)
+	router := NewRouter(healthHandler, nil, nil, nil, nil, nil)
 
 	// 1. GET /health
 	reqHealth := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -157,7 +187,7 @@ func TestRouter_NotFoundJSON(t *testing.T) {
 	pinger := &dummyPinger{err: nil}
 	readiness := health.NewReadinessService(pinger)
 	healthHandler := handlers.NewHealthHandler(readiness, log)
-	router := NewRouter(healthHandler, nil, nil, nil, nil)
+	router := NewRouter(healthHandler, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/unknown-endpoint", nil)
 	rec := httptest.NewRecorder()
@@ -204,7 +234,7 @@ func TestRouter_DirectNotificationsRouting_AuthAndPrecedence(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.Authenticate(verifier, log)
 
-	router := NewRouter(nil, nil, directHandler, nil, authMw)
+	router := NewRouter(nil, nil, nil, directHandler, nil, authMw)
 
 	validToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -279,6 +309,10 @@ func TestRouter_AdministrativeRoutes_SecurityMatrix(t *testing.T) {
 	templateService := template.NewService(tplRepo)
 	templateHandler := handlers.NewTemplateHandler(templateService, log)
 
+	campaignRepo := &routerMockCampaignRepo{campaigns: make(map[string]*domain.NotificationCampaign)}
+	campaignService := campaign.NewService(campaignRepo)
+	campaignHandler := handlers.NewCampaignHandler(campaignService, log)
+
 	pinger := &dummyPinger{err: nil}
 	readiness := health.NewReadinessService(pinger)
 	healthHandler := handlers.NewHealthHandler(readiness, log)
@@ -290,7 +324,7 @@ func TestRouter_AdministrativeRoutes_SecurityMatrix(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(healthHandler, templateHandler, directHandler, userHandler, authMw)
+	router := NewRouter(healthHandler, templateHandler, campaignHandler, directHandler, userHandler, authMw)
 
 	adminToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-admin", "admin", 15*time.Minute)
 	ownerToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-owner", "owner", 15*time.Minute)
@@ -311,6 +345,9 @@ func TestRouter_AdministrativeRoutes_SecurityMatrix(t *testing.T) {
 		{method: http.MethodPut, path: "/api/v1/templates/tpl-123"},
 		{method: http.MethodDelete, path: "/api/v1/templates/tpl-123"},
 		{method: http.MethodPost, path: "/api/v1/templates/tpl-123/preview"},
+		{method: http.MethodGet, path: "/api/v1/campaigns"},
+		{method: http.MethodPost, path: "/api/v1/campaigns"},
+		{method: http.MethodGet, path: "/api/v1/campaigns/camp-123"},
 		{method: http.MethodPost, path: "/api/v1/notifications/direct"},
 		{method: http.MethodGet, path: "/api/v1/notifications/direct/pending"},
 		{method: http.MethodGet, path: "/api/v1/notifications/direct/test-notif-1"},
@@ -444,7 +481,7 @@ func TestRouter_UserSearchRouting(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, nil, userHandler, authMw)
+	router := NewRouter(nil, nil, nil, nil, userHandler, authMw)
 
 	adminToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-admin", "admin", 15*time.Minute)
 
