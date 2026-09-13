@@ -32,6 +32,7 @@ func NewRouter(
 		apiV1Mux.HandleFunc("POST /templates", templateHandler.Create)
 		apiV1Mux.HandleFunc("PUT /templates/{id}", templateHandler.Update)
 		apiV1Mux.HandleFunc("DELETE /templates/{id}", templateHandler.Delete)
+		apiV1Mux.HandleFunc("POST /templates/{id}/preview", templateHandler.Preview)
 	}
 
 	// Direct Notification endpoints

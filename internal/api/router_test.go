@@ -304,6 +304,7 @@ func TestRouter_AdministrativeRoutes_SecurityMatrix(t *testing.T) {
 		{method: http.MethodGet, path: "/api/v1/templates/tpl-123"},
 		{method: http.MethodPut, path: "/api/v1/templates/tpl-123"},
 		{method: http.MethodDelete, path: "/api/v1/templates/tpl-123"},
+		{method: http.MethodPost, path: "/api/v1/templates/tpl-123/preview"},
 		{method: http.MethodPost, path: "/api/v1/notifications/direct"},
 		{method: http.MethodGet, path: "/api/v1/notifications/direct/pending"},
 		{method: http.MethodGet, path: "/api/v1/notifications/direct/test-notif-1"},
