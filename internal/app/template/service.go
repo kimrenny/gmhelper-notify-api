@@ -181,18 +181,50 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	return s.repo.Delete(ctx, id)
 }
 
-func (s *Service) Preview(ctx context.Context, id string, vars map[string]any) (*RenderedTemplate, error) {
+type PreviewInput struct {
+	Subject       *string
+	HTMLBody      *string
+	PlainTextBody *string
+	Variables     map[string]any
+}
+
+func (s *Service) Preview(ctx context.Context, id string, input PreviewInput) (*RenderedTemplate, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, ErrInvalidInput
 	}
 
+	var subject, htmlBody, plainTextBody string
+
+	// Try loading from repository if template ID exists in database
 	tpl, err := s.repo.GetByID(ctx, id)
-	if err != nil {
-		return nil, err
+	if err == nil {
+		subject = tpl.Subject
+		htmlBody = tpl.HTMLBody
+		plainTextBody = tpl.PlainTextBody
+		if input.Subject != nil {
+			subject = *input.Subject
+		}
+		if input.HTMLBody != nil {
+			htmlBody = *input.HTMLBody
+		}
+		if input.PlainTextBody != nil {
+			plainTextBody = *input.PlainTextBody
+		}
+	} else {
+		// If template is not in DB (e.g. unsaved/new template preview), require subject & htmlBody in overrides
+		if input.Subject != nil && input.HTMLBody != nil {
+			subject = *input.Subject
+			htmlBody = *input.HTMLBody
+			if input.PlainTextBody != nil {
+				plainTextBody = *input.PlainTextBody
+			}
+		} else {
+			return nil, err
+		}
 	}
 
-	rendered, err := direct.RenderEmail(tpl.Subject, tpl.HTMLBody, tpl.PlainTextBody, vars)
+	rendered, err := direct.RenderEmail(subject, htmlBody, plainTextBody, input.Variables)
 	if err != nil {
 		return nil, err
 	}
@@ -203,3 +235,4 @@ func (s *Service) Preview(ctx context.Context, id string, vars map[string]any) (
 		PlainTextBody: rendered.PlainTextBody,
 	}, nil
 }
+

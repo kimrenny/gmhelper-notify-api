@@ -549,3 +549,100 @@ func TestTemplateHandler_Preview_InvalidJSONAndEmptyBody(t *testing.T) {
 		t.Fatalf("expected status 400 on empty body, got %d", recEmpty.Code)
 	}
 }
+
+func TestTemplateHandler_Preview_UnsavedOverrides(t *testing.T) {
+	repo := newMockRepo()
+	router := setupTestRouter(repo)
+
+	subject := "Unsaved Subject {{name}}"
+	htmlBody := "<p>Unsaved Body {{name}}</p>"
+	plainText := "Unsaved Body {{name}}"
+
+	previewReq := PreviewTemplateRequest{
+		Subject:       &subject,
+		HTMLBody:      &htmlBody,
+		PlainTextBody: &plainText,
+		Variables: map[string]any{
+			"name": "Jane",
+		},
+	}
+	body, _ := json.Marshal(previewReq)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/templates/new-template/preview", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp PreviewTemplateResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Subject != "Unsaved Subject Jane" {
+		t.Errorf("expected subject 'Unsaved Subject Jane', got '%s'", resp.Subject)
+	}
+	if resp.HTMLBody != "<p>Unsaved Body Jane</p>" {
+		t.Errorf("expected HTML body '<p>Unsaved Body Jane</p>', got '%s'", resp.HTMLBody)
+	}
+}
+
+func TestTemplateHandler_Preview_ExistingTemplateIDWithOverrides(t *testing.T) {
+	repo := newMockRepo()
+	tpl := &domain.EmailTemplate{
+		ID:            "tpl-persisted-1",
+		TemplateKey:   "persisted_key",
+		Name:          "Persisted Name",
+		Subject:       "Persisted DB Subject",
+		HTMLBody:      "<p>Persisted DB HTML</p>",
+		PlainTextBody: "Persisted DB Plain",
+		Locale:        "en",
+		Status:        domain.TemplateStatusActive,
+		Version:       1,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+	repo.templates[tpl.ID] = tpl
+
+	router := setupTestRouter(repo)
+
+	subject := "Live Unsaved Edited Subject {{name}}"
+	htmlBody := "<div>Live Unsaved Edited Body {{name}}</div>"
+
+	previewReq := PreviewTemplateRequest{
+		Subject:  &subject,
+		HTMLBody: &htmlBody,
+		Variables: map[string]any{
+			"name": "LiveUser",
+		},
+	}
+	body, _ := json.Marshal(previewReq)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/templates/tpl-persisted-1/preview", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp PreviewTemplateResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Subject != "Live Unsaved Edited Subject LiveUser" {
+		t.Errorf("expected overridden subject 'Live Unsaved Edited Subject LiveUser', got '%s'", resp.Subject)
+	}
+	if resp.HTMLBody != "<div>Live Unsaved Edited Body LiveUser</div>" {
+		t.Errorf("expected overridden HTML body '<div>Live Unsaved Edited Body LiveUser</div>', got '%s'", resp.HTMLBody)
+	}
+	if resp.PlainTextBody != "Persisted DB Plain" {
+		t.Errorf("expected fallback DB plain text 'Persisted DB Plain', got '%s'", resp.PlainTextBody)
+	}
+}
+
