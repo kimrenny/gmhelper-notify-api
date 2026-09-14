@@ -30,6 +30,14 @@ func (m *mockCampaignRepo) Create(ctx context.Context, c *domain.NotificationCam
 	return nil
 }
 
+func (m *mockCampaignRepo) Update(ctx context.Context, c *domain.NotificationCampaign) error {
+	if _, ok := m.campaigns[c.ID]; ok {
+		m.campaigns[c.ID] = c
+		return nil
+	}
+	return domain.ErrNotFound
+}
+
 func (m *mockCampaignRepo) UpdateStatus(ctx context.Context, id string, status domain.CampaignStatus, startedAt, completedAt *time.Time) error {
 	if c, ok := m.campaigns[id]; ok {
 		c.Status = status
@@ -128,6 +136,48 @@ func TestCampaignHandler_Create(t *testing.T) {
 	}
 
 	if res.Name != "New Campaign" {
+		t.Fatalf("unexpected campaign name: %s", res.Name)
+	}
+}
+
+func TestCampaignHandler_Update(t *testing.T) {
+	repo := &mockCampaignRepo{
+		campaigns: map[string]*domain.NotificationCampaign{
+			"c1": {
+				ID:           "c1",
+				Name:         "Initial Campaign",
+				TemplateID:   "tpl-1",
+				CampaignType: "broadcast",
+				Status:       domain.CampaignStatusDraft,
+				CreatedAt:    time.Now(),
+				UpdatedAt:    time.Now(),
+			},
+		},
+	}
+	log, _ := logger.NewLogger("error")
+	service := campaign.NewService(repo)
+	handler := NewCampaignHandler(service, log)
+
+	updatedName := "Renamed Campaign"
+	body, _ := json.Marshal(UpdateCampaignRequest{
+		Name: &updatedName,
+	})
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/campaigns/c1", bytes.NewReader(body))
+	req.SetPathValue("id", "c1")
+	rec := httptest.NewRecorder()
+
+	handler.Update(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var res CampaignResponse
+	if err := json.NewDecoder(rec.Body).Decode(&res); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if res.Name != "Renamed Campaign" {
 		t.Fatalf("unexpected campaign name: %s", res.Name)
 	}
 }

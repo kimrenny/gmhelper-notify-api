@@ -41,6 +41,27 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`, campaign.ID, campaign.Name, c
 	return err
 }
 
+func (r *NotificationCampaignRepository) Update(ctx context.Context, campaign *domain.NotificationCampaign) error {
+	if err := campaign.Validate(ctx); err != nil {
+		return err
+	}
+	res, err := r.db.ExecContext(ctx, `
+UPDATE notification_campaigns
+SET name = $1, template_id = $2, campaign_type = $3, status = $4, scheduled_at = $5, updated_at = $6
+WHERE id = $7`, campaign.Name, campaign.TemplateID, campaign.CampaignType, campaign.Status, campaign.ScheduledAt, campaign.UpdatedAt, campaign.ID)
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
 func (r *NotificationCampaignRepository) UpdateStatus(ctx context.Context, id string, status domain.CampaignStatus, startedAt, completedAt *time.Time) error {
 	if !status.IsValid() {
 		return domain.ErrInvalidEntity

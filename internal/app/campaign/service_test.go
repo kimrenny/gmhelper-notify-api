@@ -24,6 +24,14 @@ func (m *mockRepo) Create(ctx context.Context, c *domain.NotificationCampaign) e
 	return nil
 }
 
+func (m *mockRepo) Update(ctx context.Context, c *domain.NotificationCampaign) error {
+	if _, ok := m.campaigns[c.ID]; ok {
+		m.campaigns[c.ID] = c
+		return nil
+	}
+	return domain.ErrNotFound
+}
+
 func (m *mockRepo) UpdateStatus(ctx context.Context, id string, status domain.CampaignStatus, startedAt, completedAt *time.Time) error {
 	if c, ok := m.campaigns[id]; ok {
 		c.Status = status
@@ -90,5 +98,33 @@ func TestService_Create(t *testing.T) {
 	}
 	if c.Name != "Campaign Promo" || c.Status != domain.CampaignStatusDraft {
 		t.Fatalf("unexpected created campaign: %+v", c)
+	}
+}
+
+func TestService_Update(t *testing.T) {
+	repo := &mockRepo{
+		campaigns: map[string]*domain.NotificationCampaign{
+			"c1": {
+				ID:           "c1",
+				Name:         "Old Name",
+				TemplateID:   "tpl-old",
+				CampaignType: "broadcast",
+				Status:       domain.CampaignStatusDraft,
+			},
+		},
+	}
+	svc := NewService(repo)
+
+	newName := "Updated Name"
+	newTpl := "tpl-new"
+	updated, err := svc.Update(context.Background(), "c1", UpdateInput{
+		Name:       &newName,
+		TemplateID: &newTpl,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if updated.Name != "Updated Name" || updated.TemplateID != "tpl-new" {
+		t.Fatalf("unexpected updated campaign: %+v", updated)
 	}
 }

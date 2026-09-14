@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -125,6 +126,13 @@ func (m *routerMockCampaignRepo) GetByID(ctx context.Context, id string) (*domai
 func (m *routerMockCampaignRepo) Create(ctx context.Context, c *domain.NotificationCampaign) error {
 	m.campaigns[c.ID] = c
 	return nil
+}
+func (m *routerMockCampaignRepo) Update(ctx context.Context, c *domain.NotificationCampaign) error {
+	if _, ok := m.campaigns[c.ID]; ok {
+		m.campaigns[c.ID] = c
+		return nil
+	}
+	return domain.ErrNotFound
 }
 func (m *routerMockCampaignRepo) UpdateStatus(ctx context.Context, id string, status domain.CampaignStatus, startedAt, completedAt *time.Time) error {
 	return nil
@@ -348,6 +356,7 @@ func TestRouter_AdministrativeRoutes_SecurityMatrix(t *testing.T) {
 		{method: http.MethodGet, path: "/api/v1/campaigns"},
 		{method: http.MethodPost, path: "/api/v1/campaigns"},
 		{method: http.MethodGet, path: "/api/v1/campaigns/camp-123"},
+		{method: http.MethodPut, path: "/api/v1/campaigns/camp-123"},
 		{method: http.MethodPost, path: "/api/v1/notifications/direct"},
 		{method: http.MethodGet, path: "/api/v1/notifications/direct/pending"},
 		{method: http.MethodGet, path: "/api/v1/notifications/direct/test-notif-1"},
@@ -511,5 +520,72 @@ func TestRouter_UserSearchRouting(t *testing.T) {
 
 	if recEmpty.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 Bad Request for missing query, got %d", recEmpty.Code)
+	}
+}
+
+func TestRouter_CampaignEndpoints(t *testing.T) {
+	log, _ := logger.NewLogger("error")
+	campaignRepo := &routerMockCampaignRepo{
+		campaigns: map[string]*domain.NotificationCampaign{
+			"camp-edit-1": {
+				ID:           "camp-edit-1",
+				Name:         "Initial Campaign",
+				TemplateID:   "tpl-1",
+				CampaignType: "broadcast",
+				Status:       domain.CampaignStatusDraft,
+				CreatedAt:    time.Now(),
+				UpdatedAt:    time.Now(),
+			},
+		},
+	}
+	campaignService := campaign.NewService(campaignRepo)
+	campaignHandler := handlers.NewCampaignHandler(campaignService, log)
+
+	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
+	authMw := middleware.AdminAuth(verifier, log)
+
+	router := NewRouter(nil, nil, campaignHandler, nil, nil, authMw)
+
+	adminToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-admin", "admin", 15*time.Minute)
+
+	// 1. GET /api/v1/campaigns/camp-edit-1
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/v1/campaigns/camp-edit-1", nil)
+	reqGet.Header.Set("Authorization", "Bearer "+adminToken)
+	recGet := httptest.NewRecorder()
+	router.ServeHTTP(recGet, reqGet)
+
+	if recGet.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for GET campaign, got %d (body: %s)", recGet.Code, recGet.Body.String())
+	}
+
+	// 2. PUT /api/v1/campaigns/camp-edit-1
+	updatePayload := map[string]string{
+		"name":         "Updated Campaign Name",
+		"templateId":   "tpl-2",
+		"campaignType": "broadcast",
+	}
+	bodyBytes, _ := json.Marshal(updatePayload)
+	reqPut := httptest.NewRequest(http.MethodPut, "/api/v1/campaigns/camp-edit-1", bytes.NewReader(bodyBytes))
+	reqPut.Header.Set("Authorization", "Bearer "+adminToken)
+	reqPut.Header.Set("Content-Type", "application/json")
+	recPut := httptest.NewRecorder()
+	router.ServeHTTP(recPut, reqPut)
+
+	if recPut.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for PUT campaign, got %d (body: %s)", recPut.Code, recPut.Body.String())
+	}
+
+	var res handlers.CampaignResponse
+	if err := json.Unmarshal(recPut.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to decode JSON response: %v", err)
+	}
+	if res.Name != "Updated Campaign Name" || res.TemplateID != "tpl-2" {
+		t.Errorf("unexpected response content: %+v", res)
+	}
+
+	// Verify repo was updated
+	updatedCamp, _ := campaignRepo.GetByID(context.Background(), "camp-edit-1")
+	if updatedCamp.Name != "Updated Campaign Name" {
+		t.Errorf("expected repo campaign name 'Updated Campaign Name', got '%s'", updatedCamp.Name)
 	}
 }

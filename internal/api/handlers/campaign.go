@@ -21,6 +21,14 @@ type CreateCampaignRequest struct {
 	ScheduledAt  *time.Time `json:"scheduledAt,omitempty"`
 }
 
+type UpdateCampaignRequest struct {
+	Name         *string    `json:"name,omitempty"`
+	TemplateID   *string    `json:"templateId,omitempty"`
+	CampaignType *string    `json:"campaignType,omitempty"`
+	Status       *string    `json:"status,omitempty"`
+	ScheduledAt  *time.Time `json:"scheduledAt,omitempty"`
+}
+
 type CampaignResponse struct {
 	ID           string     `json:"id"`
 	Name         string     `json:"name"`
@@ -114,6 +122,45 @@ func (h *CampaignHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.JSON(w, http.StatusCreated, toCampaignResponse(c))
+}
+
+func (h *CampaignHandler) Update(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "campaign id is required")
+		return
+	}
+
+	var req UpdateCampaignRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "malformed JSON payload")
+		return
+	}
+
+	input := campaign.UpdateInput{
+		Name:         req.Name,
+		TemplateID:   req.TemplateID,
+		CampaignType: req.CampaignType,
+		Status:       req.Status,
+		ScheduledAt:  req.ScheduledAt,
+	}
+
+	c, err := h.service.Update(r.Context(), id, input)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			response.Error(w, http.StatusNotFound, "NOT_FOUND", "campaign not found")
+			return
+		}
+		if errors.Is(err, campaign.ErrInvalidInput) || errors.Is(err, domain.ErrInvalidEntity) {
+			response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid campaign update payload")
+			return
+		}
+		h.logger.Error("failed to update campaign", logger.String("id", id), logger.Error(err))
+		response.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to update campaign")
+		return
+	}
+
+	response.JSON(w, http.StatusOK, toCampaignResponse(c))
 }
 
 func toCampaignResponse(c *domain.NotificationCampaign) CampaignResponse {
