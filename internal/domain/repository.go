@@ -29,6 +29,7 @@ type NotificationCampaignRepository interface {
 	GetByID(ctx context.Context, id string) (*NotificationCampaign, error)
 	Create(ctx context.Context, campaign *NotificationCampaign) error
 	Update(ctx context.Context, campaign *NotificationCampaign) error
+	Delete(ctx context.Context, id string) error
 	UpdateStatus(ctx context.Context, id string, status CampaignStatus, startedAt, completedAt *time.Time) error
 	ListByStatus(ctx context.Context, status CampaignStatus) ([]*NotificationCampaign, error)
 	ListScheduled(ctx context.Context, after time.Time) ([]*NotificationCampaign, error)

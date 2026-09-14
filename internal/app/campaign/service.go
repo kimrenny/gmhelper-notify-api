@@ -154,3 +154,11 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (*do
 
 	return existing, nil
 }
+
+func (s *Service) Delete(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ErrInvalidInput
+	}
+	return s.repo.Delete(ctx, id)
+}

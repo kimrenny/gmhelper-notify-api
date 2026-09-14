@@ -32,6 +32,14 @@ func (m *mockRepo) Update(ctx context.Context, c *domain.NotificationCampaign) e
 	return domain.ErrNotFound
 }
 
+func (m *mockRepo) Delete(ctx context.Context, id string) error {
+	if _, ok := m.campaigns[id]; ok {
+		delete(m.campaigns, id)
+		return nil
+	}
+	return domain.ErrNotFound
+}
+
 func (m *mockRepo) UpdateStatus(ctx context.Context, id string, status domain.CampaignStatus, startedAt, completedAt *time.Time) error {
 	if c, ok := m.campaigns[id]; ok {
 		c.Status = status
@@ -126,5 +134,32 @@ func TestService_Update(t *testing.T) {
 	}
 	if updated.Name != "Updated Name" || updated.TemplateID != "tpl-new" {
 		t.Fatalf("unexpected updated campaign: %+v", updated)
+	}
+}
+
+func TestService_Delete(t *testing.T) {
+	repo := &mockRepo{
+		campaigns: map[string]*domain.NotificationCampaign{
+			"c1": {
+				ID:   "c1",
+				Name: "Campaign 1",
+			},
+		},
+	}
+	svc := NewService(repo)
+
+	// 1. Invalid empty ID
+	if err := svc.Delete(context.Background(), ""); err != ErrInvalidInput {
+		t.Fatalf("expected ErrInvalidInput, got %v", err)
+	}
+
+	// 2. Successful delete
+	if err := svc.Delete(context.Background(), "c1"); err != nil {
+		t.Fatalf("failed to delete campaign: %v", err)
+	}
+
+	// 3. Not found on repeat delete
+	if err := svc.Delete(context.Background(), "c1"); err != domain.ErrNotFound {
+		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }

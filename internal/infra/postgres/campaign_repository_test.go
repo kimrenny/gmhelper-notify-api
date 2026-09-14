@@ -108,3 +108,37 @@ WHERE id = $7`)).
 		t.Fatalf("unfulfilled expectations: %v", err)
 	}
 }
+
+func TestNotificationCampaignRepository_Delete(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to open sqlmock database: %v", err)
+	}
+	defer db.Close()
+
+	repo := NewNotificationCampaignRepository(db)
+	campaignID := "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+	// 1. Successful Delete
+	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM notification_campaigns WHERE id = $1`)).
+		WithArgs(campaignID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	if err := repo.Delete(context.Background(), campaignID); err != nil {
+		t.Fatalf("failed to delete campaign: %v", err)
+	}
+
+	// 2. Not Found Delete (0 rows affected)
+	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM notification_campaigns WHERE id = $1`)).
+		WithArgs(campaignID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	errNotFound := repo.Delete(context.Background(), campaignID)
+	if errNotFound != domain.ErrNotFound {
+		t.Fatalf("expected ErrNotFound, got %v", errNotFound)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unfulfilled expectations: %v", err)
+	}
+}

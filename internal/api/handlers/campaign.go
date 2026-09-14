@@ -163,6 +163,30 @@ func (h *CampaignHandler) Update(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, http.StatusOK, toCampaignResponse(c))
 }
 
+func (h *CampaignHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "campaign id is required")
+		return
+	}
+
+	if err := h.service.Delete(r.Context(), id); err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			response.Error(w, http.StatusNotFound, "NOT_FOUND", "campaign not found")
+			return
+		}
+		if errors.Is(err, campaign.ErrInvalidInput) {
+			response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid campaign id")
+			return
+		}
+		h.logger.Error("failed to delete campaign", logger.String("id", id), logger.Error(err))
+		response.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to delete campaign")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func toCampaignResponse(c *domain.NotificationCampaign) CampaignResponse {
 	return CampaignResponse{
 		ID:           c.ID,

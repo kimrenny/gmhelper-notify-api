@@ -38,6 +38,14 @@ func (m *mockCampaignRepo) Update(ctx context.Context, c *domain.NotificationCam
 	return domain.ErrNotFound
 }
 
+func (m *mockCampaignRepo) Delete(ctx context.Context, id string) error {
+	if _, ok := m.campaigns[id]; ok {
+		delete(m.campaigns, id)
+		return nil
+	}
+	return domain.ErrNotFound
+}
+
 func (m *mockCampaignRepo) UpdateStatus(ctx context.Context, id string, status domain.CampaignStatus, startedAt, completedAt *time.Time) error {
 	if c, ok := m.campaigns[id]; ok {
 		c.Status = status
@@ -179,5 +187,51 @@ func TestCampaignHandler_Update(t *testing.T) {
 
 	if res.Name != "Renamed Campaign" {
 		t.Fatalf("unexpected campaign name: %s", res.Name)
+	}
+}
+
+func TestCampaignHandler_Delete(t *testing.T) {
+	repo := &mockCampaignRepo{
+		campaigns: map[string]*domain.NotificationCampaign{
+			"c1": {
+				ID:   "c1",
+				Name: "Initial Campaign",
+			},
+		},
+	}
+	log, _ := logger.NewLogger("error")
+	service := campaign.NewService(repo)
+	handler := NewCampaignHandler(service, log)
+
+	// 1. Successful delete -> 204 No Content
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/campaigns/c1", nil)
+	req.SetPathValue("id", "c1")
+	rec := httptest.NewRecorder()
+
+	handler.Delete(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected status 204 No Content, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// 2. Not found delete -> 404 Not Found
+	reqNotFound := httptest.NewRequest(http.MethodDelete, "/api/v1/campaigns/c1", nil)
+	reqNotFound.SetPathValue("id", "c1")
+	recNotFound := httptest.NewRecorder()
+
+	handler.Delete(recNotFound, reqNotFound)
+
+	if recNotFound.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404 Not Found, got %d", recNotFound.Code)
+	}
+
+	// 3. Empty ID -> 400 Bad Request
+	reqEmpty := httptest.NewRequest(http.MethodDelete, "/api/v1/campaigns/", nil)
+	recEmpty := httptest.NewRecorder()
+
+	handler.Delete(recEmpty, reqEmpty)
+
+	if recEmpty.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 Bad Request, got %d", recEmpty.Code)
 	}
 }

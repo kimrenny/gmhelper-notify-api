@@ -62,6 +62,21 @@ WHERE id = $7`, campaign.Name, campaign.TemplateID, campaign.CampaignType, campa
 	return nil
 }
 
+func (r *NotificationCampaignRepository) Delete(ctx context.Context, id string) error {
+	res, err := r.db.ExecContext(ctx, `DELETE FROM notification_campaigns WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
 func (r *NotificationCampaignRepository) UpdateStatus(ctx context.Context, id string, status domain.CampaignStatus, startedAt, completedAt *time.Time) error {
 	if !status.IsValid() {
 		return domain.ErrInvalidEntity

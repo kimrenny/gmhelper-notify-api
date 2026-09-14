@@ -43,6 +43,7 @@ func NewRouter(
 		apiV1Mux.HandleFunc("GET /campaigns/{id}", campaignHandler.GetByID)
 		apiV1Mux.HandleFunc("POST /campaigns", campaignHandler.Create)
 		apiV1Mux.HandleFunc("PUT /campaigns/{id}", campaignHandler.Update)
+		apiV1Mux.HandleFunc("DELETE /campaigns/{id}", campaignHandler.Delete)
 	}
 
 	// Direct Notification endpoints

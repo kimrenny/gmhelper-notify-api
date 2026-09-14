@@ -134,6 +134,13 @@ func (m *routerMockCampaignRepo) Update(ctx context.Context, c *domain.Notificat
 	}
 	return domain.ErrNotFound
 }
+func (m *routerMockCampaignRepo) Delete(ctx context.Context, id string) error {
+	if _, ok := m.campaigns[id]; ok {
+		delete(m.campaigns, id)
+		return nil
+	}
+	return domain.ErrNotFound
+}
 func (m *routerMockCampaignRepo) UpdateStatus(ctx context.Context, id string, status domain.CampaignStatus, startedAt, completedAt *time.Time) error {
 	return nil
 }
@@ -587,5 +594,60 @@ func TestRouter_CampaignEndpoints(t *testing.T) {
 	updatedCamp, _ := campaignRepo.GetByID(context.Background(), "camp-edit-1")
 	if updatedCamp.Name != "Updated Campaign Name" {
 		t.Errorf("expected repo campaign name 'Updated Campaign Name', got '%s'", updatedCamp.Name)
+	}
+}
+
+func TestRouter_CampaignDelete(t *testing.T) {
+	log, _ := logger.NewLogger("info")
+	campaignRepo := &routerMockCampaignRepo{
+		campaigns: map[string]*domain.NotificationCampaign{
+			"camp-del-1": {
+				ID:           "camp-del-1",
+				Name:         "Campaign To Delete",
+				TemplateID:   "tpl-1",
+				CampaignType: "broadcast",
+				Status:       domain.CampaignStatusDraft,
+			},
+		},
+	}
+	campaignService := campaign.NewService(campaignRepo)
+	campaignHandler := handlers.NewCampaignHandler(campaignService, log)
+
+	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
+	authMw := middleware.Authenticate(verifier, log)
+
+	router := NewRouter(nil, nil, campaignHandler, nil, nil, authMw)
+
+	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to generate token: %v", err)
+	}
+
+	// 1. Unauthenticated DELETE -> 401 Unauthorized
+	reqUnauth := httptest.NewRequest(http.MethodDelete, "/api/v1/campaigns/camp-del-1", nil)
+	recUnauth := httptest.NewRecorder()
+	router.ServeHTTP(recUnauth, reqUnauth)
+	if recUnauth.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized, got %d", recUnauth.Code)
+	}
+
+	// 2. Authenticated DELETE /api/v1/campaigns/camp-del-1 -> 204 No Content
+	reqDel := httptest.NewRequest(http.MethodDelete, "/api/v1/campaigns/camp-del-1", nil)
+	reqDel.Header.Set("Authorization", "Bearer "+adminToken)
+	recDel := httptest.NewRecorder()
+	router.ServeHTTP(recDel, reqDel)
+
+	if recDel.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 No Content for DELETE campaign, got %d (body: %s)", recDel.Code, recDel.Body.String())
+	}
+
+	// 3. Repeated DELETE -> 404 Not Found
+	reqRepeat := httptest.NewRequest(http.MethodDelete, "/api/v1/campaigns/camp-del-1", nil)
+	reqRepeat.Header.Set("Authorization", "Bearer "+adminToken)
+	recRepeat := httptest.NewRecorder()
+	router.ServeHTTP(recRepeat, reqRepeat)
+
+	if recRepeat.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 Not Found on repeat DELETE, got %d", recRepeat.Code)
 	}
 }
