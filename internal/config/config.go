@@ -12,27 +12,34 @@ import (
 )
 
 type Config struct {
-	Env                 string
-	HTTPHost            string
-	HTTPPort            int
-	DatabaseURL         string
-	SMTPHost            string
-	SMTPPort            int
-	SMTPUsername        string
-	SMTPPassword        string
-	SMTPFrom            string
-	LogLevel            string
-	AllowedCORSOrigins  string
-	AuthIssuer          string
-	AuthAudience        string
-	AuthSecret          string
-	ServiceAuthSecret   string
-	ServiceAuthAudience string
-	WorkerEnabled       bool
-	WorkerInterval      time.Duration
-	WorkerStaleTimeout  time.Duration
-	WorkerMaxAttempts   int
-	GMHelperAPIBaseURL  string
+	Env                        string
+	HTTPHost                   string
+	HTTPPort                   int
+	DatabaseURL                string
+	SMTPHost                   string
+	SMTPPort                   int
+	SMTPUsername               string
+	SMTPPassword               string
+	SMTPFrom                   string
+	LogLevel                   string
+	AllowedCORSOrigins         string
+	AuthIssuer                 string
+	AuthAudience               string
+	AuthSecret                 string
+	ServiceAuthSecret          string
+	ServiceAuthAudience        string
+	WorkerEnabled              bool
+	WorkerInterval             time.Duration
+	WorkerStaleTimeout         time.Duration
+	WorkerMaxAttempts          int
+	SchedulerEnabled           bool
+	SchedulerInterval          time.Duration
+	SchedulerBatchSize         int
+	CampaignWorkerEnabled      bool
+	CampaignWorkerInterval     time.Duration
+	CampaignWorkerBatchSize    int
+	CampaignWorkerStaleTimeout time.Duration
+	GMHelperAPIBaseURL         string
 }
 
 func Load() (*Config, error) {
@@ -76,31 +83,63 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	schedulerInterval, err := parseDurationEnv("NOTIFY_SCHEDULER_INTERVAL", 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+
+	schedulerBatchSize, err := parseIntEnv("NOTIFY_SCHEDULER_BATCH_SIZE", 10)
+	if err != nil {
+		return nil, err
+	}
+
+	campaignWorkerInterval, err := parseDurationEnv("NOTIFY_CAMPAIGN_WORKER_INTERVAL", 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+
+	campaignWorkerBatchSize, err := parseIntEnv("NOTIFY_CAMPAIGN_WORKER_BATCH_SIZE", 20)
+	if err != nil {
+		return nil, err
+	}
+
+	campaignWorkerStaleTimeout, err := parseDurationEnv("NOTIFY_CAMPAIGN_WORKER_STALE_TIMEOUT", 5*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+
 	authSecret := envOrDefault("NOTIFY_AUTH_SECRET", "Z21oZWxwZXItZGVmYXVsdC1qd3Qtc2VjcmV0LTMyYiE=")
 	serviceAuthSecret := envOrDefault("NOTIFY_SERVICE_AUTH_SECRET", authSecret)
 
 	cfg := &Config{
-		Env:                 envOrDefault("APP_ENV", "development"),
-		HTTPHost:            envOrDefault("HTTP_HOST", "0.0.0.0"),
-		HTTPPort:            port,
-		DatabaseURL:         databaseURL,
-		SMTPHost:            smtpHost,
-		SMTPPort:            smtpPort,
-		SMTPUsername:        os.Getenv("SMTP_USERNAME"),
-		SMTPPassword:        os.Getenv("SMTP_PASSWORD"),
-		SMTPFrom:            smtpFrom,
-		LogLevel:            envOrDefault("LOG_LEVEL", "info"),
-		AllowedCORSOrigins:  envOrDefault("ALLOWED_CORS_ORIGINS", "*"),
-		AuthIssuer:          envOrDefault("NOTIFY_AUTH_ISSUER", "gmhelper-api"),
-		AuthAudience:        envOrDefault("NOTIFY_AUTH_AUDIENCE", "gmhelper-notify-api"),
-		AuthSecret:          authSecret,
-		ServiceAuthSecret:   serviceAuthSecret,
-		ServiceAuthAudience: envOrDefault("NOTIFY_SERVICE_AUTH_AUDIENCE", "gmhelper-api"),
-		WorkerEnabled:       parseBoolEnv("NOTIFY_WORKER_ENABLED", true),
-		WorkerInterval:      workerInterval,
-		WorkerStaleTimeout:  workerStaleTimeout,
-		WorkerMaxAttempts:   workerMaxAttempts,
-		GMHelperAPIBaseURL:  envOrDefault("GMHELPER_API_BASE_URL", envOrDefault("NOTIFY_GMHELPER_API_BASE_URL", "")),
+		Env:                        envOrDefault("APP_ENV", "development"),
+		HTTPHost:                   envOrDefault("HTTP_HOST", "0.0.0.0"),
+		HTTPPort:                   port,
+		DatabaseURL:                databaseURL,
+		SMTPHost:                   smtpHost,
+		SMTPPort:                   smtpPort,
+		SMTPUsername:               os.Getenv("SMTP_USERNAME"),
+		SMTPPassword:               os.Getenv("SMTP_PASSWORD"),
+		SMTPFrom:                   smtpFrom,
+		LogLevel:                   envOrDefault("LOG_LEVEL", "info"),
+		AllowedCORSOrigins:         envOrDefault("ALLOWED_CORS_ORIGINS", "*"),
+		AuthIssuer:                 envOrDefault("NOTIFY_AUTH_ISSUER", "gmhelper-api"),
+		AuthAudience:               envOrDefault("NOTIFY_AUTH_AUDIENCE", "gmhelper-notify-api"),
+		AuthSecret:                 authSecret,
+		ServiceAuthSecret:          serviceAuthSecret,
+		ServiceAuthAudience:        envOrDefault("NOTIFY_SERVICE_AUTH_AUDIENCE", "gmhelper-api"),
+		WorkerEnabled:              parseBoolEnv("NOTIFY_WORKER_ENABLED", true),
+		WorkerInterval:             workerInterval,
+		WorkerStaleTimeout:         workerStaleTimeout,
+		WorkerMaxAttempts:          workerMaxAttempts,
+		SchedulerEnabled:           parseBoolEnv("NOTIFY_SCHEDULER_ENABLED", true),
+		SchedulerInterval:          schedulerInterval,
+		SchedulerBatchSize:         schedulerBatchSize,
+		CampaignWorkerEnabled:      parseBoolEnv("NOTIFY_CAMPAIGN_WORKER_ENABLED", true),
+		CampaignWorkerInterval:     campaignWorkerInterval,
+		CampaignWorkerBatchSize:    campaignWorkerBatchSize,
+		CampaignWorkerStaleTimeout: campaignWorkerStaleTimeout,
+		GMHelperAPIBaseURL:         envOrDefault("GMHELPER_API_BASE_URL", envOrDefault("NOTIFY_GMHELPER_API_BASE_URL", "")),
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -205,6 +244,21 @@ func (c *Config) Validate() error {
 	}
 	if c.WorkerEnabled && c.WorkerMaxAttempts <= 0 {
 		return fmt.Errorf("NOTIFY_WORKER_MAX_ATTEMPTS must be a positive integer when worker is enabled")
+	}
+	if c.SchedulerEnabled && c.SchedulerInterval <= 0 {
+		return fmt.Errorf("NOTIFY_SCHEDULER_INTERVAL must be a positive duration when scheduler is enabled")
+	}
+	if c.SchedulerEnabled && c.SchedulerBatchSize <= 0 {
+		return fmt.Errorf("NOTIFY_SCHEDULER_BATCH_SIZE must be a positive integer when scheduler is enabled")
+	}
+	if c.CampaignWorkerEnabled && c.CampaignWorkerInterval <= 0 {
+		return fmt.Errorf("NOTIFY_CAMPAIGN_WORKER_INTERVAL must be a positive duration when campaign worker is enabled")
+	}
+	if c.CampaignWorkerEnabled && c.CampaignWorkerBatchSize <= 0 {
+		return fmt.Errorf("NOTIFY_CAMPAIGN_WORKER_BATCH_SIZE must be a positive integer when campaign worker is enabled")
+	}
+	if c.CampaignWorkerEnabled && c.CampaignWorkerStaleTimeout <= 0 {
+		return fmt.Errorf("NOTIFY_CAMPAIGN_WORKER_STALE_TIMEOUT must be a positive duration when campaign worker is enabled")
 	}
 	if strings.TrimSpace(c.GMHelperAPIBaseURL) != "" {
 		parsed, err := url.ParseRequestURI(strings.TrimSpace(c.GMHelperAPIBaseURL))

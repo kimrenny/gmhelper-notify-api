@@ -150,6 +150,19 @@ func (m *routerMockCampaignRepo) ListByStatus(ctx context.Context, status domain
 func (m *routerMockCampaignRepo) ListScheduled(ctx context.Context, after time.Time) ([]*domain.NotificationCampaign, error) {
 	return nil, nil
 }
+func (m *routerMockCampaignRepo) ListDue(ctx context.Context, dueBefore time.Time, limit int) ([]*domain.NotificationCampaign, error) {
+	return nil, nil
+}
+func (m *routerMockCampaignRepo) Claim(ctx context.Context, id string) (*domain.NotificationCampaign, error) {
+	if c, ok := m.campaigns[id]; ok {
+		if c.Status == domain.CampaignStatusScheduled {
+			c.Status = domain.CampaignStatusRunning
+			return c, nil
+		}
+		return nil, domain.ErrNotFound
+	}
+	return nil, domain.ErrNotFound
+}
 func (m *routerMockCampaignRepo) List(ctx context.Context) ([]*domain.NotificationCampaign, error) {
 	return []*domain.NotificationCampaign{
 		{ID: "camp-1", Name: "Campaign 1", Status: domain.CampaignStatusDraft},
@@ -649,5 +662,93 @@ func TestRouter_CampaignDelete(t *testing.T) {
 
 	if recRepeat.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 Not Found on repeat DELETE, got %d", recRepeat.Code)
+	}
+}
+
+func TestRouter_CampaignScheduleAndCancel(t *testing.T) {
+	log, _ := logger.NewLogger("info")
+	now := time.Now().UTC()
+	futureTime := now.Add(24 * time.Hour)
+
+	campaignRepo := &routerMockCampaignRepo{
+		campaigns: map[string]*domain.NotificationCampaign{
+			"camp-sched-1": {
+				ID:           "camp-sched-1",
+				Name:         "Campaign To Schedule",
+				TemplateID:   "tpl-1",
+				CampaignType: "broadcast",
+				Status:       domain.CampaignStatusDraft,
+				CreatedAt:    now,
+				UpdatedAt:    now,
+			},
+		},
+	}
+	campaignService := campaign.NewService(campaignRepo)
+	campaignHandler := handlers.NewCampaignHandler(campaignService, log)
+
+	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
+	authMw := middleware.AdminAuth(verifier, log)
+
+	router := NewRouter(nil, nil, campaignHandler, nil, nil, authMw)
+
+	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to generate token: %v", err)
+	}
+
+	// 1. Unauthenticated schedule -> 401 Unauthorized
+	schedulePayload, _ := json.Marshal(map[string]interface{}{
+		"scheduledAt": futureTime,
+	})
+	reqUnauthSched := httptest.NewRequest(http.MethodPost, "/api/v1/campaigns/camp-sched-1/schedule", bytes.NewReader(schedulePayload))
+	recUnauthSched := httptest.NewRecorder()
+	router.ServeHTTP(recUnauthSched, reqUnauthSched)
+	if recUnauthSched.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for unauth schedule, got %d", recUnauthSched.Code)
+	}
+
+	// 2. Unauthenticated cancel -> 401 Unauthorized
+	reqUnauthCancel := httptest.NewRequest(http.MethodPost, "/api/v1/campaigns/camp-sched-1/cancel", nil)
+	recUnauthCancel := httptest.NewRecorder()
+	router.ServeHTTP(recUnauthCancel, reqUnauthCancel)
+	if recUnauthCancel.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for unauth cancel, got %d", recUnauthCancel.Code)
+	}
+
+	// 3. Authenticated Schedule -> 200 OK
+	reqSched := httptest.NewRequest(http.MethodPost, "/api/v1/campaigns/camp-sched-1/schedule", bytes.NewReader(schedulePayload))
+	reqSched.Header.Set("Authorization", "Bearer "+adminToken)
+	reqSched.Header.Set("Content-Type", "application/json")
+	recSched := httptest.NewRecorder()
+	router.ServeHTTP(recSched, reqSched)
+
+	if recSched.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for schedule, got %d: %s", recSched.Code, recSched.Body.String())
+	}
+
+	var resSched handlers.CampaignResponse
+	if err := json.Unmarshal(recSched.Body.Bytes(), &resSched); err != nil {
+		t.Fatalf("failed to unmarshal schedule response: %v", err)
+	}
+	if resSched.Status != "scheduled" || resSched.ScheduledAt == nil {
+		t.Fatalf("expected scheduled status and non-nil scheduledAt, got %+v", resSched)
+	}
+
+	// 4. Authenticated Cancel -> 200 OK
+	reqCancel := httptest.NewRequest(http.MethodPost, "/api/v1/campaigns/camp-sched-1/cancel", nil)
+	reqCancel.Header.Set("Authorization", "Bearer "+adminToken)
+	recCancel := httptest.NewRecorder()
+	router.ServeHTTP(recCancel, reqCancel)
+
+	if recCancel.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for cancel, got %d: %s", recCancel.Code, recCancel.Body.String())
+	}
+
+	var resCancel handlers.CampaignResponse
+	if err := json.Unmarshal(recCancel.Body.Bytes(), &resCancel); err != nil {
+		t.Fatalf("failed to unmarshal cancel response: %v", err)
+	}
+	if resCancel.Status != "cancelled" || resCancel.ScheduledAt == nil {
+		t.Fatalf("expected cancelled status with preserved scheduledAt, got %+v", resCancel)
 	}
 }

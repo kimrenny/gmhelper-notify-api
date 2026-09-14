@@ -33,7 +33,17 @@ type NotificationCampaignRepository interface {
 	UpdateStatus(ctx context.Context, id string, status CampaignStatus, startedAt, completedAt *time.Time) error
 	ListByStatus(ctx context.Context, status CampaignStatus) ([]*NotificationCampaign, error)
 	ListScheduled(ctx context.Context, after time.Time) ([]*NotificationCampaign, error)
+	ListDue(ctx context.Context, dueBefore time.Time, limit int) ([]*NotificationCampaign, error)
+	Claim(ctx context.Context, id string) (*NotificationCampaign, error)
 	List(ctx context.Context) ([]*NotificationCampaign, error)
+}
+
+type CampaignDeliveryStats struct {
+	TotalCount   int
+	PendingCount int
+	SendingCount int
+	SentCount    int
+	FailedCount  int
 }
 
 type CampaignRecipientRepository interface {
@@ -41,6 +51,9 @@ type CampaignRecipientRepository interface {
 	Create(ctx context.Context, recipient *CampaignRecipient) error
 	ListByCampaignID(ctx context.Context, campaignID string) ([]*CampaignRecipient, error)
 	UpdateStatus(ctx context.Context, id string, status DeliveryStatus, attempts int, lastAttemptAt, sentAt *time.Time, errorMessage string) error
+	ClaimPending(ctx context.Context, limit int) ([]*CampaignRecipient, error)
+	RecoverStaleSending(ctx context.Context, olderThan time.Duration) (int64, error)
+	GetDeliveryStatsByCampaign(ctx context.Context, campaignID string) (*CampaignDeliveryStats, error)
 }
 
 type DirectNotificationRepository interface {

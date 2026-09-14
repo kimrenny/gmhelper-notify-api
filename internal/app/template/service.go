@@ -235,4 +235,3 @@ func (s *Service) Preview(ctx context.Context, id string, input PreviewInput) (*
 		PlainTextBody: rendered.PlainTextBody,
 	}, nil
 }
-

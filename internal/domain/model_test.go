@@ -31,19 +31,135 @@ func TestEmailTemplateValidateInvalid(t *testing.T) {
 	}
 }
 
-func TestNotificationCampaignValidate(t *testing.T) {
-	campaign := &NotificationCampaign{
-		ID:           "campaign-1",
-		Name:         "Launch Campaign",
-		TemplateID:   "template-1",
-		CampaignType: "email",
-		Status:       CampaignStatusScheduled,
-		ScheduledAt:  time.Now().UTC(),
-		CreatedAt:    time.Now().UTC(),
-		UpdatedAt:    time.Now().UTC(),
+func TestCampaignStatusIsValid(t *testing.T) {
+	validStatuses := []CampaignStatus{
+		CampaignStatusDraft,
+		CampaignStatusScheduled,
+		CampaignStatusRunning,
+		CampaignStatusSending,
+		CampaignStatusCompleted,
+		CampaignStatusPartiallyFailed,
+		CampaignStatusFailed,
+		CampaignStatusCancelled,
 	}
-	if err := campaign.Validate(context.Background()); err != nil {
-		t.Fatalf("expected valid campaign, got %v", err)
+
+	for _, status := range validStatuses {
+		if !status.IsValid() {
+			t.Errorf("expected status %q to be valid", status)
+		}
+	}
+
+	invalidStatuses := []CampaignStatus{
+		"",
+		"unknown",
+		"invalid",
+		"paused",
+	}
+
+	for _, status := range invalidStatuses {
+		if status.IsValid() {
+			t.Errorf("expected status %q to be invalid", status)
+		}
+	}
+}
+
+func TestNotificationCampaignValidate(t *testing.T) {
+	now := time.Now().UTC()
+	tests := []struct {
+		name     string
+		campaign NotificationCampaign
+		wantErr  bool
+	}{
+		{
+			name: "valid scheduled campaign",
+			campaign: NotificationCampaign{
+				ID:           "campaign-1",
+				Name:         "Launch Campaign",
+				TemplateID:   "template-1",
+				CampaignType: "email",
+				Status:       CampaignStatusScheduled,
+				ScheduledAt:  &now,
+				CreatedAt:    now,
+				UpdatedAt:    now,
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid running campaign without scheduledAt",
+			campaign: NotificationCampaign{
+				ID:           "campaign-2",
+				Name:         "Immediate Campaign",
+				TemplateID:   "template-1",
+				CampaignType: "email",
+				Status:       CampaignStatusRunning,
+				ScheduledAt:  nil,
+				CreatedAt:    now,
+				UpdatedAt:    now,
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid draft campaign with nil scheduledAt",
+			campaign: NotificationCampaign{
+				ID:           "campaign-3",
+				Name:         "Draft Campaign",
+				TemplateID:   "template-1",
+				CampaignType: "broadcast",
+				Status:       CampaignStatusDraft,
+				ScheduledAt:  nil,
+				CreatedAt:    now,
+				UpdatedAt:    now,
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid status",
+			campaign: NotificationCampaign{
+				ID:           "campaign-4",
+				Name:         "Invalid Status Campaign",
+				TemplateID:   "template-1",
+				CampaignType: "broadcast",
+				Status:       CampaignStatus("bogus"),
+				CreatedAt:    now,
+				UpdatedAt:    now,
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing name",
+			campaign: NotificationCampaign{
+				ID:           "campaign-5",
+				Name:         "",
+				TemplateID:   "template-1",
+				CampaignType: "broadcast",
+				Status:       CampaignStatusDraft,
+				CreatedAt:    now,
+				UpdatedAt:    now,
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing template ID",
+			campaign: NotificationCampaign{
+				ID:           "campaign-6",
+				Name:         "Campaign Name",
+				TemplateID:   "",
+				CampaignType: "broadcast",
+				Status:       CampaignStatusDraft,
+				CreatedAt:    now,
+				UpdatedAt:    now,
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.campaign.Validate(context.Background())
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
 	}
 }
 

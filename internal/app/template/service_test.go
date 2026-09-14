@@ -352,7 +352,6 @@ func TestService_Preview_ExistingTemplateIDWithOverrides(t *testing.T) {
 	}
 }
 
-
 func TestService_Preview_MissingVariablesAndNotFound(t *testing.T) {
 	repo := newMockTemplateRepo()
 	svc := NewService(repo)

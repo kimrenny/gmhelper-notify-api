@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/gmhelper/notify-api/internal/domain"
@@ -83,7 +84,7 @@ func (r *NotificationCampaignRepository) UpdateStatus(ctx context.Context, id st
 	}
 	_, err := r.db.ExecContext(ctx, `
 UPDATE notification_campaigns
-SET status = $1, started_at = $2, completed_at = $3, updated_at = now()
+SET status = $1, started_at = COALESCE($2, started_at), completed_at = COALESCE($3, completed_at), updated_at = now()
 WHERE id = $4`, status, startedAt, completedAt, id)
 	return err
 }
@@ -150,4 +151,51 @@ ORDER BY created_at DESC`)
 		campaigns = append(campaigns, campaign)
 	}
 	return campaigns, rows.Err()
+}
+
+func (r *NotificationCampaignRepository) ListDue(ctx context.Context, dueBefore time.Time, limit int) ([]*domain.NotificationCampaign, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	rows, err := r.db.QueryContext(ctx, `
+SELECT id, name, template_id, campaign_type, status, scheduled_at, started_at, completed_at, created_at, updated_at
+FROM notification_campaigns
+WHERE status = $1
+  AND scheduled_at IS NOT NULL
+  AND scheduled_at <= $2
+ORDER BY scheduled_at ASC, id ASC
+LIMIT $3`, domain.CampaignStatusScheduled, dueBefore, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	campaigns := []*domain.NotificationCampaign{}
+	for rows.Next() {
+		campaign := &domain.NotificationCampaign{}
+		if err := rows.Scan(&campaign.ID, &campaign.Name, &campaign.TemplateID, &campaign.CampaignType, &campaign.Status, &campaign.ScheduledAt, &campaign.StartedAt, &campaign.CompletedAt, &campaign.CreatedAt, &campaign.UpdatedAt); err != nil {
+			return nil, err
+		}
+		campaigns = append(campaigns, campaign)
+	}
+	return campaigns, rows.Err()
+}
+
+func (r *NotificationCampaignRepository) Claim(ctx context.Context, id string) (*domain.NotificationCampaign, error) {
+	campaign := &domain.NotificationCampaign{}
+	row := r.db.QueryRowContext(ctx, `
+UPDATE notification_campaigns
+SET status = $1, updated_at = now()
+WHERE id = $2
+  AND status = $3
+RETURNING id, name, template_id, campaign_type, status, scheduled_at, started_at, completed_at, created_at, updated_at`,
+		domain.CampaignStatusRunning, id, domain.CampaignStatusScheduled)
+
+	if err := row.Scan(&campaign.ID, &campaign.Name, &campaign.TemplateID, &campaign.CampaignType, &campaign.Status, &campaign.ScheduledAt, &campaign.StartedAt, &campaign.CompletedAt, &campaign.CreatedAt, &campaign.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, err
+	}
+	return campaign, nil
 }

@@ -72,6 +72,7 @@ func main() {
 	campaignRepo := postgres.NewNotificationCampaignRepository(db.DB())
 	campaignService := campaign.NewService(campaignRepo)
 	campaignHandler := handlers.NewCampaignHandler(campaignService, log)
+	recipientRepo := postgres.NewCampaignRecipientRepository(db.DB())
 
 	directRepo := postgres.NewDirectNotificationRepository(db.DB())
 	attemptRepo := postgres.NewDeliveryAttemptRepository(db.DB())
@@ -86,11 +87,13 @@ func main() {
 		log.Fatal("failed to initialize service token provider", zapError(err))
 	}
 
+	var userHTTPClient userclient.Client
 	var userService *user.Service
 	if cfg.GMHelperAPIBaseURL != "" {
-		userHTTPClient, err := userclient.NewClient(cfg.GMHelperAPIBaseURL, nil, serviceTokenProvider)
-		if err != nil {
-			log.Fatal("failed to initialize gmhelper-api user client", zapError(err))
+		var clientErr error
+		userHTTPClient, clientErr = userclient.NewClient(cfg.GMHelperAPIBaseURL, nil, serviceTokenProvider)
+		if clientErr != nil {
+			log.Fatal("failed to initialize gmhelper-api user client", zapError(clientErr))
 		}
 		userService, err = user.NewService(userHTTPClient)
 		if err != nil {
@@ -135,6 +138,35 @@ func main() {
 		}()
 	} else {
 		log.Info("direct notification background worker is disabled")
+	}
+
+	// Campaign background scheduler
+	if cfg.SchedulerEnabled {
+		var populator campaign.AudiencePopulator
+		if userHTTPClient != nil {
+			populator = campaign.NewAudiencePopulator(userHTTPClient, recipientRepo, campaignRepo, log)
+		}
+		scheduler := campaign.NewScheduler(campaignRepo, populator, cfg.SchedulerInterval, cfg.SchedulerBatchSize, log)
+		workerWg.Add(1)
+		go func() {
+			defer workerWg.Done()
+			scheduler.Start(ctx)
+		}()
+	} else {
+		log.Info("campaign background scheduler is disabled")
+	}
+
+	// Campaign background delivery worker
+	if cfg.CampaignWorkerEnabled {
+		campaignDeliveryService := campaign.NewDeliveryService(campaignRepo, recipientRepo, templateRepo, attemptRepo, smtpSender, userService)
+		campaignWorker := campaign.NewWorker(recipientRepo, campaignRepo, campaignDeliveryService, cfg.CampaignWorkerInterval, cfg.CampaignWorkerStaleTimeout, cfg.CampaignWorkerBatchSize, log)
+		workerWg.Add(1)
+		go func() {
+			defer workerWg.Done()
+			campaignWorker.Start(ctx)
+		}()
+	} else {
+		log.Info("campaign delivery background worker is disabled")
 	}
 
 	server := &http.Server{

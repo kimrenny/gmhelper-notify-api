@@ -295,3 +295,124 @@ func TestConfigValidate_GMHelperAPIBaseURL(t *testing.T) {
 		t.Fatal("expected error for invalid GMHelperAPIBaseURL scheme, got nil")
 	}
 }
+
+func TestConfigValidate_SchedulerSettings(t *testing.T) {
+	validSecret := "dGVzdC1zZWNyZXQta2V5LTMyLWJ5dGVzLWxvbmchIQ=="
+
+	// 1. Scheduler enabled with non-positive interval -> error
+	cfgZeroInterval := &Config{
+		DatabaseURL:        "postgres://localhost/test",
+		SMTPHost:           "smtp.example.com",
+		SMTPFrom:           "test@example.com",
+		HTTPPort:           8080,
+		SMTPPort:           587,
+		AuthSecret:         validSecret,
+		SchedulerEnabled:   true,
+		SchedulerInterval:  0,
+		SchedulerBatchSize: 10,
+	}
+	if err := cfgZeroInterval.Validate(); err == nil {
+		t.Fatal("expected error when scheduler is enabled with zero interval, got nil")
+	}
+
+	// 2. Scheduler enabled with non-positive batch size -> error
+	cfgZeroBatch := &Config{
+		DatabaseURL:        "postgres://localhost/test",
+		SMTPHost:           "smtp.example.com",
+		SMTPFrom:           "test@example.com",
+		HTTPPort:           8080,
+		SMTPPort:           587,
+		AuthSecret:         validSecret,
+		SchedulerEnabled:   true,
+		SchedulerInterval:  5 * time.Second,
+		SchedulerBatchSize: 0,
+	}
+	if err := cfgZeroBatch.Validate(); err == nil {
+		t.Fatal("expected error when scheduler is enabled with zero batch size, got nil")
+	}
+
+	// 3. Scheduler enabled with valid settings -> success
+	cfgValid := &Config{
+		DatabaseURL:        "postgres://localhost/test",
+		SMTPHost:           "smtp.example.com",
+		SMTPFrom:           "test@example.com",
+		HTTPPort:           8080,
+		SMTPPort:           587,
+		AuthSecret:         validSecret,
+		SchedulerEnabled:   true,
+		SchedulerInterval:  5 * time.Second,
+		SchedulerBatchSize: 10,
+	}
+	if err := cfgValid.Validate(); err != nil {
+		t.Fatalf("expected valid config for scheduler, got: %v", err)
+	}
+}
+
+func TestConfigValidate_CampaignWorkerSettings(t *testing.T) {
+	validSecret := "dGVzdC1zZWNyZXQta2V5LTMyLWJ5dGVzLWxvbmchIQ=="
+
+	// 1. Campaign worker enabled with non-positive interval -> error
+	cfgZeroInterval := &Config{
+		DatabaseURL:            "postgres://localhost/test",
+		SMTPHost:               "smtp.example.com",
+		SMTPFrom:               "test@example.com",
+		HTTPPort:               8080,
+		SMTPPort:               587,
+		AuthSecret:             validSecret,
+		CampaignWorkerEnabled:  true,
+		CampaignWorkerInterval: 0,
+	}
+	if err := cfgZeroInterval.Validate(); err == nil {
+		t.Fatal("expected error when campaign worker is enabled with zero interval, got nil")
+	}
+
+	// 2. Campaign worker enabled with non-positive batch size -> error
+	cfgZeroBatch := &Config{
+		DatabaseURL:             "postgres://localhost/test",
+		SMTPHost:                "smtp.example.com",
+		SMTPFrom:                "test@example.com",
+		HTTPPort:                8080,
+		SMTPPort:                587,
+		AuthSecret:              validSecret,
+		CampaignWorkerEnabled:   true,
+		CampaignWorkerInterval:  5 * time.Second,
+		CampaignWorkerBatchSize: 0,
+	}
+	if err := cfgZeroBatch.Validate(); err == nil {
+		t.Fatal("expected error when campaign worker is enabled with zero batch size, got nil")
+	}
+
+	// 3. Campaign worker enabled with non-positive stale timeout -> error
+	cfgZeroStale := &Config{
+		DatabaseURL:                "postgres://localhost/test",
+		SMTPHost:                   "smtp.example.com",
+		SMTPFrom:                   "test@example.com",
+		HTTPPort:                   8080,
+		SMTPPort:                   587,
+		AuthSecret:                 validSecret,
+		CampaignWorkerEnabled:      true,
+		CampaignWorkerInterval:     5 * time.Second,
+		CampaignWorkerBatchSize:    20,
+		CampaignWorkerStaleTimeout: 0,
+	}
+	if err := cfgZeroStale.Validate(); err == nil {
+		t.Fatal("expected error when campaign worker is enabled with zero stale timeout, got nil")
+	}
+
+	// 4. Campaign worker enabled with valid settings -> success
+	cfgValid := &Config{
+		DatabaseURL:                "postgres://localhost/test",
+		SMTPHost:                   "smtp.example.com",
+		SMTPFrom:                   "test@example.com",
+		HTTPPort:                   8080,
+		SMTPPort:                   587,
+		AuthSecret:                 validSecret,
+		CampaignWorkerEnabled:      true,
+		CampaignWorkerInterval:     5 * time.Second,
+		CampaignWorkerBatchSize:    20,
+		CampaignWorkerStaleTimeout: 5 * time.Minute,
+	}
+	if err := cfgValid.Validate(); err != nil {
+		t.Fatalf("expected valid config for campaign worker, got: %v", err)
+	}
+}

@@ -44,6 +44,8 @@ func NewRouter(
 		apiV1Mux.HandleFunc("POST /campaigns", campaignHandler.Create)
 		apiV1Mux.HandleFunc("PUT /campaigns/{id}", campaignHandler.Update)
 		apiV1Mux.HandleFunc("DELETE /campaigns/{id}", campaignHandler.Delete)
+		apiV1Mux.HandleFunc("POST /campaigns/{id}/schedule", campaignHandler.Schedule)
+		apiV1Mux.HandleFunc("POST /campaigns/{id}/cancel", campaignHandler.Cancel)
 	}
 
 	// Direct Notification endpoints
