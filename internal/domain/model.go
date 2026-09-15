@@ -26,6 +26,7 @@ const (
 const (
 	CampaignStatusDraft           CampaignStatus = "draft"
 	CampaignStatusScheduled       CampaignStatus = "scheduled"
+	CampaignStatusRunning         CampaignStatus = "running"
 	CampaignStatusSending         CampaignStatus = "sending"
 	CampaignStatusCompleted       CampaignStatus = "completed"
 	CampaignStatusPartiallyFailed CampaignStatus = "partially_failed"
@@ -66,7 +67,7 @@ func (s TemplateStatus) IsValid() bool {
 
 func (s CampaignStatus) IsValid() bool {
 	switch s {
-	case CampaignStatusDraft, CampaignStatusScheduled, CampaignStatusSending, CampaignStatusCompleted, CampaignStatusPartiallyFailed, CampaignStatusFailed, CampaignStatusCancelled:
+	case CampaignStatusDraft, CampaignStatusScheduled, CampaignStatusRunning, CampaignStatusSending, CampaignStatusCompleted, CampaignStatusPartiallyFailed, CampaignStatusFailed, CampaignStatusCancelled:
 		return true
 	default:
 		return false
@@ -177,7 +178,7 @@ type NotificationCampaign struct {
 	TemplateID   string         `json:"templateId" db:"template_id"`
 	CampaignType string         `json:"campaignType" db:"campaign_type"`
 	Status       CampaignStatus `json:"status" db:"status"`
-	ScheduledAt  time.Time      `json:"scheduledAt" db:"scheduled_at"`
+	ScheduledAt  *time.Time     `json:"scheduledAt,omitempty" db:"scheduled_at"`
 	StartedAt    *time.Time     `json:"startedAt,omitempty" db:"started_at"`
 	CompletedAt  *time.Time     `json:"completedAt,omitempty" db:"completed_at"`
 	CreatedAt    time.Time      `json:"createdAt" db:"created_at"`

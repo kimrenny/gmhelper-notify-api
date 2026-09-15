@@ -12,27 +12,35 @@ import (
 )
 
 type Config struct {
-	Env                 string
-	HTTPHost            string
-	HTTPPort            int
-	DatabaseURL         string
-	SMTPHost            string
-	SMTPPort            int
-	SMTPUsername        string
-	SMTPPassword        string
-	SMTPFrom            string
-	LogLevel            string
-	AllowedCORSOrigins  string
-	AuthIssuer          string
-	AuthAudience        string
-	AuthSecret          string
-	ServiceAuthSecret   string
-	ServiceAuthAudience string
-	WorkerEnabled       bool
-	WorkerInterval      time.Duration
-	WorkerStaleTimeout  time.Duration
-	WorkerMaxAttempts   int
-	GMHelperAPIBaseURL  string
+	Env                        string
+	HTTPHost                   string
+	HTTPPort                   int
+	DatabaseURL                string
+	SMTPHost                   string
+	SMTPPort                   int
+	SMTPUsername               string
+	SMTPPassword               string
+	SMTPFrom                   string
+	LogLevel                   string
+	AllowedCORSOrigins         string
+	AuthIssuer                 string
+	AuthAudience               string
+	AuthSecret                 string
+	ServiceAuthSecret          string
+	ServiceAuthIssuer          string
+	ServiceAuthAudience        string
+	WorkerEnabled              bool
+	WorkerInterval             time.Duration
+	WorkerStaleTimeout         time.Duration
+	WorkerMaxAttempts          int
+	SchedulerEnabled           bool
+	SchedulerInterval          time.Duration
+	SchedulerBatchSize         int
+	CampaignWorkerEnabled      bool
+	CampaignWorkerInterval     time.Duration
+	CampaignWorkerBatchSize    int
+	CampaignWorkerStaleTimeout time.Duration
+	GMHelperAPIBaseURL         string
 }
 
 func Load() (*Config, error) {
@@ -43,7 +51,7 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	smtpPort, err := parseIntEnv("SMTP_PORT", 587)
+	smtpPort, err := parseIntEnvWithAliases(587, "SMTP_PORT", "SMTP_Port", "SMTP__Port")
 	if err != nil {
 		return nil, err
 	}
@@ -52,11 +60,11 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	smtpHost, err := requireEnv("SMTP_HOST")
+	smtpHost, err := requireFirstEnv("SMTP_HOST", "SMTP__Host")
 	if err != nil {
 		return nil, err
 	}
-	smtpFrom, err := requireEnv("SMTP_FROM")
+	smtpFrom, err := requireFirstEnv("SMTP_FROM", "SMTP__From")
 	if err != nil {
 		return nil, err
 	}
@@ -76,31 +84,64 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	schedulerInterval, err := parseDurationEnv("NOTIFY_SCHEDULER_INTERVAL", 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+
+	schedulerBatchSize, err := parseIntEnv("NOTIFY_SCHEDULER_BATCH_SIZE", 10)
+	if err != nil {
+		return nil, err
+	}
+
+	campaignWorkerInterval, err := parseDurationEnv("NOTIFY_CAMPAIGN_WORKER_INTERVAL", 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+
+	campaignWorkerBatchSize, err := parseIntEnv("NOTIFY_CAMPAIGN_WORKER_BATCH_SIZE", 20)
+	if err != nil {
+		return nil, err
+	}
+
+	campaignWorkerStaleTimeout, err := parseDurationEnv("NOTIFY_CAMPAIGN_WORKER_STALE_TIMEOUT", 5*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+
 	authSecret := envOrDefault("NOTIFY_AUTH_SECRET", "Z21oZWxwZXItZGVmYXVsdC1qd3Qtc2VjcmV0LTMyYiE=")
 	serviceAuthSecret := envOrDefault("NOTIFY_SERVICE_AUTH_SECRET", authSecret)
 
 	cfg := &Config{
-		Env:                 envOrDefault("APP_ENV", "development"),
-		HTTPHost:            envOrDefault("HTTP_HOST", "0.0.0.0"),
-		HTTPPort:            port,
-		DatabaseURL:         databaseURL,
-		SMTPHost:            smtpHost,
-		SMTPPort:            smtpPort,
-		SMTPUsername:        os.Getenv("SMTP_USERNAME"),
-		SMTPPassword:        os.Getenv("SMTP_PASSWORD"),
-		SMTPFrom:            smtpFrom,
-		LogLevel:            envOrDefault("LOG_LEVEL", "info"),
-		AllowedCORSOrigins:  envOrDefault("ALLOWED_CORS_ORIGINS", "*"),
-		AuthIssuer:          envOrDefault("NOTIFY_AUTH_ISSUER", "gmhelper-api"),
-		AuthAudience:        envOrDefault("NOTIFY_AUTH_AUDIENCE", "gmhelper-notify-api"),
-		AuthSecret:          authSecret,
-		ServiceAuthSecret:   serviceAuthSecret,
-		ServiceAuthAudience: envOrDefault("NOTIFY_SERVICE_AUTH_AUDIENCE", "gmhelper-api"),
-		WorkerEnabled:       parseBoolEnv("NOTIFY_WORKER_ENABLED", true),
-		WorkerInterval:      workerInterval,
-		WorkerStaleTimeout:  workerStaleTimeout,
-		WorkerMaxAttempts:   workerMaxAttempts,
-		GMHelperAPIBaseURL:  envOrDefault("GMHELPER_API_BASE_URL", envOrDefault("NOTIFY_GMHELPER_API_BASE_URL", "")),
+		Env:                        envOrDefault("APP_ENV", "development"),
+		HTTPHost:                   envOrDefault("HTTP_HOST", "0.0.0.0"),
+		HTTPPort:                   port,
+		DatabaseURL:                databaseURL,
+		SMTPHost:                   smtpHost,
+		SMTPPort:                   smtpPort,
+		SMTPUsername:               getFirstEnv("SMTP_USERNAME", "SMTP__Username"),
+		SMTPPassword:               getFirstEnv("SMTP_PASSWORD", "SMTP__Password"),
+		SMTPFrom:                   smtpFrom,
+		LogLevel:                   envOrDefault("LOG_LEVEL", "info"),
+		AllowedCORSOrigins:         envOrDefault("ALLOWED_CORS_ORIGINS", "*"),
+		AuthIssuer:                 envOrDefault("NOTIFY_AUTH_ISSUER", "gmhelper-api"),
+		AuthAudience:               envOrDefault("NOTIFY_AUTH_AUDIENCE", "gmhelper-notify-api"),
+		AuthSecret:                 authSecret,
+		ServiceAuthSecret:          serviceAuthSecret,
+		ServiceAuthIssuer:          envOrDefault("NOTIFY_SERVICE_AUTH_ISSUER", envOrDefault("NOTIFY_AUTH_ISSUER", "GMHelperAPI")),
+		ServiceAuthAudience:        envOrDefault("NOTIFY_SERVICE_AUTH_AUDIENCE", "GMHelperClient"),
+		WorkerEnabled:              parseBoolEnv("NOTIFY_WORKER_ENABLED", true),
+		WorkerInterval:             workerInterval,
+		WorkerStaleTimeout:         workerStaleTimeout,
+		WorkerMaxAttempts:          workerMaxAttempts,
+		SchedulerEnabled:           parseBoolEnv("NOTIFY_SCHEDULER_ENABLED", true),
+		SchedulerInterval:          schedulerInterval,
+		SchedulerBatchSize:         schedulerBatchSize,
+		CampaignWorkerEnabled:      parseBoolEnv("NOTIFY_CAMPAIGN_WORKER_ENABLED", true),
+		CampaignWorkerInterval:     campaignWorkerInterval,
+		CampaignWorkerBatchSize:    campaignWorkerBatchSize,
+		CampaignWorkerStaleTimeout: campaignWorkerStaleTimeout,
+		GMHelperAPIBaseURL:         envOrDefault("GMHELPER_API_BASE_URL", envOrDefault("NOTIFY_GMHELPER_API_BASE_URL", "")),
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -119,6 +160,33 @@ func loadDotEnv() {
 			return
 		}
 	}
+}
+
+var envKeyAliases = map[string][]string{
+	"SMTP_HOST":      {"SMTP__Host"},
+	"SMTP__Host":     {"SMTP_HOST"},
+	"SMTP_PORT":      {"SMTP_Port", "SMTP__Port"},
+	"SMTP_Port":      {"SMTP_PORT", "SMTP__Port"},
+	"SMTP_USERNAME":  {"SMTP__Username"},
+	"SMTP__Username": {"SMTP_USERNAME"},
+	"SMTP_PASSWORD":  {"SMTP__Password"},
+	"SMTP__Password": {"SMTP_PASSWORD"},
+	"SMTP_FROM":      {"SMTP__From"},
+	"SMTP__From":     {"SMTP_FROM"},
+}
+
+func hasEnvOrAlias(key string) bool {
+	if _, exists := os.LookupEnv(key); exists {
+		return true
+	}
+	if aliases, ok := envKeyAliases[key]; ok {
+		for _, a := range aliases {
+			if _, exists := os.LookupEnv(a); exists {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func parseAndApplyEnvFile(filePath string) error {
@@ -148,7 +216,7 @@ func parseAndApplyEnvFile(filePath string) error {
 			}
 		}
 
-		if _, exists := os.LookupEnv(key); !exists {
+		if !hasEnvOrAlias(key) {
 			_ = os.Setenv(key, val)
 		}
 	}
@@ -180,8 +248,15 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.ServiceAuthSecret) == "" {
 		c.ServiceAuthSecret = c.AuthSecret
 	}
+	if strings.TrimSpace(c.ServiceAuthIssuer) == "" {
+		if strings.TrimSpace(c.AuthIssuer) != "" {
+			c.ServiceAuthIssuer = c.AuthIssuer
+		} else {
+			c.ServiceAuthIssuer = "GMHelperAPI"
+		}
+	}
 	if strings.TrimSpace(c.ServiceAuthAudience) == "" {
-		c.ServiceAuthAudience = "gmhelper-api"
+		c.ServiceAuthAudience = "GMHelperClient"
 	}
 	if c.Env == "production" {
 		if strings.TrimSpace(c.AuthSecret) == "" || c.AuthSecret == "Z21oZWxwZXItZGVmYXVsdC1qd3Qtc2VjcmV0LTMyYiE=" {
@@ -194,6 +269,9 @@ func (c *Config) Validate() error {
 	if _, err := auth.DecodeSecretKey(c.ServiceAuthSecret); err != nil {
 		return fmt.Errorf("NOTIFY_SERVICE_AUTH_SECRET is invalid: %w", err)
 	}
+	if strings.TrimSpace(c.ServiceAuthIssuer) == "" {
+		return fmt.Errorf("NOTIFY_SERVICE_AUTH_ISSUER cannot be empty")
+	}
 	if strings.TrimSpace(c.ServiceAuthAudience) == "" {
 		return fmt.Errorf("NOTIFY_SERVICE_AUTH_AUDIENCE cannot be empty")
 	}
@@ -205,6 +283,21 @@ func (c *Config) Validate() error {
 	}
 	if c.WorkerEnabled && c.WorkerMaxAttempts <= 0 {
 		return fmt.Errorf("NOTIFY_WORKER_MAX_ATTEMPTS must be a positive integer when worker is enabled")
+	}
+	if c.SchedulerEnabled && c.SchedulerInterval <= 0 {
+		return fmt.Errorf("NOTIFY_SCHEDULER_INTERVAL must be a positive duration when scheduler is enabled")
+	}
+	if c.SchedulerEnabled && c.SchedulerBatchSize <= 0 {
+		return fmt.Errorf("NOTIFY_SCHEDULER_BATCH_SIZE must be a positive integer when scheduler is enabled")
+	}
+	if c.CampaignWorkerEnabled && c.CampaignWorkerInterval <= 0 {
+		return fmt.Errorf("NOTIFY_CAMPAIGN_WORKER_INTERVAL must be a positive duration when campaign worker is enabled")
+	}
+	if c.CampaignWorkerEnabled && c.CampaignWorkerBatchSize <= 0 {
+		return fmt.Errorf("NOTIFY_CAMPAIGN_WORKER_BATCH_SIZE must be a positive integer when campaign worker is enabled")
+	}
+	if c.CampaignWorkerEnabled && c.CampaignWorkerStaleTimeout <= 0 {
+		return fmt.Errorf("NOTIFY_CAMPAIGN_WORKER_STALE_TIMEOUT must be a positive duration when campaign worker is enabled")
 	}
 	if strings.TrimSpace(c.GMHelperAPIBaseURL) != "" {
 		parsed, err := url.ParseRequestURI(strings.TrimSpace(c.GMHelperAPIBaseURL))
@@ -276,4 +369,37 @@ func requireEnv(name string) (string, error) {
 		return "", fmt.Errorf("missing required environment variable: %s", name)
 	}
 	return value, nil
+}
+
+func getFirstEnv(keys ...string) string {
+	for _, k := range keys {
+		if val := os.Getenv(k); strings.TrimSpace(val) != "" {
+			return val
+		}
+	}
+	return ""
+}
+
+func requireFirstEnv(primary string, aliases ...string) (string, error) {
+	if val := os.Getenv(primary); strings.TrimSpace(val) != "" {
+		return val, nil
+	}
+	for _, a := range aliases {
+		if val := os.Getenv(a); strings.TrimSpace(val) != "" {
+			return val, nil
+		}
+	}
+	return "", fmt.Errorf("missing required environment variable: %s", primary)
+}
+
+func parseIntEnvWithAliases(defaultValue int, primary string, aliases ...string) (int, error) {
+	val := getFirstEnv(append([]string{primary}, aliases...)...)
+	if val == "" {
+		return defaultValue, nil
+	}
+	parsed, err := strconv.Atoi(val)
+	if err != nil {
+		return 0, fmt.Errorf("invalid integer for %s: %w", primary, err)
+	}
+	return parsed, nil
 }

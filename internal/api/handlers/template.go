@@ -38,7 +38,10 @@ type UpdateTemplateRequest struct {
 }
 
 type PreviewTemplateRequest struct {
-	Variables map[string]any `json:"variables"`
+	Subject       *string        `json:"subject,omitempty"`
+	HTMLBody      *string        `json:"htmlBody,omitempty"`
+	PlainTextBody *string        `json:"plainTextBody,omitempty"`
+	Variables     map[string]any `json:"variables,omitempty"`
 }
 
 type PreviewTemplateResponse struct {
@@ -243,7 +246,14 @@ func (h *TemplateHandler) Preview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rendered, err := h.service.Preview(r.Context(), id, req.Variables)
+	input := template.PreviewInput{
+		Subject:       req.Subject,
+		HTMLBody:      req.HTMLBody,
+		PlainTextBody: req.PlainTextBody,
+		Variables:     req.Variables,
+	}
+
+	rendered, err := h.service.Preview(r.Context(), id, input)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
 			response.Error(w, http.StatusNotFound, "NOT_FOUND", "template not found")

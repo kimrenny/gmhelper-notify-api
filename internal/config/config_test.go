@@ -8,17 +8,23 @@ import (
 )
 
 func TestConfigLoad_Success(t *testing.T) {
+	oldDB := os.Getenv("DATABASE_URL")
+	oldHost := os.Getenv("SMTP_HOST")
+	oldPort := os.Getenv("SMTP_PORT")
+	oldFrom := os.Getenv("SMTP_FROM")
+	oldHTTPPort := os.Getenv("HTTP_PORT")
+
 	os.Setenv("DATABASE_URL", "postgres://localhost/test")
 	os.Setenv("SMTP_HOST", "smtp.example.com")
 	os.Setenv("SMTP_FROM", "test@example.com")
 	os.Setenv("HTTP_PORT", "9090")
 	os.Setenv("SMTP_PORT", "2525")
 	defer func() {
-		os.Unsetenv("DATABASE_URL")
-		os.Unsetenv("SMTP_HOST")
-		os.Unsetenv("SMTP_FROM")
-		os.Unsetenv("HTTP_PORT")
-		os.Unsetenv("SMTP_PORT")
+		restoreEnv("DATABASE_URL", oldDB)
+		restoreEnv("SMTP_HOST", oldHost)
+		restoreEnv("SMTP_PORT", oldPort)
+		restoreEnv("SMTP_FROM", oldFrom)
+		restoreEnv("HTTP_PORT", oldHTTPPort)
 	}()
 
 	cfg, err := Load()
@@ -34,6 +40,70 @@ func TestConfigLoad_Success(t *testing.T) {
 	}
 	if cfg.DatabaseURL != "postgres://localhost/test" {
 		t.Errorf("expected DatabaseURL 'postgres://localhost/test', got %s", cfg.DatabaseURL)
+	}
+}
+
+func TestConfigLoad_SMTPDotNetAliases(t *testing.T) {
+	oldDB := os.Getenv("DATABASE_URL")
+	oldHost := os.Getenv("SMTP_HOST")
+	oldPort := os.Getenv("SMTP_PORT")
+	oldFrom := os.Getenv("SMTP_FROM")
+	oldUser := os.Getenv("SMTP_USERNAME")
+	oldPass := os.Getenv("SMTP_PASSWORD")
+
+	os.Unsetenv("SMTP_HOST")
+	os.Unsetenv("SMTP_PORT")
+	os.Unsetenv("SMTP_FROM")
+	os.Unsetenv("SMTP_USERNAME")
+	os.Unsetenv("SMTP_PASSWORD")
+
+	os.Setenv("DATABASE_URL", "postgres://localhost/test")
+	os.Setenv("SMTP__Host", "smtp.gmail.com")
+	os.Setenv("SMTP_Port", "587")
+	os.Setenv("SMTP__Username", "noreply.gmhelper@gmail.com")
+	os.Setenv("SMTP__Password", "secret-pass")
+	os.Setenv("SMTP__From", "noreply.gmhelper@gmail.com")
+	defer func() {
+		os.Unsetenv("SMTP__Host")
+		os.Unsetenv("SMTP_Port")
+		os.Unsetenv("SMTP__Username")
+		os.Unsetenv("SMTP__Password")
+		os.Unsetenv("SMTP__From")
+		restoreEnv("DATABASE_URL", oldDB)
+		restoreEnv("SMTP_HOST", oldHost)
+		restoreEnv("SMTP_PORT", oldPort)
+		restoreEnv("SMTP_FROM", oldFrom)
+		restoreEnv("SMTP_USERNAME", oldUser)
+		restoreEnv("SMTP_PASSWORD", oldPass)
+	}()
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected config load success with dot net aliases, got: %v", err)
+	}
+
+	if cfg.SMTPHost != "smtp.gmail.com" {
+		t.Errorf("expected SMTPHost 'smtp.gmail.com', got '%s'", cfg.SMTPHost)
+	}
+	if cfg.SMTPPort != 587 {
+		t.Errorf("expected SMTPPort 587, got %d", cfg.SMTPPort)
+	}
+	if cfg.SMTPUsername != "noreply.gmhelper@gmail.com" {
+		t.Errorf("expected SMTPUsername 'noreply.gmhelper@gmail.com', got '%s'", cfg.SMTPUsername)
+	}
+	if cfg.SMTPPassword != "secret-pass" {
+		t.Errorf("expected SMTPPassword 'secret-pass', got '%s'", cfg.SMTPPassword)
+	}
+	if cfg.SMTPFrom != "noreply.gmhelper@gmail.com" {
+		t.Errorf("expected SMTPFrom 'noreply.gmhelper@gmail.com', got '%s'", cfg.SMTPFrom)
+	}
+}
+
+func restoreEnv(key, val string) {
+	if val == "" {
+		os.Unsetenv(key)
+	} else {
+		os.Setenv(key, val)
 	}
 }
 
@@ -293,5 +363,172 @@ func TestConfigValidate_GMHelperAPIBaseURL(t *testing.T) {
 	}
 	if err := cfgInvalidURL.Validate(); err == nil {
 		t.Fatal("expected error for invalid GMHelperAPIBaseURL scheme, got nil")
+	}
+}
+
+func TestConfigValidate_ServiceAuthSettings(t *testing.T) {
+	validSecret := "dGVzdC1zZWNyZXQta2V5LTMyLWJ5dGVzLWxvbmchIQ=="
+
+	// 1. Defaults populated if empty
+	cfgDefault := &Config{
+		DatabaseURL: "postgres://localhost/test",
+		SMTPHost:    "smtp.example.com",
+		SMTPFrom:    "test@example.com",
+		HTTPPort:    8080,
+		SMTPPort:    587,
+		AuthSecret:  validSecret,
+		AuthIssuer:  "GMHelperAPI",
+	}
+	if err := cfgDefault.Validate(); err != nil {
+		t.Fatalf("expected valid config, got: %v", err)
+	}
+	if cfgDefault.ServiceAuthIssuer != "GMHelperAPI" {
+		t.Errorf("expected ServiceAuthIssuer 'GMHelperAPI', got '%s'", cfgDefault.ServiceAuthIssuer)
+	}
+	if cfgDefault.ServiceAuthAudience != "GMHelperClient" {
+		t.Errorf("expected ServiceAuthAudience 'GMHelperClient', got '%s'", cfgDefault.ServiceAuthAudience)
+	}
+
+	// 2. Custom values preserved
+	cfgCustom := &Config{
+		DatabaseURL:         "postgres://localhost/test",
+		SMTPHost:            "smtp.example.com",
+		SMTPFrom:            "test@example.com",
+		HTTPPort:            8080,
+		SMTPPort:            587,
+		AuthSecret:          validSecret,
+		AuthIssuer:          "NotifyAPI",
+		ServiceAuthIssuer:   "CustomIssuer",
+		ServiceAuthAudience: "CustomAudience",
+	}
+	if err := cfgCustom.Validate(); err != nil {
+		t.Fatalf("expected valid config with custom service auth, got: %v", err)
+	}
+	if cfgCustom.ServiceAuthIssuer != "CustomIssuer" {
+		t.Errorf("expected ServiceAuthIssuer 'CustomIssuer', got '%s'", cfgCustom.ServiceAuthIssuer)
+	}
+	if cfgCustom.ServiceAuthAudience != "CustomAudience" {
+		t.Errorf("expected ServiceAuthAudience 'CustomAudience', got '%s'", cfgCustom.ServiceAuthAudience)
+	}
+}
+
+func TestConfigValidate_SchedulerSettings(t *testing.T) {
+	validSecret := "dGVzdC1zZWNyZXQta2V5LTMyLWJ5dGVzLWxvbmchIQ=="
+
+	// 1. Scheduler enabled with non-positive interval -> error
+	cfgZeroInterval := &Config{
+		DatabaseURL:        "postgres://localhost/test",
+		SMTPHost:           "smtp.example.com",
+		SMTPFrom:           "test@example.com",
+		HTTPPort:           8080,
+		SMTPPort:           587,
+		AuthSecret:         validSecret,
+		SchedulerEnabled:   true,
+		SchedulerInterval:  0,
+		SchedulerBatchSize: 10,
+	}
+	if err := cfgZeroInterval.Validate(); err == nil {
+		t.Fatal("expected error when scheduler is enabled with zero interval, got nil")
+	}
+
+	// 2. Scheduler enabled with non-positive batch size -> error
+	cfgZeroBatch := &Config{
+		DatabaseURL:        "postgres://localhost/test",
+		SMTPHost:           "smtp.example.com",
+		SMTPFrom:           "test@example.com",
+		HTTPPort:           8080,
+		SMTPPort:           587,
+		AuthSecret:         validSecret,
+		SchedulerEnabled:   true,
+		SchedulerInterval:  5 * time.Second,
+		SchedulerBatchSize: 0,
+	}
+	if err := cfgZeroBatch.Validate(); err == nil {
+		t.Fatal("expected error when scheduler is enabled with zero batch size, got nil")
+	}
+
+	// 3. Scheduler enabled with valid settings -> success
+	cfgValid := &Config{
+		DatabaseURL:        "postgres://localhost/test",
+		SMTPHost:           "smtp.example.com",
+		SMTPFrom:           "test@example.com",
+		HTTPPort:           8080,
+		SMTPPort:           587,
+		AuthSecret:         validSecret,
+		SchedulerEnabled:   true,
+		SchedulerInterval:  5 * time.Second,
+		SchedulerBatchSize: 10,
+	}
+	if err := cfgValid.Validate(); err != nil {
+		t.Fatalf("expected valid config for scheduler, got: %v", err)
+	}
+}
+
+func TestConfigValidate_CampaignWorkerSettings(t *testing.T) {
+	validSecret := "dGVzdC1zZWNyZXQta2V5LTMyLWJ5dGVzLWxvbmchIQ=="
+
+	// 1. Campaign worker enabled with non-positive interval -> error
+	cfgZeroInterval := &Config{
+		DatabaseURL:            "postgres://localhost/test",
+		SMTPHost:               "smtp.example.com",
+		SMTPFrom:               "test@example.com",
+		HTTPPort:               8080,
+		SMTPPort:               587,
+		AuthSecret:             validSecret,
+		CampaignWorkerEnabled:  true,
+		CampaignWorkerInterval: 0,
+	}
+	if err := cfgZeroInterval.Validate(); err == nil {
+		t.Fatal("expected error when campaign worker is enabled with zero interval, got nil")
+	}
+
+	// 2. Campaign worker enabled with non-positive batch size -> error
+	cfgZeroBatch := &Config{
+		DatabaseURL:             "postgres://localhost/test",
+		SMTPHost:                "smtp.example.com",
+		SMTPFrom:                "test@example.com",
+		HTTPPort:                8080,
+		SMTPPort:                587,
+		AuthSecret:              validSecret,
+		CampaignWorkerEnabled:   true,
+		CampaignWorkerInterval:  5 * time.Second,
+		CampaignWorkerBatchSize: 0,
+	}
+	if err := cfgZeroBatch.Validate(); err == nil {
+		t.Fatal("expected error when campaign worker is enabled with zero batch size, got nil")
+	}
+
+	// 3. Campaign worker enabled with non-positive stale timeout -> error
+	cfgZeroStale := &Config{
+		DatabaseURL:                "postgres://localhost/test",
+		SMTPHost:                   "smtp.example.com",
+		SMTPFrom:                   "test@example.com",
+		HTTPPort:                   8080,
+		SMTPPort:                   587,
+		AuthSecret:                 validSecret,
+		CampaignWorkerEnabled:      true,
+		CampaignWorkerInterval:     5 * time.Second,
+		CampaignWorkerBatchSize:    20,
+		CampaignWorkerStaleTimeout: 0,
+	}
+	if err := cfgZeroStale.Validate(); err == nil {
+		t.Fatal("expected error when campaign worker is enabled with zero stale timeout, got nil")
+	}
+
+	// 4. Campaign worker enabled with valid settings -> success
+	cfgValid := &Config{
+		DatabaseURL:                "postgres://localhost/test",
+		SMTPHost:                   "smtp.example.com",
+		SMTPFrom:                   "test@example.com",
+		HTTPPort:                   8080,
+		SMTPPort:                   587,
+		AuthSecret:                 validSecret,
+		CampaignWorkerEnabled:      true,
+		CampaignWorkerInterval:     5 * time.Second,
+		CampaignWorkerBatchSize:    20,
+		CampaignWorkerStaleTimeout: 5 * time.Minute,
+	}
+	if err := cfgValid.Validate(); err != nil {
+		t.Fatalf("expected valid config for campaign worker, got: %v", err)
 	}
 }

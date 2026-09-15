@@ -243,7 +243,7 @@ func TestService_Preview_SuccessAndHTMLEscaping(t *testing.T) {
 		"email":    "john@example.com",
 	}
 
-	res, err := svc.Preview(context.Background(), "tpl-preview-1", vars)
+	res, err := svc.Preview(context.Background(), "tpl-preview-1", PreviewInput{Variables: vars})
 	if err != nil {
 		t.Fatalf("expected preview success, got %v", err)
 	}
@@ -266,6 +266,92 @@ func TestService_Preview_SuccessAndHTMLEscaping(t *testing.T) {
 	}
 }
 
+func TestService_Preview_UnsavedOverrides(t *testing.T) {
+	repo := newMockTemplateRepo()
+	svc := NewService(repo)
+
+	subject := "Unsaved Subject {{name}}"
+	htmlBody := "<div>Unsaved HTML {{name}}</div>"
+	plainText := "Unsaved Plain {{name}}"
+
+	res, err := svc.Preview(context.Background(), "preview", PreviewInput{
+		Subject:       &subject,
+		HTMLBody:      &htmlBody,
+		PlainTextBody: &plainText,
+		Variables: map[string]any{
+			"name": "SuperUser",
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected preview success with overrides, got: %v", err)
+	}
+
+	if res.Subject != "Unsaved Subject SuperUser" {
+		t.Errorf("unexpected subject: %s", res.Subject)
+	}
+	if res.HTMLBody != "<div>Unsaved HTML SuperUser</div>" {
+		t.Errorf("unexpected htmlBody: %s", res.HTMLBody)
+	}
+}
+
+func TestService_Preview_ExistingTemplateIDWithOverrides(t *testing.T) {
+	repo := newMockTemplateRepo()
+	svc := NewService(repo)
+
+	tpl := &domain.EmailTemplate{
+		ID:            "tpl-existing-100",
+		TemplateKey:   "existing_key",
+		Name:          "Existing Name",
+		Subject:       "Persisted DB Subject",
+		HTMLBody:      "<p>Persisted DB HTML</p>",
+		PlainTextBody: "Persisted DB PlainText",
+		Locale:        "en",
+		Status:        domain.TemplateStatusActive,
+		Version:       1,
+	}
+	repo.templates[tpl.ID] = tpl
+
+	// 1. Override both subject and HTML body on existing template
+	overrideSubject := "Live Unsaved Subject {{name}}"
+	overrideHTML := "<div>Live Unsaved HTML {{name}}</div>"
+
+	res, err := svc.Preview(context.Background(), "tpl-existing-100", PreviewInput{
+		Subject:  &overrideSubject,
+		HTMLBody: &overrideHTML,
+		Variables: map[string]any{
+			"name": "Alex",
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected preview success with overrides on existing template, got %v", err)
+	}
+
+	if res.Subject != "Live Unsaved Subject Alex" {
+		t.Errorf("expected overridden subject 'Live Unsaved Subject Alex', got '%s'", res.Subject)
+	}
+	if res.HTMLBody != "<div>Live Unsaved HTML Alex</div>" {
+		t.Errorf("expected overridden HTML body '<div>Live Unsaved HTML Alex</div>', got '%s'", res.HTMLBody)
+	}
+	if res.PlainTextBody != "Persisted DB PlainText" {
+		t.Errorf("expected fallback DB plain text, got '%s'", res.PlainTextBody)
+	}
+
+	// 2. Override only subject
+	singleOverrideSubject := "Single Subject Override"
+	res2, err := svc.Preview(context.Background(), "tpl-existing-100", PreviewInput{
+		Subject: &singleOverrideSubject,
+	})
+	if err != nil {
+		t.Fatalf("expected preview success with single override, got %v", err)
+	}
+	if res2.Subject != "Single Subject Override" {
+		t.Errorf("expected overridden subject, got '%s'", res2.Subject)
+	}
+	if res2.HTMLBody != "<p>Persisted DB HTML</p>" {
+		t.Errorf("expected DB HTML body, got '%s'", res2.HTMLBody)
+	}
+}
+
 func TestService_Preview_MissingVariablesAndNotFound(t *testing.T) {
 	repo := newMockTemplateRepo()
 	svc := NewService(repo)
@@ -283,19 +369,19 @@ func TestService_Preview_MissingVariablesAndNotFound(t *testing.T) {
 	repo.templates[tpl.ID] = tpl
 
 	// 1. Missing variable returns ErrMissingVariable
-	_, err := svc.Preview(context.Background(), "tpl-preview-2", map[string]any{})
+	_, err := svc.Preview(context.Background(), "tpl-preview-2", PreviewInput{Variables: map[string]any{}})
 	if !errors.Is(err, ErrMissingVariable) {
 		t.Fatalf("expected ErrMissingVariable, got %v", err)
 	}
 
 	// 2. Non-existent template returns ErrNotFound
-	_, err = svc.Preview(context.Background(), "non-existent-id", map[string]any{"code": "123"})
+	_, err = svc.Preview(context.Background(), "non-existent-id", PreviewInput{Variables: map[string]any{"code": "123"}})
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 
 	// 3. Empty ID returns ErrInvalidInput
-	_, err = svc.Preview(context.Background(), "", map[string]any{"code": "123"})
+	_, err = svc.Preview(context.Background(), "", PreviewInput{Variables: map[string]any{"code": "123"}})
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("expected ErrInvalidInput, got %v", err)
 	}

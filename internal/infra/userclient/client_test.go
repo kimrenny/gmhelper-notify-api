@@ -702,3 +702,95 @@ func TestHTTPClient_SearchUsers_ContextCancellation(t *testing.T) {
 		t.Fatal("expected error due to cancelled context, got nil")
 	}
 }
+
+func TestHTTPClient_GetUsers_Success(t *testing.T) {
+	regDate := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
+	expectedPaged := PagedUsers{
+		Items: []User{
+			{
+				ID:               "u-1",
+				Username:         "alice",
+				Email:            "alice@example.com",
+				Role:             "User",
+				Language:         "en",
+				IsActive:         true,
+				IsBlocked:        false,
+				RegistrationDate: regDate,
+			},
+		},
+		TotalCount:  1,
+		Page:        1,
+		PageSize:    250,
+		HasNextPage: false,
+	}
+
+	var capturedQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		if r.URL.Path != "/api/v1/internal/users" {
+			t.Errorf("expected path /api/v1/internal/users, got %s", r.URL.Path)
+		}
+		capturedQuery = r.URL.RawQuery
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"data":    expectedPaged,
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, server.Client(), &fakeTokenProvider{})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	result, err := client.GetUsers(context.Background(), 1, 250, true, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(result.Items))
+	}
+	if result.Items[0].Username != "alice" {
+		t.Errorf("expected alice, got %s", result.Items[0].Username)
+	}
+	if capturedQuery != "activeOnly=true&page=1&pageSize=250&unblockedOnly=true" {
+		t.Errorf("unexpected query string: %s", capturedQuery)
+	}
+}
+
+func TestHTTPClient_GetUsers_Validation(t *testing.T) {
+	client, _ := NewClient("http://localhost:5000", nil, &fakeTokenProvider{})
+
+	// 1. Page < 1
+	_, err := client.GetUsers(context.Background(), 0, 50, true, true)
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput for page 0, got: %v", err)
+	}
+
+	// 2. PageSize < 1
+	_, err = client.GetUsers(context.Background(), 1, 0, true, true)
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput for pageSize 0, got: %v", err)
+	}
+}
+
+func TestHTTPClient_GetUsers_Errors(t *testing.T) {
+	server500 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server500.Close()
+
+	client, _ := NewClient(server500.URL, server500.Client(), &fakeTokenProvider{})
+	_, err := client.GetUsers(context.Background(), 1, 50, true, true)
+	if !errors.Is(err, ErrServer) {
+		t.Errorf("expected ErrServer, got: %v", err)
+	}
+}

@@ -198,3 +198,51 @@ func TestServiceTokenProvider_ContextCancelled(t *testing.T) {
 		t.Fatalf("expected context.Canceled error, got: %v", err)
 	}
 }
+
+func TestServiceTokenProvider_GMHelperContractClaims(t *testing.T) {
+	gmhelperIssuer := "GMHelperAPI"
+	gmhelperAudience := "GMHelperClient"
+
+	provider, err := NewServiceTokenProvider(ServiceTokenProviderConfig{
+		Secret:   testServiceSecret,
+		Issuer:   gmhelperIssuer,
+		Audience: gmhelperAudience,
+		TTL:      5 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("failed to create provider: %v", err)
+	}
+
+	tokenString, err := provider.Token(context.Background())
+	if err != nil {
+		t.Fatalf("failed to generate token: %v", err)
+	}
+
+	parts := strings.Split(tokenString, ".")
+	if len(parts) != 3 {
+		t.Fatalf("expected 3 segments, got %d", len(parts))
+	}
+
+	payloadBytes, err := decodeBase64URL(parts[1])
+	if err != nil {
+		t.Fatalf("failed to decode payload: %v", err)
+	}
+
+	var claims Claims
+	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
+		t.Fatalf("failed to parse JSON claims: %v", err)
+	}
+
+	if claims.Iss != "GMHelperAPI" {
+		t.Errorf("expected iss 'GMHelperAPI', got '%s'", claims.Iss)
+	}
+	if !claims.MatchesAudience("GMHelperClient") {
+		t.Errorf("expected aud 'GMHelperClient', got '%v'", claims.Aud)
+	}
+	if claims.Role != "Service" || claims.SoapRole != "Service" {
+		t.Errorf("expected role 'Service', got role=%s soapRole=%s", claims.Role, claims.SoapRole)
+	}
+	if claims.Sub != "gmhelper-notify-api" {
+		t.Errorf("expected sub 'gmhelper-notify-api', got '%s'", claims.Sub)
+	}
+}
