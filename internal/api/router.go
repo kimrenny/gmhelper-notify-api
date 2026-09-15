@@ -14,6 +14,7 @@ func NewRouter(
 	campaignHandler *handlers.CampaignHandler,
 	directHandler *handlers.DirectNotificationHandler,
 	userHandler *handlers.UserHandler,
+	dashboardHandler *handlers.DashboardHandler,
 	authMiddleware middleware.Middleware,
 ) http.Handler {
 	mux := http.NewServeMux()
@@ -26,6 +27,11 @@ func NewRouter(
 
 	// API v1 prefix handler
 	apiV1Mux := http.NewServeMux()
+
+	// Dashboard endpoints
+	if dashboardHandler != nil {
+		apiV1Mux.HandleFunc("GET /dashboard/stats", dashboardHandler.GetStats)
+	}
 
 	// Template endpoints
 	if templateHandler != nil {

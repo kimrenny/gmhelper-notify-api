@@ -12,6 +12,7 @@ import (
 
 	"github.com/gmhelper/notify-api/internal/api/handlers"
 	"github.com/gmhelper/notify-api/internal/app/campaign"
+	"github.com/gmhelper/notify-api/internal/app/dashboard"
 	"github.com/gmhelper/notify-api/internal/app/direct"
 	"github.com/gmhelper/notify-api/internal/app/email"
 	"github.com/gmhelper/notify-api/internal/app/health"
@@ -180,7 +181,7 @@ func TestRouter_HealthAndReady(t *testing.T) {
 	pinger := &dummyPinger{err: nil}
 	readiness := health.NewReadinessService(pinger)
 	healthHandler := handlers.NewHealthHandler(readiness, log)
-	router := NewRouter(healthHandler, nil, nil, nil, nil, nil)
+	router := NewRouter(healthHandler, nil, nil, nil, nil, nil, nil)
 
 	// 1. GET /health
 	reqHealth := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -215,7 +216,7 @@ func TestRouter_NotFoundJSON(t *testing.T) {
 	pinger := &dummyPinger{err: nil}
 	readiness := health.NewReadinessService(pinger)
 	healthHandler := handlers.NewHealthHandler(readiness, log)
-	router := NewRouter(healthHandler, nil, nil, nil, nil, nil)
+	router := NewRouter(healthHandler, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/unknown-endpoint", nil)
 	rec := httptest.NewRecorder()
@@ -262,7 +263,7 @@ func TestRouter_DirectNotificationsRouting_AuthAndPrecedence(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.Authenticate(verifier, log)
 
-	router := NewRouter(nil, nil, nil, directHandler, nil, authMw)
+	router := NewRouter(nil, nil, nil, directHandler, nil, nil, authMw)
 
 	validToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -349,10 +350,14 @@ func TestRouter_AdministrativeRoutes_SecurityMatrix(t *testing.T) {
 	userService, _ := user.NewService(mockResolver)
 	userHandler := handlers.NewUserHandler(userService, log)
 
+	dashboardRepo := &routerMockDashboardRepo{}
+	dashboardService := dashboard.NewService(dashboardRepo)
+	dashboardHandler := handlers.NewDashboardHandler(dashboardService, log)
+
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(healthHandler, templateHandler, campaignHandler, directHandler, userHandler, authMw)
+	router := NewRouter(healthHandler, templateHandler, campaignHandler, directHandler, userHandler, dashboardHandler, authMw)
 
 	adminToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-admin", "admin", 15*time.Minute)
 	ownerToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-owner", "owner", 15*time.Minute)
@@ -382,6 +387,7 @@ func TestRouter_AdministrativeRoutes_SecurityMatrix(t *testing.T) {
 		{method: http.MethodGet, path: "/api/v1/notifications/direct/test-notif-1"},
 		{method: http.MethodPost, path: "/api/v1/notifications/direct/test-notif-1/deliver"},
 		{method: http.MethodGet, path: "/api/v1/users/search"},
+		{method: http.MethodGet, path: "/api/v1/dashboard/stats"},
 	}
 
 	for _, ep := range endpoints {
@@ -470,6 +476,26 @@ func TestRouter_AdministrativeRoutes_SecurityMatrix(t *testing.T) {
 	}
 }
 
+type routerMockDashboardRepo struct {
+	stats *domain.DashboardStats
+	err   error
+}
+
+func (m *routerMockDashboardRepo) GetDashboardStats(ctx context.Context, recentLimit int) (*domain.DashboardStats, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	if m.stats != nil {
+		return m.stats, nil
+	}
+	return &domain.DashboardStats{
+		Campaigns:       domain.DashboardCampaignStats{},
+		Templates:       domain.DashboardTemplateStats{},
+		Deliveries:      domain.DashboardDeliveryStats{},
+		RecentCampaigns: []*domain.RecentCampaignItem{},
+	}, nil
+}
+
 type routerMockUserResolver struct {
 	searchUsersFunc func(ctx context.Context, query string, limit int) ([]userclient.User, error)
 }
@@ -510,7 +536,7 @@ func TestRouter_UserSearchRouting(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, nil, nil, userHandler, authMw)
+	router := NewRouter(nil, nil, nil, nil, userHandler, nil, authMw)
 
 	adminToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-admin", "admin", 15*time.Minute)
 
@@ -564,7 +590,7 @@ func TestRouter_CampaignEndpoints(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, campaignHandler, nil, nil, authMw)
+	router := NewRouter(nil, nil, campaignHandler, nil, nil, nil, authMw)
 
 	adminToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-admin", "admin", 15*time.Minute)
 
@@ -629,7 +655,7 @@ func TestRouter_CampaignDelete(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.Authenticate(verifier, log)
 
-	router := NewRouter(nil, nil, campaignHandler, nil, nil, authMw)
+	router := NewRouter(nil, nil, campaignHandler, nil, nil, nil, authMw)
 
 	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -689,7 +715,7 @@ func TestRouter_CampaignScheduleAndCancel(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, campaignHandler, nil, nil, authMw)
+	router := NewRouter(nil, nil, campaignHandler, nil, nil, nil, authMw)
 
 	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -750,5 +776,82 @@ func TestRouter_CampaignScheduleAndCancel(t *testing.T) {
 	}
 	if resCancel.Status != "cancelled" || resCancel.ScheduledAt == nil {
 		t.Fatalf("expected cancelled status with preserved scheduledAt, got %+v", resCancel)
+	}
+}
+
+func TestRouter_DashboardStats(t *testing.T) {
+	log, _ := logger.NewLogger("info")
+	dashboardRepo := &routerMockDashboardRepo{
+		stats: &domain.DashboardStats{
+			Campaigns: domain.DashboardCampaignStats{
+				Total:     10,
+				Draft:     2,
+				Scheduled: 1,
+				Running:   1,
+				Completed: 5,
+				Cancelled: 1,
+			},
+			Templates: domain.DashboardTemplateStats{
+				Total:    8,
+				Active:   6,
+				Archived: 2,
+			},
+			Deliveries: domain.DashboardDeliveryStats{
+				TotalMessages: 500,
+				TotalSent:     480,
+				TotalFailed:   15,
+				TotalPending:  5,
+			},
+			RecentCampaigns: []*domain.RecentCampaignItem{
+				{
+					ID:           "c1",
+					Name:         "Spring Promo",
+					CampaignType: "broadcast",
+					Status:       domain.CampaignStatusCompleted,
+					CreatedAt:    time.Now().UTC(),
+				},
+			},
+		},
+	}
+	dashboardService := dashboard.NewService(dashboardRepo)
+	dashboardHandler := handlers.NewDashboardHandler(dashboardService, log)
+
+	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
+	authMw := middleware.AdminAuth(verifier, log)
+
+	router := NewRouter(nil, nil, nil, nil, nil, dashboardHandler, authMw)
+
+	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to generate token: %v", err)
+	}
+
+	// 1. Unauthenticated -> 401
+	reqUnauth := httptest.NewRequest(http.MethodGet, "/api/v1/dashboard/stats", nil)
+	recUnauth := httptest.NewRecorder()
+	router.ServeHTTP(recUnauth, reqUnauth)
+	if recUnauth.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized for unauth request, got %d", recUnauth.Code)
+	}
+
+	// 2. Authenticated -> 200 OK
+	reqAuth := httptest.NewRequest(http.MethodGet, "/api/v1/dashboard/stats?limit=5", nil)
+	reqAuth.Header.Set("Authorization", "Bearer "+adminToken)
+	recAuth := httptest.NewRecorder()
+	router.ServeHTTP(recAuth, reqAuth)
+
+	if recAuth.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", recAuth.Code, recAuth.Body.String())
+	}
+
+	var stats domain.DashboardStats
+	if err := json.Unmarshal(recAuth.Body.Bytes(), &stats); err != nil {
+		t.Fatalf("failed to unmarshal JSON response: %v", err)
+	}
+	if stats.Campaigns.Total != 10 || stats.Templates.Total != 8 || stats.Deliveries.TotalSent != 480 {
+		t.Errorf("unexpected dashboard stats in response: %+v", stats)
+	}
+	if len(stats.RecentCampaigns) != 1 || stats.RecentCampaigns[0].Name != "Spring Promo" {
+		t.Errorf("unexpected recent campaigns in response: %+v", stats.RecentCampaigns)
 	}
 }

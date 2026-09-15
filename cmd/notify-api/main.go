@@ -16,6 +16,7 @@ import (
 	"github.com/gmhelper/notify-api/internal/api"
 	"github.com/gmhelper/notify-api/internal/api/handlers"
 	"github.com/gmhelper/notify-api/internal/app/campaign"
+	"github.com/gmhelper/notify-api/internal/app/dashboard"
 	"github.com/gmhelper/notify-api/internal/app/direct"
 	"github.com/gmhelper/notify-api/internal/app/health"
 	"github.com/gmhelper/notify-api/internal/app/template"
@@ -74,6 +75,10 @@ func main() {
 	campaignHandler := handlers.NewCampaignHandler(campaignService, log)
 	recipientRepo := postgres.NewCampaignRecipientRepository(db.DB())
 
+	dashboardRepo := postgres.NewDashboardRepository(db.DB())
+	dashboardService := dashboard.NewService(dashboardRepo)
+	dashboardHandler := handlers.NewDashboardHandler(dashboardService, log)
+
 	directRepo := postgres.NewDirectNotificationRepository(db.DB())
 	attemptRepo := postgres.NewDeliveryAttemptRepository(db.DB())
 	smtpSender := smtp.NewClientWithLogger(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom, log)
@@ -119,7 +124,7 @@ func main() {
 	}
 	authMiddleware := middleware.AdminAuth(jwtVerifier, log)
 
-	router := api.NewRouter(healthHandler, templateHandler, campaignHandler, directHandler, userHandler, authMiddleware)
+	router := api.NewRouter(healthHandler, templateHandler, campaignHandler, directHandler, userHandler, dashboardHandler, authMiddleware)
 	handler := middleware.Chain(router,
 		middleware.RequestID(),
 		middleware.Logging(log),
