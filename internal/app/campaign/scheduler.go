@@ -160,6 +160,12 @@ func (s *Scheduler) ProcessDue(ctx context.Context) (int, error) {
 					)
 				}
 			}
+		} else {
+			if s.logger != nil {
+				s.logger.Warn("audience populator is not configured (GMHELPER_API_BASE_URL may be missing); audience population skipped for claimed campaign",
+					logger.String("id", claimed.ID),
+				)
+			}
 		}
 	}
 

@@ -287,6 +287,10 @@ func TestAudiencePopulator_EmptyAudience(t *testing.T) {
 	if count != 0 {
 		t.Fatalf("expected 0 recipients, got %d", count)
 	}
+
+	if cRepo.campaigns[campaignID].Status != domain.CampaignStatusFailed {
+		t.Fatalf("expected campaign status failed for empty audience, got %s", cRepo.campaigns[campaignID].Status)
+	}
 }
 
 func TestAudiencePopulator_UserListerError_MarksCampaignFailed(t *testing.T) {

@@ -76,11 +76,11 @@ func main() {
 
 	directRepo := postgres.NewDirectNotificationRepository(db.DB())
 	attemptRepo := postgres.NewDeliveryAttemptRepository(db.DB())
-	smtpSender := smtp.NewClient(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom)
+	smtpSender := smtp.NewClientWithLogger(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom, log)
 
 	serviceTokenProvider, err := auth.NewServiceTokenProvider(auth.ServiceTokenProviderConfig{
 		Secret:   cfg.ServiceAuthSecret,
-		Issuer:   cfg.AuthIssuer,
+		Issuer:   cfg.ServiceAuthIssuer,
 		Audience: cfg.ServiceAuthAudience,
 	})
 	if err != nil {
@@ -158,7 +158,7 @@ func main() {
 
 	// Campaign background delivery worker
 	if cfg.CampaignWorkerEnabled {
-		campaignDeliveryService := campaign.NewDeliveryService(campaignRepo, recipientRepo, templateRepo, attemptRepo, smtpSender, userService)
+		campaignDeliveryService := campaign.NewDeliveryServiceWithLogger(campaignRepo, recipientRepo, templateRepo, attemptRepo, smtpSender, userService, log)
 		campaignWorker := campaign.NewWorker(recipientRepo, campaignRepo, campaignDeliveryService, cfg.CampaignWorkerInterval, cfg.CampaignWorkerStaleTimeout, cfg.CampaignWorkerBatchSize, log)
 		workerWg.Add(1)
 		go func() {

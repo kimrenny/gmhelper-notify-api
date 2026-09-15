@@ -11,6 +11,7 @@ import (
 	"github.com/gmhelper/notify-api/internal/app/email"
 	"github.com/gmhelper/notify-api/internal/app/user"
 	"github.com/gmhelper/notify-api/internal/domain"
+	"github.com/gmhelper/notify-api/internal/infra/logger"
 	"github.com/google/uuid"
 )
 
@@ -28,6 +29,7 @@ type DeliveryService struct {
 	attemptRepo   domain.DeliveryAttemptRepository
 	sender        email.Sender
 	userResolver  user.UserResolver
+	logger        logger.Logger
 }
 
 // NewDeliveryService constructs a new DeliveryService for campaign recipients.
@@ -39,6 +41,19 @@ func NewDeliveryService(
 	sender email.Sender,
 	userResolver user.UserResolver,
 ) *DeliveryService {
+	return NewDeliveryServiceWithLogger(campaignRepo, recipientRepo, templateRepo, attemptRepo, sender, userResolver, nil)
+}
+
+// NewDeliveryServiceWithLogger constructs a new DeliveryService with an optional logger.
+func NewDeliveryServiceWithLogger(
+	campaignRepo domain.NotificationCampaignRepository,
+	recipientRepo domain.CampaignRecipientRepository,
+	templateRepo domain.EmailTemplateRepository,
+	attemptRepo domain.DeliveryAttemptRepository,
+	sender email.Sender,
+	userResolver user.UserResolver,
+	log logger.Logger,
+) *DeliveryService {
 	return &DeliveryService{
 		campaignRepo:  campaignRepo,
 		recipientRepo: recipientRepo,
@@ -46,6 +61,7 @@ func NewDeliveryService(
 		attemptRepo:   attemptRepo,
 		sender:        sender,
 		userResolver:  userResolver,
+		logger:        log,
 	}
 }
 
@@ -119,6 +135,15 @@ func (s *DeliveryService) DeliverClaimed(ctx context.Context, recipient *domain.
 		PlainTextBody: rendered.PlainTextBody,
 	}
 
+	if s.logger != nil {
+		s.logger.Info("starting campaign recipient email delivery",
+			logger.String("recipientId", recipient.ID),
+			logger.String("campaignId", recipient.CampaignID),
+			logger.String("recipientEmail", recipient.RecipientEmail),
+			logger.Int("attemptNumber", attemptsCount),
+		)
+	}
+
 	sendErr := s.sender.Send(ctx, msg)
 
 	// 7. Record delivery outcome
@@ -130,6 +155,16 @@ func (s *DeliveryService) DeliverClaimed(ctx context.Context, recipient *domain.
 		attempt.ErrorMessage = ""
 		attempt.AttemptedAt = sentAt
 		_ = s.attemptRepo.Update(ctx, attempt)
+
+		if s.logger != nil {
+			s.logger.Info("campaign recipient delivered successfully via SMTP",
+				logger.String("recipientId", recipient.ID),
+				logger.String("campaignId", recipient.CampaignID),
+				logger.String("recipientEmail", recipient.RecipientEmail),
+				logger.String("subject", rendered.Subject),
+				logger.String("attemptId", attempt.ID),
+			)
+		}
 		return nil
 	}
 
@@ -142,6 +177,16 @@ func (s *DeliveryService) DeliverClaimed(ctx context.Context, recipient *domain.
 	attempt.AttemptedAt = failedAt
 	_ = s.attemptRepo.Update(ctx, attempt)
 
+	if s.logger != nil {
+		s.logger.Error("campaign recipient SMTP delivery failed",
+			logger.String("recipientId", recipient.ID),
+			logger.String("campaignId", recipient.CampaignID),
+			logger.String("recipientEmail", recipient.RecipientEmail),
+			logger.Int("attemptNumber", attemptsCount),
+			logger.Error(sendErr),
+		)
+	}
+
 	return sendErr
 }
 
@@ -150,6 +195,12 @@ func (s *DeliveryService) FinalizeCampaignIfDone(ctx context.Context, campaignID
 	stats, err := s.recipientRepo.GetDeliveryStatsByCampaign(ctx, campaignID)
 	if err != nil {
 		return false, "", err
+	}
+
+	// If no recipients exist yet, population is still in progress (or managed by AudiencePopulator).
+	// Delivery runner must not prematurely finalize campaigns with zero recipients.
+	if stats.TotalCount == 0 {
+		return false, domain.CampaignStatusRunning, nil
 	}
 
 	// If any recipient is still pending or currently sending, do not finalize
@@ -166,8 +217,7 @@ func (s *DeliveryService) FinalizeCampaignIfDone(ctx context.Context, campaignID
 	case stats.SentCount == 0 && stats.FailedCount > 0:
 		finalStatus = domain.CampaignStatusFailed
 	default:
-		// Zero recipients
-		finalStatus = domain.CampaignStatusCompleted
+		finalStatus = domain.CampaignStatusFailed
 	}
 
 	completedAt := time.Now().UTC()

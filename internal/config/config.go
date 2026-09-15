@@ -27,6 +27,7 @@ type Config struct {
 	AuthAudience               string
 	AuthSecret                 string
 	ServiceAuthSecret          string
+	ServiceAuthIssuer          string
 	ServiceAuthAudience        string
 	WorkerEnabled              bool
 	WorkerInterval             time.Duration
@@ -50,7 +51,7 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	smtpPort, err := parseIntEnv("SMTP_PORT", 587)
+	smtpPort, err := parseIntEnvWithAliases(587, "SMTP_PORT", "SMTP_Port", "SMTP__Port")
 	if err != nil {
 		return nil, err
 	}
@@ -59,11 +60,11 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	smtpHost, err := requireEnv("SMTP_HOST")
+	smtpHost, err := requireFirstEnv("SMTP_HOST", "SMTP__Host")
 	if err != nil {
 		return nil, err
 	}
-	smtpFrom, err := requireEnv("SMTP_FROM")
+	smtpFrom, err := requireFirstEnv("SMTP_FROM", "SMTP__From")
 	if err != nil {
 		return nil, err
 	}
@@ -118,8 +119,8 @@ func Load() (*Config, error) {
 		DatabaseURL:                databaseURL,
 		SMTPHost:                   smtpHost,
 		SMTPPort:                   smtpPort,
-		SMTPUsername:               os.Getenv("SMTP_USERNAME"),
-		SMTPPassword:               os.Getenv("SMTP_PASSWORD"),
+		SMTPUsername:               getFirstEnv("SMTP_USERNAME", "SMTP__Username"),
+		SMTPPassword:               getFirstEnv("SMTP_PASSWORD", "SMTP__Password"),
 		SMTPFrom:                   smtpFrom,
 		LogLevel:                   envOrDefault("LOG_LEVEL", "info"),
 		AllowedCORSOrigins:         envOrDefault("ALLOWED_CORS_ORIGINS", "*"),
@@ -127,7 +128,8 @@ func Load() (*Config, error) {
 		AuthAudience:               envOrDefault("NOTIFY_AUTH_AUDIENCE", "gmhelper-notify-api"),
 		AuthSecret:                 authSecret,
 		ServiceAuthSecret:          serviceAuthSecret,
-		ServiceAuthAudience:        envOrDefault("NOTIFY_SERVICE_AUTH_AUDIENCE", "gmhelper-api"),
+		ServiceAuthIssuer:          envOrDefault("NOTIFY_SERVICE_AUTH_ISSUER", envOrDefault("NOTIFY_AUTH_ISSUER", "GMHelperAPI")),
+		ServiceAuthAudience:        envOrDefault("NOTIFY_SERVICE_AUTH_AUDIENCE", "GMHelperClient"),
 		WorkerEnabled:              parseBoolEnv("NOTIFY_WORKER_ENABLED", true),
 		WorkerInterval:             workerInterval,
 		WorkerStaleTimeout:         workerStaleTimeout,
@@ -160,6 +162,33 @@ func loadDotEnv() {
 	}
 }
 
+var envKeyAliases = map[string][]string{
+	"SMTP_HOST":      {"SMTP__Host"},
+	"SMTP__Host":     {"SMTP_HOST"},
+	"SMTP_PORT":      {"SMTP_Port", "SMTP__Port"},
+	"SMTP_Port":      {"SMTP_PORT", "SMTP__Port"},
+	"SMTP_USERNAME":  {"SMTP__Username"},
+	"SMTP__Username": {"SMTP_USERNAME"},
+	"SMTP_PASSWORD":  {"SMTP__Password"},
+	"SMTP__Password": {"SMTP_PASSWORD"},
+	"SMTP_FROM":      {"SMTP__From"},
+	"SMTP__From":     {"SMTP_FROM"},
+}
+
+func hasEnvOrAlias(key string) bool {
+	if _, exists := os.LookupEnv(key); exists {
+		return true
+	}
+	if aliases, ok := envKeyAliases[key]; ok {
+		for _, a := range aliases {
+			if _, exists := os.LookupEnv(a); exists {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func parseAndApplyEnvFile(filePath string) error {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
@@ -187,7 +216,7 @@ func parseAndApplyEnvFile(filePath string) error {
 			}
 		}
 
-		if _, exists := os.LookupEnv(key); !exists {
+		if !hasEnvOrAlias(key) {
 			_ = os.Setenv(key, val)
 		}
 	}
@@ -219,8 +248,15 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.ServiceAuthSecret) == "" {
 		c.ServiceAuthSecret = c.AuthSecret
 	}
+	if strings.TrimSpace(c.ServiceAuthIssuer) == "" {
+		if strings.TrimSpace(c.AuthIssuer) != "" {
+			c.ServiceAuthIssuer = c.AuthIssuer
+		} else {
+			c.ServiceAuthIssuer = "GMHelperAPI"
+		}
+	}
 	if strings.TrimSpace(c.ServiceAuthAudience) == "" {
-		c.ServiceAuthAudience = "gmhelper-api"
+		c.ServiceAuthAudience = "GMHelperClient"
 	}
 	if c.Env == "production" {
 		if strings.TrimSpace(c.AuthSecret) == "" || c.AuthSecret == "Z21oZWxwZXItZGVmYXVsdC1qd3Qtc2VjcmV0LTMyYiE=" {
@@ -232,6 +268,9 @@ func (c *Config) Validate() error {
 	}
 	if _, err := auth.DecodeSecretKey(c.ServiceAuthSecret); err != nil {
 		return fmt.Errorf("NOTIFY_SERVICE_AUTH_SECRET is invalid: %w", err)
+	}
+	if strings.TrimSpace(c.ServiceAuthIssuer) == "" {
+		return fmt.Errorf("NOTIFY_SERVICE_AUTH_ISSUER cannot be empty")
 	}
 	if strings.TrimSpace(c.ServiceAuthAudience) == "" {
 		return fmt.Errorf("NOTIFY_SERVICE_AUTH_AUDIENCE cannot be empty")
@@ -330,4 +369,37 @@ func requireEnv(name string) (string, error) {
 		return "", fmt.Errorf("missing required environment variable: %s", name)
 	}
 	return value, nil
+}
+
+func getFirstEnv(keys ...string) string {
+	for _, k := range keys {
+		if val := os.Getenv(k); strings.TrimSpace(val) != "" {
+			return val
+		}
+	}
+	return ""
+}
+
+func requireFirstEnv(primary string, aliases ...string) (string, error) {
+	if val := os.Getenv(primary); strings.TrimSpace(val) != "" {
+		return val, nil
+	}
+	for _, a := range aliases {
+		if val := os.Getenv(a); strings.TrimSpace(val) != "" {
+			return val, nil
+		}
+	}
+	return "", fmt.Errorf("missing required environment variable: %s", primary)
+}
+
+func parseIntEnvWithAliases(defaultValue int, primary string, aliases ...string) (int, error) {
+	val := getFirstEnv(append([]string{primary}, aliases...)...)
+	if val == "" {
+		return defaultValue, nil
+	}
+	parsed, err := strconv.Atoi(val)
+	if err != nil {
+		return 0, fmt.Errorf("invalid integer for %s: %w", primary, err)
+	}
+	return parsed, nil
 }

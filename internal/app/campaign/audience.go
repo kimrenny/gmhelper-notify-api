@@ -53,7 +53,17 @@ func NewAudiencePopulator(
 // On any retrieval or insertion failure, the campaign is transitioned to failed status.
 func (p *Populator) PopulateAudience(ctx context.Context, campaignID string) (int, error) {
 	if p.userLister == nil || p.recipientRepo == nil || p.campaignRepo == nil {
+		if p.logger != nil {
+			p.logger.Error("populator dependencies not configured", logger.String("campaignId", campaignID))
+		}
 		return 0, errors.New("populator dependencies not configured")
+	}
+
+	if p.logger != nil {
+		p.logger.Info("audience population started",
+			logger.String("campaignId", campaignID),
+			logger.Int("pageSize", p.pageSize),
+		)
 	}
 
 	page := 1
@@ -62,13 +72,26 @@ func (p *Populator) PopulateAudience(ctx context.Context, campaignID string) (in
 
 	for {
 		if ctx.Err() != nil {
+			if p.logger != nil {
+				p.logger.Warn("audience population cancelled by context",
+					logger.String("campaignId", campaignID),
+					logger.Error(ctx.Err()),
+				)
+			}
 			return totalInserted, ctx.Err()
+		}
+
+		if p.logger != nil {
+			p.logger.Debug("requesting users page for campaign audience",
+				logger.String("campaignId", campaignID),
+				logger.Int("page", page),
+			)
 		}
 
 		paged, err := p.userLister.GetUsers(ctx, page, p.pageSize, true, true)
 		if err != nil {
 			if p.logger != nil {
-				p.logger.Error("failed to retrieve user page for campaign audience",
+				p.logger.Error("audience population failed to retrieve user page",
 					logger.String("campaignId", campaignID),
 					logger.Int("page", page),
 					logger.Error(err),
@@ -79,6 +102,17 @@ func (p *Populator) PopulateAudience(ctx context.Context, campaignID string) (in
 			return totalInserted, err
 		}
 
+		if p.logger != nil {
+			p.logger.Info("users page received for campaign audience",
+				logger.String("campaignId", campaignID),
+				logger.Int("page", page),
+				logger.Int("itemsCount", len(paged.Items)),
+				logger.Int("totalCount", paged.TotalCount),
+				logger.Bool("hasNextPage", paged.HasNextPage),
+			)
+		}
+
+		pageInserted := 0
 		for _, u := range paged.Items {
 			trimmedEmail := strings.TrimSpace(u.Email)
 			if trimmedEmail == "" {
@@ -109,7 +143,17 @@ func (p *Populator) PopulateAudience(ctx context.Context, campaignID string) (in
 				_ = p.campaignRepo.UpdateStatus(ctx, campaignID, domain.CampaignStatusFailed, nil, &completedAt)
 				return totalInserted, err
 			}
+			pageInserted++
 			totalInserted++
+		}
+
+		if p.logger != nil {
+			p.logger.Info("recipients created for page",
+				logger.String("campaignId", campaignID),
+				logger.Int("page", page),
+				logger.Int("pageInserted", pageInserted),
+				logger.Int("totalInserted", totalInserted),
+			)
 		}
 
 		if !paged.HasNextPage || len(paged.Items) == 0 {
@@ -118,8 +162,16 @@ func (p *Populator) PopulateAudience(ctx context.Context, campaignID string) (in
 		page++
 	}
 
-	if p.logger != nil {
-		p.logger.Info("successfully populated campaign audience",
+	if totalInserted == 0 {
+		if p.logger != nil {
+			p.logger.Warn("campaign audience resolved to zero eligible recipients; marking campaign failed",
+				logger.String("campaignId", campaignID),
+			)
+		}
+		completedAt := time.Now().UTC()
+		_ = p.campaignRepo.UpdateStatus(ctx, campaignID, domain.CampaignStatusFailed, nil, &completedAt)
+	} else if p.logger != nil {
+		p.logger.Info("audience population completed successfully",
 			logger.String("campaignId", campaignID),
 			logger.Int("recipientsCount", totalInserted),
 		)

@@ -564,16 +564,19 @@ func TestFinalizeCampaignIfDone(t *testing.T) {
 		t.Fatalf("expected campaign status failed, got %s", cRepo.campaigns["c3"].Status)
 	}
 
-	// 5. Zero recipients -> completed
+	// 5. Zero recipients in DB -> do not finalize (population in progress or managed by populator)
 	cRepo.campaigns["c4"] = &domain.NotificationCampaign{ID: "c4", Status: domain.CampaignStatusRunning}
 	finalized, status, err = svc.FinalizeCampaignIfDone(ctx, "c4")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !finalized || status != domain.CampaignStatusCompleted {
-		t.Fatalf("expected completed for 0 recipients, got finalized=%v status=%s", finalized, status)
+	if finalized {
+		t.Fatal("expected finalized=false when 0 recipients exist (population in progress)")
 	}
-	if cRepo.campaigns["c4"].Status != domain.CampaignStatusCompleted {
-		t.Fatalf("expected campaign status completed, got %s", cRepo.campaigns["c4"].Status)
+	if status != domain.CampaignStatusRunning {
+		t.Fatalf("expected running status for 0 recipients, got %s", status)
+	}
+	if cRepo.campaigns["c4"].Status != domain.CampaignStatusRunning {
+		t.Fatalf("expected campaign status running, got %s", cRepo.campaigns["c4"].Status)
 	}
 }

@@ -45,6 +45,10 @@ func Duration(key string, value time.Duration) Field {
 	return zap.Duration(key, value)
 }
 
+func Bool(key string, value bool) Field {
+	return zap.Bool(key, value)
+}
+
 func Error(err error) Field {
 	return zap.Error(err)
 }
