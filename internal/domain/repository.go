@@ -77,6 +77,8 @@ type AutomationRuleRepository interface {
 	GetByID(ctx context.Context, id string) (*AutomationRule, error)
 	Create(ctx context.Context, rule *AutomationRule) error
 	Update(ctx context.Context, rule *AutomationRule) error
+	Delete(ctx context.Context, id string) error
+	List(ctx context.Context) ([]*AutomationRule, error)
 	ListEnabled(ctx context.Context) ([]*AutomationRule, error)
 }
 

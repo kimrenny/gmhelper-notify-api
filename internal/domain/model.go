@@ -145,8 +145,11 @@ func (n *DirectNotification) Validate(ctx context.Context) error {
 }
 
 func (r *AutomationRule) Validate(ctx context.Context) error {
-	if r.ID == "" || r.Name == "" || r.EventType == "" || r.TemplateID == "" {
+	if r.ID == "" || r.Name == "" || r.TemplateID == "" {
 		return ErrInvalidEntity
+	}
+	if err := r.Config.Validate(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -229,14 +232,15 @@ type DeliveryAttempt struct {
 }
 
 type AutomationRule struct {
-	ID         string          `json:"id" db:"id"`
-	Name       string          `json:"name" db:"name"`
-	EventType  string          `json:"eventType" db:"event_type"`
-	TemplateID string          `json:"templateId" db:"template_id"`
-	Enabled    bool            `json:"enabled" db:"enabled"`
-	Config     json.RawMessage `json:"config" db:"config"`
-	CreatedAt  time.Time       `json:"createdAt" db:"created_at"`
-	UpdatedAt  time.Time       `json:"updatedAt" db:"updated_at"`
+	ID               string               `json:"id" db:"id"`
+	Name             string               `json:"name" db:"name"`
+	TemplateID       string               `json:"templateId" db:"template_id"`
+	Enabled          bool                 `json:"enabled" db:"enabled"`
+	Config           AutomationRuleConfig `json:"config" db:"config"`
+	LastEvaluatedAt  *time.Time           `json:"lastEvaluatedAt,omitempty" db:"last_evaluated_at"`
+	NextEvaluationAt *time.Time           `json:"nextEvaluationAt,omitempty" db:"next_evaluation_at"`
+	CreatedAt        time.Time            `json:"createdAt" db:"created_at"`
+	UpdatedAt        time.Time            `json:"updatedAt" db:"updated_at"`
 }
 
 type AppSetting struct {
