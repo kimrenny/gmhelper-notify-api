@@ -14,6 +14,8 @@ func NewRouter(
 	campaignHandler *handlers.CampaignHandler,
 	directHandler *handlers.DirectNotificationHandler,
 	userHandler *handlers.UserHandler,
+	dashboardHandler *handlers.DashboardHandler,
+	automationHandler *handlers.AutomationHandler,
 	authMiddleware middleware.Middleware,
 ) http.Handler {
 	mux := http.NewServeMux()
@@ -27,7 +29,22 @@ func NewRouter(
 	// API v1 prefix handler
 	apiV1Mux := http.NewServeMux()
 
+	// Dashboard endpoints
+	if dashboardHandler != nil {
+		apiV1Mux.HandleFunc("GET /dashboard/stats", dashboardHandler.GetStats)
+	}
+
+	// Automation endpoints
+	if automationHandler != nil {
+		apiV1Mux.HandleFunc("GET /automation/rules", automationHandler.List)
+		apiV1Mux.HandleFunc("GET /automation/rules/{id}", automationHandler.GetByID)
+		apiV1Mux.HandleFunc("POST /automation/rules", automationHandler.Create)
+		apiV1Mux.HandleFunc("PUT /automation/rules/{id}", automationHandler.Update)
+		apiV1Mux.HandleFunc("DELETE /automation/rules/{id}", automationHandler.Delete)
+	}
+
 	// Template endpoints
+
 	if templateHandler != nil {
 		apiV1Mux.HandleFunc("GET /templates", templateHandler.List)
 		apiV1Mux.HandleFunc("GET /templates/{id}", templateHandler.GetByID)

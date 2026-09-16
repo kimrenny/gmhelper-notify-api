@@ -103,7 +103,8 @@ func setupIntegrationServer(
 	jwtVerifier := auth.MustNewJWTVerifier(intTestSecret, intTestIssuer, intTestAudience)
 	authMiddleware := middleware.AdminAuth(jwtVerifier, log)
 
-	router := NewRouter(healthHandler, templateHandler, nil, directHandler, nil, authMiddleware)
+	router := NewRouter(healthHandler, templateHandler, nil, directHandler, nil, nil, nil, authMiddleware)
+
 	return router, templateRepo, directRepo, attemptRepo
 }
 

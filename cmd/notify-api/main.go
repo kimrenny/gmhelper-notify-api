@@ -15,11 +15,14 @@ import (
 
 	"github.com/gmhelper/notify-api/internal/api"
 	"github.com/gmhelper/notify-api/internal/api/handlers"
+	"github.com/gmhelper/notify-api/internal/app/automation"
 	"github.com/gmhelper/notify-api/internal/app/campaign"
+	"github.com/gmhelper/notify-api/internal/app/dashboard"
 	"github.com/gmhelper/notify-api/internal/app/direct"
 	"github.com/gmhelper/notify-api/internal/app/health"
 	"github.com/gmhelper/notify-api/internal/app/template"
 	"github.com/gmhelper/notify-api/internal/app/user"
+
 	"github.com/gmhelper/notify-api/internal/config"
 	"github.com/gmhelper/notify-api/internal/http/middleware"
 	"github.com/gmhelper/notify-api/internal/infra/auth"
@@ -74,6 +77,10 @@ func main() {
 	campaignHandler := handlers.NewCampaignHandler(campaignService, log)
 	recipientRepo := postgres.NewCampaignRecipientRepository(db.DB())
 
+	dashboardRepo := postgres.NewDashboardRepository(db.DB())
+	dashboardService := dashboard.NewService(dashboardRepo)
+	dashboardHandler := handlers.NewDashboardHandler(dashboardService, log)
+
 	directRepo := postgres.NewDirectNotificationRepository(db.DB())
 	attemptRepo := postgres.NewDeliveryAttemptRepository(db.DB())
 	smtpSender := smtp.NewClientWithLogger(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom, log)
@@ -113,13 +120,18 @@ func main() {
 		userHandler = handlers.NewUserHandler(userService, log)
 	}
 
+	automationRepo := postgres.NewAutomationRuleRepository(db.DB())
+	automationService := automation.NewService(automationRepo, templateRepo)
+	automationHandler := handlers.NewAutomationHandler(automationService, log)
+
 	jwtVerifier, err := auth.NewJWTVerifier(cfg.AuthSecret, cfg.AuthIssuer, cfg.AuthAudience)
 	if err != nil {
 		log.Fatal("failed to initialize jwt verifier", zapError(err))
 	}
 	authMiddleware := middleware.AdminAuth(jwtVerifier, log)
 
-	router := api.NewRouter(healthHandler, templateHandler, campaignHandler, directHandler, userHandler, authMiddleware)
+	router := api.NewRouter(healthHandler, templateHandler, campaignHandler, directHandler, userHandler, dashboardHandler, automationHandler, authMiddleware)
+
 	handler := middleware.Chain(router,
 		middleware.RequestID(),
 		middleware.Logging(log),

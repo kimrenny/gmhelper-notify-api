@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/gmhelper/notify-api/internal/api/handlers"
+	"github.com/gmhelper/notify-api/internal/app/automation"
 	"github.com/gmhelper/notify-api/internal/app/campaign"
+	"github.com/gmhelper/notify-api/internal/app/dashboard"
 	"github.com/gmhelper/notify-api/internal/app/direct"
 	"github.com/gmhelper/notify-api/internal/app/email"
 	"github.com/gmhelper/notify-api/internal/app/health"
@@ -29,6 +31,10 @@ const (
 	routerTestIssuer   = "gmhelper-api"
 	routerTestAudience = "gmhelper-notify-api"
 )
+
+func intPtr(i int) *int {
+	return &i
+}
 
 type dummyPinger struct {
 	err error
@@ -49,68 +55,102 @@ func (m *routerMockDirectRepo) GetByID(ctx context.Context, id string) (*domain.
 	return nil, domain.ErrNotFound
 }
 
-func (m *routerMockDirectRepo) Create(ctx context.Context, n *domain.DirectNotification) error {
+func (m *routerMockDirectRepo) Create(ctx context.Context, notification *domain.DirectNotification) error {
+	m.notifications[notification.ID] = notification
 	return nil
 }
 
-func (m *routerMockDirectRepo) CreateWithInitialAttempt(ctx context.Context, n *domain.DirectNotification, a *domain.DeliveryAttempt) error {
+func (m *routerMockDirectRepo) CreateWithInitialAttempt(ctx context.Context, notification *domain.DirectNotification, attempt *domain.DeliveryAttempt) error {
+	m.notifications[notification.ID] = notification
 	return nil
 }
 
 func (m *routerMockDirectRepo) ListPending(ctx context.Context) ([]*domain.DirectNotification, error) {
 	return []*domain.DirectNotification{
-		{ID: "pending-notif-1", DeliveryStatus: domain.DeliveryStatusPending},
+		{
+			ID:             "pending-notif-1",
+			RecipientEmail: "pending@example.com",
+			DeliveryStatus: domain.DeliveryStatusPending,
+		},
 	}, nil
 }
 
 func (m *routerMockDirectRepo) ClaimPending(ctx context.Context, limit int, maxAttempts int) ([]*domain.DirectNotification, error) {
-	return []*domain.DirectNotification{
-		{ID: "pending-notif-1", DeliveryStatus: domain.DeliveryStatusSending, AttemptsCount: 1},
-	}, nil
+	return nil, nil
 }
 
 func (m *routerMockDirectRepo) RecoverStaleSending(ctx context.Context, olderThan time.Duration, maxAttempts int) (int64, error) {
 	return 0, nil
 }
 
-func (m *routerMockDirectRepo) UpdateStatus(ctx context.Context, id string, status domain.DeliveryStatus, attempts int, lastAttemptAt, sentAt *time.Time, errMsg string) error {
+func (m *routerMockDirectRepo) UpdateStatus(ctx context.Context, id string, status domain.DeliveryStatus, attempts int, lastAttemptAt, sentAt *time.Time, errorMessage string) error {
 	return nil
 }
 
 type routerMockAttemptRepo struct{}
 
 func (m *routerMockAttemptRepo) GetByID(ctx context.Context, id string) (*domain.DeliveryAttempt, error) {
-	return nil, domain.ErrNotFound
+	return nil, nil
 }
-func (m *routerMockAttemptRepo) Create(ctx context.Context, a *domain.DeliveryAttempt) error {
+
+func (m *routerMockAttemptRepo) Create(ctx context.Context, attempt *domain.DeliveryAttempt) error {
 	return nil
 }
-func (m *routerMockAttemptRepo) Update(ctx context.Context, a *domain.DeliveryAttempt) error {
+
+func (m *routerMockAttemptRepo) Update(ctx context.Context, attempt *domain.DeliveryAttempt) error {
 	return nil
 }
-func (m *routerMockAttemptRepo) ListByTarget(ctx context.Context, t domain.DeliveryTargetType, id string) ([]*domain.DeliveryAttempt, error) {
+
+func (m *routerMockAttemptRepo) ListByTarget(ctx context.Context, targetType domain.DeliveryTargetType, targetID string) ([]*domain.DeliveryAttempt, error) {
 	return nil, nil
 }
 
 type routerMockTplRepo struct{}
 
 func (m *routerMockTplRepo) GetByID(ctx context.Context, id string) (*domain.EmailTemplate, error) {
-	return nil, domain.ErrNotFound
+	return &domain.EmailTemplate{
+		ID:          id,
+		TemplateKey: "welcome_email",
+		Name:        "Welcome Email",
+		Subject:     "Welcome to our service",
+		HTMLBody:    "<h1>Welcome!</h1>",
+		Locale:      "en",
+		Status:      domain.TemplateStatusActive,
+		Version:     1,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}, nil
 }
-func (m *routerMockTplRepo) GetByKey(ctx context.Context, key string) (*domain.EmailTemplate, error) {
-	return nil, domain.ErrNotFound
+
+func (m *routerMockTplRepo) GetByKey(ctx context.Context, templateKey string) (*domain.EmailTemplate, error) {
+	return &domain.EmailTemplate{
+		ID:          "tpl-1",
+		TemplateKey: templateKey,
+		Name:        "Welcome Email",
+		Subject:     "Welcome",
+		HTMLBody:    "<h1>Welcome</h1>",
+		Locale:      "en",
+		Status:      domain.TemplateStatusActive,
+		Version:     1,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}, nil
 }
-func (m *routerMockTplRepo) Create(ctx context.Context, t *domain.EmailTemplate) error {
+
+func (m *routerMockTplRepo) Create(ctx context.Context, template *domain.EmailTemplate) error {
 	return nil
 }
-func (m *routerMockTplRepo) Update(ctx context.Context, t *domain.EmailTemplate) error {
+
+func (m *routerMockTplRepo) Update(ctx context.Context, template *domain.EmailTemplate) error {
 	return nil
 }
+
 func (m *routerMockTplRepo) Delete(ctx context.Context, id string) error {
 	return nil
 }
+
 func (m *routerMockTplRepo) List(ctx context.Context) ([]*domain.EmailTemplate, error) {
-	return nil, nil
+	return []*domain.EmailTemplate{}, nil
 }
 
 type routerMockCampaignRepo struct {
@@ -123,10 +163,12 @@ func (m *routerMockCampaignRepo) GetByID(ctx context.Context, id string) (*domai
 	}
 	return nil, domain.ErrNotFound
 }
+
 func (m *routerMockCampaignRepo) Create(ctx context.Context, c *domain.NotificationCampaign) error {
 	m.campaigns[c.ID] = c
 	return nil
 }
+
 func (m *routerMockCampaignRepo) Update(ctx context.Context, c *domain.NotificationCampaign) error {
 	if _, ok := m.campaigns[c.ID]; ok {
 		m.campaigns[c.ID] = c
@@ -134,6 +176,7 @@ func (m *routerMockCampaignRepo) Update(ctx context.Context, c *domain.Notificat
 	}
 	return domain.ErrNotFound
 }
+
 func (m *routerMockCampaignRepo) Delete(ctx context.Context, id string) error {
 	if _, ok := m.campaigns[id]; ok {
 		delete(m.campaigns, id)
@@ -141,32 +184,29 @@ func (m *routerMockCampaignRepo) Delete(ctx context.Context, id string) error {
 	}
 	return domain.ErrNotFound
 }
+
 func (m *routerMockCampaignRepo) UpdateStatus(ctx context.Context, id string, status domain.CampaignStatus, startedAt, completedAt *time.Time) error {
 	return nil
 }
+
 func (m *routerMockCampaignRepo) ListByStatus(ctx context.Context, status domain.CampaignStatus) ([]*domain.NotificationCampaign, error) {
 	return nil, nil
 }
+
 func (m *routerMockCampaignRepo) ListScheduled(ctx context.Context, after time.Time) ([]*domain.NotificationCampaign, error) {
 	return nil, nil
 }
+
 func (m *routerMockCampaignRepo) ListDue(ctx context.Context, dueBefore time.Time, limit int) ([]*domain.NotificationCampaign, error) {
 	return nil, nil
 }
+
 func (m *routerMockCampaignRepo) Claim(ctx context.Context, id string) (*domain.NotificationCampaign, error) {
-	if c, ok := m.campaigns[id]; ok {
-		if c.Status == domain.CampaignStatusScheduled {
-			c.Status = domain.CampaignStatusRunning
-			return c, nil
-		}
-		return nil, domain.ErrNotFound
-	}
-	return nil, domain.ErrNotFound
+	return nil, nil
 }
+
 func (m *routerMockCampaignRepo) List(ctx context.Context) ([]*domain.NotificationCampaign, error) {
-	return []*domain.NotificationCampaign{
-		{ID: "camp-1", Name: "Campaign 1", Status: domain.CampaignStatusDraft},
-	}, nil
+	return []*domain.NotificationCampaign{}, nil
 }
 
 type routerMockSender struct{}
@@ -180,7 +220,7 @@ func TestRouter_HealthAndReady(t *testing.T) {
 	pinger := &dummyPinger{err: nil}
 	readiness := health.NewReadinessService(pinger)
 	healthHandler := handlers.NewHealthHandler(readiness, log)
-	router := NewRouter(healthHandler, nil, nil, nil, nil, nil)
+	router := NewRouter(healthHandler, nil, nil, nil, nil, nil, nil, nil)
 
 	// 1. GET /health
 	reqHealth := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -215,7 +255,7 @@ func TestRouter_NotFoundJSON(t *testing.T) {
 	pinger := &dummyPinger{err: nil}
 	readiness := health.NewReadinessService(pinger)
 	healthHandler := handlers.NewHealthHandler(readiness, log)
-	router := NewRouter(healthHandler, nil, nil, nil, nil, nil)
+	router := NewRouter(healthHandler, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/unknown-endpoint", nil)
 	rec := httptest.NewRecorder()
@@ -262,7 +302,7 @@ func TestRouter_DirectNotificationsRouting_AuthAndPrecedence(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.Authenticate(verifier, log)
 
-	router := NewRouter(nil, nil, nil, directHandler, nil, authMw)
+	router := NewRouter(nil, nil, nil, directHandler, nil, nil, nil, authMw)
 
 	validToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -349,10 +389,18 @@ func TestRouter_AdministrativeRoutes_SecurityMatrix(t *testing.T) {
 	userService, _ := user.NewService(mockResolver)
 	userHandler := handlers.NewUserHandler(userService, log)
 
+	dashboardRepo := &routerMockDashboardRepo{}
+	dashboardService := dashboard.NewService(dashboardRepo)
+	dashboardHandler := handlers.NewDashboardHandler(dashboardService, log)
+
+	autoRepo := &routerMockAutomationRepo{rules: make(map[string]*domain.AutomationRule)}
+	automationService := automation.NewService(autoRepo, tplRepo)
+	automationHandler := handlers.NewAutomationHandler(automationService, log)
+
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(healthHandler, templateHandler, campaignHandler, directHandler, userHandler, authMw)
+	router := NewRouter(healthHandler, templateHandler, campaignHandler, directHandler, userHandler, dashboardHandler, automationHandler, authMw)
 
 	adminToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-admin", "admin", 15*time.Minute)
 	ownerToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-owner", "owner", 15*time.Minute)
@@ -382,6 +430,12 @@ func TestRouter_AdministrativeRoutes_SecurityMatrix(t *testing.T) {
 		{method: http.MethodGet, path: "/api/v1/notifications/direct/test-notif-1"},
 		{method: http.MethodPost, path: "/api/v1/notifications/direct/test-notif-1/deliver"},
 		{method: http.MethodGet, path: "/api/v1/users/search"},
+		{method: http.MethodGet, path: "/api/v1/dashboard/stats"},
+		{method: http.MethodGet, path: "/api/v1/automation/rules"},
+		{method: http.MethodPost, path: "/api/v1/automation/rules"},
+		{method: http.MethodGet, path: "/api/v1/automation/rules/rule-123"},
+		{method: http.MethodPut, path: "/api/v1/automation/rules/rule-123"},
+		{method: http.MethodDelete, path: "/api/v1/automation/rules/rule-123"},
 	}
 
 	for _, ep := range endpoints {
@@ -470,6 +524,76 @@ func TestRouter_AdministrativeRoutes_SecurityMatrix(t *testing.T) {
 	}
 }
 
+type routerMockAutomationRepo struct {
+	rules map[string]*domain.AutomationRule
+}
+
+func (m *routerMockAutomationRepo) GetByID(ctx context.Context, id string) (*domain.AutomationRule, error) {
+	if r, ok := m.rules[id]; ok {
+		return r, nil
+	}
+	return nil, domain.ErrNotFound
+}
+
+func (m *routerMockAutomationRepo) Create(ctx context.Context, rule *domain.AutomationRule) error {
+	m.rules[rule.ID] = rule
+	return nil
+}
+
+func (m *routerMockAutomationRepo) Update(ctx context.Context, rule *domain.AutomationRule) error {
+	if _, ok := m.rules[rule.ID]; ok {
+		m.rules[rule.ID] = rule
+		return nil
+	}
+	return domain.ErrNotFound
+}
+
+func (m *routerMockAutomationRepo) Delete(ctx context.Context, id string) error {
+	if _, ok := m.rules[id]; ok {
+		delete(m.rules, id)
+		return nil
+	}
+	return domain.ErrNotFound
+}
+
+func (m *routerMockAutomationRepo) List(ctx context.Context) ([]*domain.AutomationRule, error) {
+	result := make([]*domain.AutomationRule, 0, len(m.rules))
+	for _, r := range m.rules {
+		result = append(result, r)
+	}
+	return result, nil
+}
+
+func (m *routerMockAutomationRepo) ListEnabled(ctx context.Context) ([]*domain.AutomationRule, error) {
+	result := make([]*domain.AutomationRule, 0)
+	for _, r := range m.rules {
+		if r.Enabled {
+			result = append(result, r)
+		}
+	}
+	return result, nil
+}
+
+type routerMockDashboardRepo struct {
+	stats *domain.DashboardStats
+	err   error
+}
+
+func (m *routerMockDashboardRepo) GetDashboardStats(ctx context.Context, recentLimit int) (*domain.DashboardStats, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	if m.stats != nil {
+		return m.stats, nil
+	}
+	return &domain.DashboardStats{
+		Campaigns:       domain.DashboardCampaignStats{},
+		Templates:       domain.DashboardTemplateStats{},
+		Deliveries:      domain.DashboardDeliveryStats{},
+		RecentCampaigns: []*domain.RecentCampaignItem{},
+	}, nil
+}
+
 type routerMockUserResolver struct {
 	searchUsersFunc func(ctx context.Context, query string, limit int) ([]userclient.User, error)
 }
@@ -510,7 +634,7 @@ func TestRouter_UserSearchRouting(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, nil, nil, userHandler, authMw)
+	router := NewRouter(nil, nil, nil, nil, userHandler, nil, nil, authMw)
 
 	adminToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-admin", "admin", 15*time.Minute)
 
@@ -564,7 +688,7 @@ func TestRouter_CampaignEndpoints(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, campaignHandler, nil, nil, authMw)
+	router := NewRouter(nil, nil, campaignHandler, nil, nil, nil, nil, authMw)
 
 	adminToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-admin", "admin", 15*time.Minute)
 
@@ -629,7 +753,7 @@ func TestRouter_CampaignDelete(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.Authenticate(verifier, log)
 
-	router := NewRouter(nil, nil, campaignHandler, nil, nil, authMw)
+	router := NewRouter(nil, nil, campaignHandler, nil, nil, nil, nil, authMw)
 
 	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -689,7 +813,7 @@ func TestRouter_CampaignScheduleAndCancel(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, campaignHandler, nil, nil, authMw)
+	router := NewRouter(nil, nil, campaignHandler, nil, nil, nil, nil, authMw)
 
 	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -750,5 +874,265 @@ func TestRouter_CampaignScheduleAndCancel(t *testing.T) {
 	}
 	if resCancel.Status != "cancelled" || resCancel.ScheduledAt == nil {
 		t.Fatalf("expected cancelled status with preserved scheduledAt, got %+v", resCancel)
+	}
+}
+
+func TestRouter_DashboardStats(t *testing.T) {
+	log, _ := logger.NewLogger("info")
+	dashboardRepo := &routerMockDashboardRepo{
+		stats: &domain.DashboardStats{
+			Campaigns: domain.DashboardCampaignStats{
+				Total:     10,
+				Draft:     2,
+				Scheduled: 1,
+				Running:   1,
+				Completed: 5,
+				Cancelled: 1,
+			},
+			Templates: domain.DashboardTemplateStats{
+				Total:    8,
+				Active:   6,
+				Archived: 2,
+			},
+			Deliveries: domain.DashboardDeliveryStats{
+				TotalMessages: 500,
+				TotalSent:     480,
+				TotalFailed:   15,
+				TotalPending:  5,
+			},
+			RecentCampaigns: []*domain.RecentCampaignItem{
+				{
+					ID:           "c1",
+					Name:         "Spring Promo",
+					CampaignType: "broadcast",
+					Status:       domain.CampaignStatusCompleted,
+					CreatedAt:    time.Now().UTC(),
+				},
+			},
+		},
+	}
+	dashboardService := dashboard.NewService(dashboardRepo)
+	dashboardHandler := handlers.NewDashboardHandler(dashboardService, log)
+
+	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
+	authMw := middleware.AdminAuth(verifier, log)
+
+	router := NewRouter(nil, nil, nil, nil, nil, dashboardHandler, nil, authMw)
+
+	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to generate token: %v", err)
+	}
+
+	// 1. Unauthenticated -> 401
+	reqUnauth := httptest.NewRequest(http.MethodGet, "/api/v1/dashboard/stats", nil)
+	recUnauth := httptest.NewRecorder()
+	router.ServeHTTP(recUnauth, reqUnauth)
+	if recUnauth.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized for unauth request, got %d", recUnauth.Code)
+	}
+
+	// 2. Authenticated -> 200 OK
+	reqAuth := httptest.NewRequest(http.MethodGet, "/api/v1/dashboard/stats?limit=5", nil)
+	reqAuth.Header.Set("Authorization", "Bearer "+adminToken)
+	recAuth := httptest.NewRecorder()
+	router.ServeHTTP(recAuth, reqAuth)
+
+	if recAuth.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", recAuth.Code, recAuth.Body.String())
+	}
+
+	var stats domain.DashboardStats
+	if err := json.Unmarshal(recAuth.Body.Bytes(), &stats); err != nil {
+		t.Fatalf("failed to unmarshal JSON response: %v", err)
+	}
+	if stats.Campaigns.Total != 10 || stats.Templates.Total != 8 || stats.Deliveries.TotalSent != 480 {
+		t.Errorf("unexpected dashboard stats in response: %+v", stats)
+	}
+	if len(stats.RecentCampaigns) != 1 || stats.RecentCampaigns[0].Name != "Spring Promo" {
+		t.Errorf("unexpected recent campaigns in response: %+v", stats.RecentCampaigns)
+	}
+}
+
+func TestRouter_AutomationEndpoints(t *testing.T) {
+	log, _ := logger.NewLogger("info")
+	autoRepo := &routerMockAutomationRepo{
+		rules: map[string]*domain.AutomationRule{
+			"rule-1": {
+				ID:         "rule-1",
+				Name:       "User Registered Welcome",
+				TemplateID: "tpl-1",
+				Enabled:    true,
+				Config: domain.AutomationRuleConfig{
+					Version: 1,
+					Schedule: domain.ScheduleConfig{
+						Type:      domain.ScheduleTypeDaily,
+						HourUTC:   intPtr(3),
+						MinuteUTC: intPtr(0),
+					},
+					Conditions: domain.ConditionGroup{
+						Operator: domain.GroupOperatorAll,
+						Conditions: []domain.ConditionNode{
+							{
+								Item: &domain.ConditionItem{
+									Field:    domain.FieldIsActive,
+									Operator: domain.OperatorEquals,
+									Value:    true,
+								},
+							},
+						},
+					},
+					Action: domain.ActionConfig{
+						Type: domain.ActionTypeSendEmail,
+					},
+				},
+				CreatedAt: time.Now().UTC(),
+				UpdatedAt: time.Now().UTC(),
+			},
+		},
+	}
+	tplRepo := &routerMockTplRepo{}
+	automationService := automation.NewService(autoRepo, tplRepo)
+	automationHandler := handlers.NewAutomationHandler(automationService, log)
+
+	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
+	authMw := middleware.AdminAuth(verifier, log)
+
+	router := NewRouter(nil, nil, nil, nil, nil, nil, automationHandler, authMw)
+
+	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to generate token: %v", err)
+	}
+
+	// 1. Unauthenticated GET /api/v1/automation/rules -> 401
+	reqUnauth := httptest.NewRequest(http.MethodGet, "/api/v1/automation/rules", nil)
+	recUnauth := httptest.NewRecorder()
+	router.ServeHTTP(recUnauth, reqUnauth)
+	if recUnauth.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized, got %d", recUnauth.Code)
+	}
+
+	// 2. Authenticated GET /api/v1/automation/rules -> 200 OK
+	reqList := httptest.NewRequest(http.MethodGet, "/api/v1/automation/rules", nil)
+	reqList.Header.Set("Authorization", "Bearer "+adminToken)
+	recList := httptest.NewRecorder()
+	router.ServeHTTP(recList, reqList)
+
+	if recList.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", recList.Code, recList.Body.String())
+	}
+
+	var rules []handlers.AutomationRuleResponse
+	if err := json.Unmarshal(recList.Body.Bytes(), &rules); err != nil {
+		t.Fatalf("failed to unmarshal rules list: %v", err)
+	}
+	if len(rules) != 1 || rules[0].ID != "rule-1" {
+		t.Errorf("unexpected rules list response: %+v", rules)
+	}
+
+	// 3. Authenticated POST /api/v1/automation/rules -> 201 Created
+	boolTrue := true
+	createPayload, _ := json.Marshal(handlers.CreateAutomationRuleRequest{
+		Name:       "Password Reset Rule",
+		TemplateID: "tpl-1",
+		Enabled:    &boolTrue,
+		Config: domain.AutomationRuleConfig{
+			Version: 1,
+			Schedule: domain.ScheduleConfig{
+				Type:      domain.ScheduleTypeDaily,
+				HourUTC:   intPtr(3),
+				MinuteUTC: intPtr(0),
+			},
+			Conditions: domain.ConditionGroup{
+				Operator: domain.GroupOperatorAll,
+				Conditions: []domain.ConditionNode{
+					{
+						Item: &domain.ConditionItem{
+							Field:    domain.FieldIsActive,
+							Operator: domain.OperatorEquals,
+							Value:    true,
+						},
+					},
+				},
+			},
+			Action: domain.ActionConfig{
+				Type: domain.ActionTypeSendEmail,
+			},
+		},
+	})
+	reqCreate := httptest.NewRequest(http.MethodPost, "/api/v1/automation/rules", bytes.NewReader(createPayload))
+	reqCreate.Header.Set("Authorization", "Bearer "+adminToken)
+	reqCreate.Header.Set("Content-Type", "application/json")
+	recCreate := httptest.NewRecorder()
+	router.ServeHTTP(recCreate, reqCreate)
+
+	if recCreate.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d: %s", recCreate.Code, recCreate.Body.String())
+	}
+
+	var created handlers.AutomationRuleResponse
+	if err := json.Unmarshal(recCreate.Body.Bytes(), &created); err != nil {
+		t.Fatalf("failed to unmarshal created rule: %v", err)
+	}
+	if created.Name != "Password Reset Rule" || created.ID == "" {
+		t.Errorf("unexpected created rule response: %+v", created)
+	}
+
+	// 4. Authenticated GET /api/v1/automation/rules/{id} -> 200 OK
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/v1/automation/rules/"+created.ID, nil)
+	reqGet.Header.Set("Authorization", "Bearer "+adminToken)
+	recGet := httptest.NewRecorder()
+	router.ServeHTTP(recGet, reqGet)
+
+	if recGet.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for GET rule, got %d: %s", recGet.Code, recGet.Body.String())
+	}
+
+	// 5. Authenticated PUT /api/v1/automation/rules/{id} -> 200 OK
+	updName := "Updated Password Reset Rule"
+	updTpl := "tpl-1"
+	boolFalse := false
+	updatePayload, _ := json.Marshal(handlers.UpdateAutomationRuleRequest{
+		Name:       &updName,
+		TemplateID: &updTpl,
+		Enabled:    &boolFalse,
+	})
+	reqPut := httptest.NewRequest(http.MethodPut, "/api/v1/automation/rules/"+created.ID, bytes.NewReader(updatePayload))
+	reqPut.Header.Set("Authorization", "Bearer "+adminToken)
+	reqPut.Header.Set("Content-Type", "application/json")
+	recPut := httptest.NewRecorder()
+	router.ServeHTTP(recPut, reqPut)
+
+	if recPut.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for PUT rule, got %d: %s", recPut.Code, recPut.Body.String())
+	}
+
+	var updated handlers.AutomationRuleResponse
+	if err := json.Unmarshal(recPut.Body.Bytes(), &updated); err != nil {
+		t.Fatalf("failed to unmarshal updated rule: %v", err)
+	}
+	if updated.Name != "Updated Password Reset Rule" || updated.Enabled != false {
+		t.Errorf("unexpected updated rule response: %+v", updated)
+	}
+
+	// 6. Authenticated DELETE /api/v1/automation/rules/{id} -> 204 No Content
+	reqDel := httptest.NewRequest(http.MethodDelete, "/api/v1/automation/rules/"+created.ID, nil)
+	reqDel.Header.Set("Authorization", "Bearer "+adminToken)
+	recDel := httptest.NewRecorder()
+	router.ServeHTTP(recDel, reqDel)
+
+	if recDel.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 No Content for DELETE rule, got %d: %s", recDel.Code, recDel.Body.String())
+	}
+
+	// 7. Repeat GET -> 404 Not Found
+	reqGetAfterDel := httptest.NewRequest(http.MethodGet, "/api/v1/automation/rules/"+created.ID, nil)
+	reqGetAfterDel.Header.Set("Authorization", "Bearer "+adminToken)
+	recGetAfterDel := httptest.NewRecorder()
+	router.ServeHTTP(recGetAfterDel, reqGetAfterDel)
+
+	if recGetAfterDel.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 Not Found after delete, got %d", recGetAfterDel.Code)
 	}
 }

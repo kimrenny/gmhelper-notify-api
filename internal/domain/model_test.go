@@ -196,14 +196,45 @@ func TestAutomationRuleValidate(t *testing.T) {
 	rule := &AutomationRule{
 		ID:         "rule-1",
 		Name:       "Notify on signup",
-		EventType:  "user_signed_up",
 		TemplateID: "template-1",
 		Enabled:    true,
-		CreatedAt:  time.Now().UTC(),
-		UpdatedAt:  time.Now().UTC(),
+		Config: AutomationRuleConfig{
+			Version: 1,
+			Schedule: ScheduleConfig{
+				Type:      ScheduleTypeDaily,
+				HourUTC:   intPtr(3),
+				MinuteUTC: intPtr(0),
+			},
+			Conditions: ConditionGroup{
+				Operator: GroupOperatorAll,
+				Conditions: []ConditionNode{
+					{
+						Item: &ConditionItem{
+							Field:    FieldIsActive,
+							Operator: OperatorEquals,
+							Value:    true,
+						},
+					},
+				},
+			},
+			Action: ActionConfig{
+				Type: ActionTypeSendEmail,
+			},
+		},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
 	}
 	if err := rule.Validate(context.Background()); err != nil {
 		t.Fatalf("expected valid rule, got %v", err)
+	}
+
+	invalidRule := &AutomationRule{
+		ID:         "rule-1",
+		Name:       "Missing config",
+		TemplateID: "template-1",
+	}
+	if err := invalidRule.Validate(context.Background()); err == nil {
+		t.Fatalf("expected error on invalid rule, got nil")
 	}
 }
 

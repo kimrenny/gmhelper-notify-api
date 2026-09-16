@@ -77,10 +77,16 @@ type AutomationRuleRepository interface {
 	GetByID(ctx context.Context, id string) (*AutomationRule, error)
 	Create(ctx context.Context, rule *AutomationRule) error
 	Update(ctx context.Context, rule *AutomationRule) error
+	Delete(ctx context.Context, id string) error
+	List(ctx context.Context) ([]*AutomationRule, error)
 	ListEnabled(ctx context.Context) ([]*AutomationRule, error)
 }
 
 type AppSettingRepository interface {
 	GetByKey(ctx context.Context, key string) (*AppSetting, error)
 	Save(ctx context.Context, setting *AppSetting) error
+}
+
+type DashboardRepository interface {
+	GetDashboardStats(ctx context.Context, recentLimit int) (*DashboardStats, error)
 }
