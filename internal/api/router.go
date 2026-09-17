@@ -16,6 +16,7 @@ func NewRouter(
 	userHandler *handlers.UserHandler,
 	dashboardHandler *handlers.DashboardHandler,
 	automationHandler *handlers.AutomationHandler,
+	agreementHandler *handlers.AgreementHandler,
 	authMiddleware middleware.Middleware,
 ) http.Handler {
 	mux := http.NewServeMux()
@@ -28,6 +29,12 @@ func NewRouter(
 
 	// API v1 prefix handler
 	apiV1Mux := http.NewServeMux()
+
+	// Agreement endpoints
+	if agreementHandler != nil {
+		apiV1Mux.HandleFunc("POST /agreements/broadcast", agreementHandler.CreateBroadcast)
+		apiV1Mux.HandleFunc("POST /agreements", agreementHandler.CreateBroadcast)
+	}
 
 	// Dashboard endpoints
 	if dashboardHandler != nil {
