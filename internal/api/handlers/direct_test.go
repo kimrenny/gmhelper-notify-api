@@ -218,11 +218,12 @@ func TestDirectNotificationHandler_Create_Success(t *testing.T) {
 	router, _, _, tplRepo, _ := setupDirectTestRouter()
 
 	activeTpl := &domain.EmailTemplate{
-		ID:       "tpl-100",
-		Subject:  "Welcome {{name}}",
-		HTMLBody: "<p>Hi {{name}}</p>",
-		Status:   domain.TemplateStatusActive,
-		Version:  1,
+		ID:           "tpl-100",
+		TemplateType: domain.TemplateTypeDirect,
+		Subject:      "Welcome {{name}}",
+		HTMLBody:     "<p>Hi {{name}}</p>",
+		Status:       domain.TemplateStatusActive,
+		Version:      1,
 	}
 	tplRepo.templates[activeTpl.ID] = activeTpl
 
@@ -260,20 +261,22 @@ func TestDirectNotificationHandler_Create_ValidationErrors(t *testing.T) {
 	router, _, _, tplRepo, _ := setupDirectTestRouter()
 
 	activeTpl := &domain.EmailTemplate{
-		ID:       "tpl-100",
-		Subject:  "Welcome {{name}}",
-		HTMLBody: "<p>Hi {{name}}, code: {{code}}</p>",
-		Status:   domain.TemplateStatusActive,
-		Version:  1,
+		ID:           "tpl-100",
+		TemplateType: domain.TemplateTypeDirect,
+		Subject:      "Welcome {{name}}",
+		HTMLBody:     "<p>Hi {{name}}, code: {{code}}</p>",
+		Status:       domain.TemplateStatusActive,
+		Version:      1,
 	}
 	tplRepo.templates[activeTpl.ID] = activeTpl
 
 	draftTpl := &domain.EmailTemplate{
-		ID:       "tpl-draft",
-		Subject:  "Draft",
-		HTMLBody: "<p>Draft</p>",
-		Status:   domain.TemplateStatusDraft,
-		Version:  1,
+		ID:           "tpl-draft",
+		TemplateType: domain.TemplateTypeDirect,
+		Subject:      "Draft",
+		HTMLBody:     "<p>Draft</p>",
+		Status:       domain.TemplateStatusDraft,
+		Version:      1,
 	}
 	tplRepo.templates[draftTpl.ID] = draftTpl
 
@@ -458,11 +461,12 @@ func TestDirectNotificationHandler_Deliver_SuccessAndFailure(t *testing.T) {
 	router, directRepo, attemptRepo, tplRepo, sender := setupDirectTestRouter()
 
 	tpl := &domain.EmailTemplate{
-		ID:       "tpl-1",
-		Subject:  "Test",
-		HTMLBody: "<p>Test</p>",
-		Status:   domain.TemplateStatusActive,
-		Version:  1,
+		ID:           "tpl-1",
+		TemplateType: domain.TemplateTypeDirect,
+		Subject:      "Test",
+		HTMLBody:     "<p>Test</p>",
+		Status:       domain.TemplateStatusActive,
+		Version:      1,
 	}
 	tplRepo.templates[tpl.ID] = tpl
 
@@ -547,11 +551,12 @@ func TestDirectNotificationHandler_Create_AuthenticatedPrincipalOverridesBodyUse
 	router, _, _, tplRepo, _ := setupDirectTestRouter()
 
 	activeTpl := &domain.EmailTemplate{
-		ID:       "tpl-200",
-		Subject:  "Hello",
-		HTMLBody: "<p>Hello</p>",
-		Status:   domain.TemplateStatusActive,
-		Version:  1,
+		ID:           "tpl-200",
+		TemplateType: domain.TemplateTypeDirect,
+		Subject:      "Hello",
+		HTMLBody:     "<p>Hello</p>",
+		Status:       domain.TemplateStatusActive,
+		Version:      1,
 	}
 	tplRepo.templates[activeTpl.ID] = activeTpl
 

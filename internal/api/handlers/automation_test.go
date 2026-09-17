@@ -173,12 +173,14 @@ func setupAutomationTest() (*AutomationHandler, *handlerMockAutomationRepo, *han
 	autoRepo := newHandlerMockAutomationRepo()
 	tplRepo := newHandlerMockTemplateRepo()
 	tplRepo.templates["tpl-valid-1"] = &domain.EmailTemplate{
-		ID:   "tpl-valid-1",
-		Name: "Valid Template 1",
+		ID:           "tpl-valid-1",
+		Name:         "Valid Template 1",
+		TemplateType: domain.TemplateTypeAutomation,
 	}
 	tplRepo.templates["tpl-valid-2"] = &domain.EmailTemplate{
-		ID:   "tpl-valid-2",
-		Name: "Valid Template 2",
+		ID:           "tpl-valid-2",
+		Name:         "Valid Template 2",
+		TemplateType: domain.TemplateTypeAutomation,
 	}
 
 	svc := automation.NewService(autoRepo, tplRepo)

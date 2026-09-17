@@ -132,14 +132,15 @@ func TestAgreementService_CreateBroadcast_Success(t *testing.T) {
 	templateRepo := &mockTemplateRepo{
 		templates: map[string]*domain.EmailTemplate{
 			"tpl-active-1": {
-				ID:          "tpl-active-1",
-				TemplateKey: "terms_update",
-				Name:        "Terms Update 2026",
-				Subject:     "Important Update to Terms",
-				HTMLBody:    "<p>New Terms</p>",
-				Locale:      "en",
-				Status:      domain.TemplateStatusActive,
-				Version:     1,
+				ID:           "tpl-active-1",
+				TemplateKey:  "terms_update",
+				Name:         "Terms Update 2026",
+				TemplateType: domain.TemplateTypeUserAgreement,
+				Subject:      "Important Update to Terms",
+				HTMLBody:     "<p>New Terms</p>",
+				Locale:       "en",
+				Status:       domain.TemplateStatusActive,
+				Version:      1,
 			},
 		},
 	}
@@ -186,14 +187,15 @@ func TestAgreementService_CreateBroadcast_DefaultName(t *testing.T) {
 	templateRepo := &mockTemplateRepo{
 		templates: map[string]*domain.EmailTemplate{
 			"tpl-active-1": {
-				ID:          "tpl-active-1",
-				TemplateKey: "terms_update",
-				Name:        "Terms of Service",
-				Subject:     "Terms update",
-				HTMLBody:    "<p>Terms</p>",
-				Locale:      "en",
-				Status:      domain.TemplateStatusActive,
-				Version:     1,
+				ID:           "tpl-active-1",
+				TemplateKey:  "terms_update",
+				Name:         "Terms of Service",
+				TemplateType: domain.TemplateTypeUserAgreement,
+				Subject:      "Terms update",
+				HTMLBody:     "<p>Terms</p>",
+				Locale:       "en",
+				Status:       domain.TemplateStatusActive,
+				Version:      1,
 			},
 		},
 	}
@@ -225,14 +227,15 @@ func TestAgreementService_CreateBroadcast_ValidationErrors(t *testing.T) {
 	templateRepo := &mockTemplateRepo{
 		templates: map[string]*domain.EmailTemplate{
 			"tpl-draft-1": {
-				ID:          "tpl-draft-1",
-				TemplateKey: "draft_terms",
-				Name:        "Draft Terms",
-				Subject:     "Draft",
-				HTMLBody:    "<p>Draft</p>",
-				Locale:      "en",
-				Status:      domain.TemplateStatusDraft,
-				Version:     1,
+				ID:           "tpl-draft-1",
+				TemplateKey:  "draft_terms",
+				Name:         "Draft Terms",
+				TemplateType: domain.TemplateTypeUserAgreement,
+				Subject:      "Draft",
+				HTMLBody:     "<p>Draft</p>",
+				Locale:       "en",
+				Status:       domain.TemplateStatusDraft,
+				Version:      1,
 			},
 		},
 	}

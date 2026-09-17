@@ -27,6 +27,7 @@ type RenderedTemplate struct {
 type CreateInput struct {
 	TemplateKey   string
 	Name          string
+	TemplateType  string
 	Subject       string
 	HTMLBody      string
 	PlainTextBody string
@@ -38,6 +39,7 @@ type CreateInput struct {
 type UpdateInput struct {
 	TemplateKey   string
 	Name          string
+	TemplateType  string
 	Subject       string
 	HTMLBody      string
 	PlainTextBody string
@@ -69,12 +71,18 @@ func (s *Service) GetByID(ctx context.Context, id string) (*domain.EmailTemplate
 func (s *Service) Create(ctx context.Context, input CreateInput) (*domain.EmailTemplate, error) {
 	templateKey := strings.TrimSpace(input.TemplateKey)
 	name := strings.TrimSpace(input.Name)
+	templateTypeStr := strings.TrimSpace(input.TemplateType)
 	subject := strings.TrimSpace(input.Subject)
 	htmlBody := strings.TrimSpace(input.HTMLBody)
 	locale := strings.TrimSpace(input.Locale)
 	statusStr := strings.TrimSpace(input.Status)
 
-	if templateKey == "" || name == "" || subject == "" || htmlBody == "" {
+	if templateKey == "" || name == "" || templateTypeStr == "" || subject == "" || htmlBody == "" {
+		return nil, ErrInvalidInput
+	}
+
+	templateType := domain.TemplateType(templateTypeStr)
+	if !templateType.IsValid() {
 		return nil, ErrInvalidInput
 	}
 
@@ -100,6 +108,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*domain.EmailT
 		ID:            uuid.NewString(),
 		TemplateKey:   templateKey,
 		Name:          name,
+		TemplateType:  templateType,
 		Subject:       subject,
 		HTMLBody:      htmlBody,
 		PlainTextBody: input.PlainTextBody,
@@ -154,6 +163,15 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (*do
 	existing, err := s.repo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+
+	// TemplateType is immutable. If provided, validate that it matches existing type.
+	tTypeStr := strings.TrimSpace(input.TemplateType)
+	if tTypeStr != "" {
+		tType := domain.TemplateType(tTypeStr)
+		if !tType.IsValid() || tType != existing.TemplateType {
+			return nil, ErrInvalidInput
+		}
 	}
 
 	existing.TemplateKey = templateKey

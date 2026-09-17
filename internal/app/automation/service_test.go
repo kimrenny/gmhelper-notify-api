@@ -246,8 +246,9 @@ func TestService_Create(t *testing.T) {
 	autoRepo := newMockAutomationRepo()
 	tplRepo := newMockTemplateRepo()
 	tplRepo.templates["t-valid"] = &domain.EmailTemplate{
-		ID:   "t-valid",
-		Name: "Valid Template",
+		ID:           "t-valid",
+		Name:         "Valid Template",
+		TemplateType: domain.TemplateTypeAutomation,
 	}
 	svc := NewService(autoRepo, tplRepo)
 
@@ -336,8 +337,8 @@ func TestService_Create(t *testing.T) {
 func TestService_Update(t *testing.T) {
 	autoRepo := newMockAutomationRepo()
 	tplRepo := newMockTemplateRepo()
-	tplRepo.templates["t-original"] = &domain.EmailTemplate{ID: "t-original"}
-	tplRepo.templates["t-new"] = &domain.EmailTemplate{ID: "t-new"}
+	tplRepo.templates["t-original"] = &domain.EmailTemplate{ID: "t-original", TemplateType: domain.TemplateTypeAutomation}
+	tplRepo.templates["t-new"] = &domain.EmailTemplate{ID: "t-new", TemplateType: domain.TemplateTypeAutomation}
 
 	svc := NewService(autoRepo, tplRepo)
 

@@ -110,31 +110,33 @@ type routerMockTplRepo struct{}
 
 func (m *routerMockTplRepo) GetByID(ctx context.Context, id string) (*domain.EmailTemplate, error) {
 	return &domain.EmailTemplate{
-		ID:          id,
-		TemplateKey: "welcome_email",
-		Name:        "Welcome Email",
-		Subject:     "Welcome to our service",
-		HTMLBody:    "<h1>Welcome!</h1>",
-		Locale:      "en",
-		Status:      domain.TemplateStatusActive,
-		Version:     1,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		ID:           id,
+		TemplateKey:  "welcome_email",
+		Name:         "Welcome Email",
+		TemplateType: domain.TemplateTypeCampaign,
+		Subject:      "Welcome to our service",
+		HTMLBody:     "<h1>Welcome!</h1>",
+		Locale:       "en",
+		Status:       domain.TemplateStatusActive,
+		Version:      1,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
 	}, nil
 }
 
 func (m *routerMockTplRepo) GetByKey(ctx context.Context, templateKey string) (*domain.EmailTemplate, error) {
 	return &domain.EmailTemplate{
-		ID:          "tpl-1",
-		TemplateKey: templateKey,
-		Name:        "Welcome Email",
-		Subject:     "Welcome",
-		HTMLBody:    "<h1>Welcome</h1>",
-		Locale:      "en",
-		Status:      domain.TemplateStatusActive,
-		Version:     1,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		ID:           "tpl-1",
+		TemplateKey:  templateKey,
+		Name:         "Welcome Email",
+		TemplateType: domain.TemplateTypeCampaign,
+		Subject:      "Welcome",
+		HTMLBody:     "<h1>Welcome</h1>",
+		Locale:       "en",
+		Status:       domain.TemplateStatusActive,
+		Version:      1,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
 	}, nil
 }
 

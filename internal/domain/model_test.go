@@ -6,21 +6,60 @@ import (
 	"time"
 )
 
-func TestEmailTemplateValidate(t *testing.T) {
-	template := &EmailTemplate{
-		ID:          "template-1",
-		TemplateKey: "welcome_email",
-		Name:        "Welcome",
-		Subject:     "Welcome to GMHelper",
-		HTMLBody:    "<p>Hello</p>",
-		Locale:      "en-US",
-		Status:      TemplateStatusActive,
-		Version:     1,
-		CreatedAt:   time.Now().UTC(),
-		UpdatedAt:   time.Now().UTC(),
+func TestTemplateTypeIsValid(t *testing.T) {
+	validTypes := []TemplateType{
+		TemplateTypeDirect,
+		TemplateTypeCampaign,
+		TemplateTypeUserAgreement,
+		TemplateTypeAutomation,
 	}
-	if err := template.Validate(context.Background()); err != nil {
-		t.Fatalf("expected valid template, got %v", err)
+
+	for _, typ := range validTypes {
+		if !typ.IsValid() {
+			t.Errorf("expected template type %q to be valid", typ)
+		}
+	}
+
+	invalidTypes := []TemplateType{
+		"",
+		"unknown",
+		"invalid",
+		"marketing",
+		"notification",
+	}
+
+	for _, typ := range invalidTypes {
+		if typ.IsValid() {
+			t.Errorf("expected template type %q to be invalid", typ)
+		}
+	}
+}
+
+func TestEmailTemplateValidate(t *testing.T) {
+	validTypes := []TemplateType{
+		TemplateTypeDirect,
+		TemplateTypeCampaign,
+		TemplateTypeUserAgreement,
+		TemplateTypeAutomation,
+	}
+
+	for _, typ := range validTypes {
+		template := &EmailTemplate{
+			ID:           "template-1",
+			TemplateKey:  "welcome_email",
+			Name:         "Welcome",
+			TemplateType: typ,
+			Subject:      "Welcome to GMHelper",
+			HTMLBody:     "<p>Hello</p>",
+			Locale:       "en-US",
+			Status:       TemplateStatusActive,
+			Version:      1,
+			CreatedAt:    time.Now().UTC(),
+			UpdatedAt:    time.Now().UTC(),
+		}
+		if err := template.Validate(context.Background()); err != nil {
+			t.Fatalf("expected valid template with type %s, got %v", typ, err)
+		}
 	}
 }
 
@@ -28,6 +67,24 @@ func TestEmailTemplateValidateInvalid(t *testing.T) {
 	template := &EmailTemplate{}
 	if err := template.Validate(context.Background()); err == nil {
 		t.Fatal("expected invalid template error")
+	}
+
+	// Template with missing/invalid type
+	invalidTypeTemplate := &EmailTemplate{
+		ID:           "template-1",
+		TemplateKey:  "welcome_email",
+		Name:         "Welcome",
+		TemplateType: "invalid_type",
+		Subject:      "Welcome to GMHelper",
+		HTMLBody:     "<p>Hello</p>",
+		Locale:       "en-US",
+		Status:       TemplateStatusActive,
+		Version:      1,
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
+	}
+	if err := invalidTypeTemplate.Validate(context.Background()); err == nil {
+		t.Fatal("expected invalid template error for invalid template type")
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 type CreateTemplateRequest struct {
 	TemplateKey   string `json:"templateKey"`
 	Name          string `json:"name"`
+	TemplateType  string `json:"templateType"`
 	Subject       string `json:"subject"`
 	HTMLBody      string `json:"htmlBody"`
 	PlainTextBody string `json:"plainTextBody,omitempty"`
@@ -29,6 +30,7 @@ type CreateTemplateRequest struct {
 type UpdateTemplateRequest struct {
 	TemplateKey   string `json:"templateKey"`
 	Name          string `json:"name"`
+	TemplateType  string `json:"templateType,omitempty"`
 	Subject       string `json:"subject"`
 	HTMLBody      string `json:"htmlBody"`
 	PlainTextBody string `json:"plainTextBody,omitempty"`
@@ -54,6 +56,7 @@ type TemplateResponse struct {
 	ID            string    `json:"id"`
 	TemplateKey   string    `json:"templateKey"`
 	Name          string    `json:"name"`
+	TemplateType  string    `json:"templateType"`
 	Subject       string    `json:"subject"`
 	HTMLBody      string    `json:"htmlBody"`
 	PlainTextBody string    `json:"plainTextBody,omitempty"`
@@ -127,6 +130,7 @@ func (h *TemplateHandler) Create(w http.ResponseWriter, r *http.Request) {
 	input := template.CreateInput{
 		TemplateKey:   req.TemplateKey,
 		Name:          req.Name,
+		TemplateType:  req.TemplateType,
 		Subject:       req.Subject,
 		HTMLBody:      req.HTMLBody,
 		PlainTextBody: req.PlainTextBody,
@@ -169,6 +173,7 @@ func (h *TemplateHandler) Update(w http.ResponseWriter, r *http.Request) {
 	input := template.UpdateInput{
 		TemplateKey:   req.TemplateKey,
 		Name:          req.Name,
+		TemplateType:  req.TemplateType,
 		Subject:       req.Subject,
 		HTMLBody:      req.HTMLBody,
 		PlainTextBody: req.PlainTextBody,
@@ -284,6 +289,7 @@ func toTemplateResponse(t *domain.EmailTemplate) TemplateResponse {
 		ID:            t.ID,
 		TemplateKey:   t.TemplateKey,
 		Name:          t.Name,
+		TemplateType:  string(t.TemplateType),
 		Subject:       t.Subject,
 		HTMLBody:      t.HTMLBody,
 		PlainTextBody: t.PlainTextBody,

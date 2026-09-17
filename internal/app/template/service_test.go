@@ -100,13 +100,14 @@ func TestService_CreateAndGet(t *testing.T) {
 
 	// Valid create
 	input := CreateInput{
-		TemplateKey: "welcome_email",
-		Name:        "Welcome Email",
-		Subject:     "Welcome to GMHelper",
-		HTMLBody:    "<h1>Welcome</h1>",
-		Locale:      "en",
-		Status:      "active",
-		Version:     1,
+		TemplateKey:  "welcome_email",
+		Name:         "Welcome Email",
+		TemplateType: "direct",
+		Subject:      "Welcome to GMHelper",
+		HTMLBody:     "<h1>Welcome</h1>",
+		Locale:       "en",
+		Status:       "active",
+		Version:      1,
 	}
 
 	created, err := svc.Create(context.Background(), input)
@@ -115,6 +116,9 @@ func TestService_CreateAndGet(t *testing.T) {
 	}
 	if created.ID == "" {
 		t.Error("expected non-empty generated ID")
+	}
+	if created.TemplateType != domain.TemplateTypeDirect {
+		t.Errorf("expected template type 'direct', got %s", created.TemplateType)
 	}
 
 	// Get by ID
@@ -125,11 +129,84 @@ func TestService_CreateAndGet(t *testing.T) {
 	if fetched.Name != "Welcome Email" {
 		t.Errorf("expected name 'Welcome Email', got %s", fetched.Name)
 	}
+	if fetched.TemplateType != domain.TemplateTypeDirect {
+		t.Errorf("expected fetched template type 'direct', got %s", fetched.TemplateType)
+	}
 
 	// Duplicate create conflict
 	_, err = svc.Create(context.Background(), input)
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("expected ErrConflict, got %v", err)
+	}
+}
+
+func TestService_Create_AllSupportedTypes(t *testing.T) {
+	repo := newMockTemplateRepo()
+	svc := NewService(repo)
+
+	types := []domain.TemplateType{
+		domain.TemplateTypeDirect,
+		domain.TemplateTypeCampaign,
+		domain.TemplateTypeUserAgreement,
+		domain.TemplateTypeAutomation,
+	}
+
+	for _, typ := range types {
+		input := CreateInput{
+			TemplateKey:  "tpl_" + string(typ),
+			Name:         "Template " + string(typ),
+			TemplateType: string(typ),
+			Subject:      "Subject",
+			HTMLBody:     "<p>Body</p>",
+			Locale:       "en",
+			Status:       "active",
+			Version:      1,
+		}
+
+		created, err := svc.Create(context.Background(), input)
+		if err != nil {
+			t.Fatalf("expected create success for type %s, got %v", typ, err)
+		}
+		if created.TemplateType != typ {
+			t.Errorf("expected type %s, got %s", typ, created.TemplateType)
+		}
+
+		fetched, err := svc.GetByID(context.Background(), created.ID)
+		if err != nil {
+			t.Fatalf("expected get success for type %s, got %v", typ, err)
+		}
+		if fetched.TemplateType != typ {
+			t.Errorf("expected fetched type %s, got %s", typ, fetched.TemplateType)
+		}
+	}
+}
+
+func TestService_Create_InvalidType(t *testing.T) {
+	repo := newMockTemplateRepo()
+	svc := NewService(repo)
+
+	// Missing template type
+	_, err := svc.Create(context.Background(), CreateInput{
+		TemplateKey:  "tpl_missing_type",
+		Name:         "Missing Type",
+		TemplateType: "",
+		Subject:      "Subject",
+		HTMLBody:     "<p>Body</p>",
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput for empty type, got %v", err)
+	}
+
+	// Unsupported template type
+	_, err = svc.Create(context.Background(), CreateInput{
+		TemplateKey:  "tpl_invalid_type",
+		Name:         "Invalid Type",
+		TemplateType: "marketing",
+		Subject:      "Subject",
+		HTMLBody:     "<p>Body</p>",
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput for invalid type, got %v", err)
 	}
 }
 
@@ -139,9 +216,10 @@ func TestService_Create_InvalidInput(t *testing.T) {
 
 	// Missing template key
 	_, err := svc.Create(context.Background(), CreateInput{
-		Name:     "No Key",
-		Subject:  "Subject",
-		HTMLBody: "<p>Body</p>",
+		Name:         "No Key",
+		TemplateType: "campaign",
+		Subject:      "Subject",
+		HTMLBody:     "<p>Body</p>",
 	})
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("expected ErrInvalidInput, got %v", err)
@@ -153,34 +231,80 @@ func TestService_Update_SuccessAndNotFound(t *testing.T) {
 	svc := NewService(repo)
 
 	t1 := &domain.EmailTemplate{
-		ID:          "tpl-1",
-		TemplateKey: "key_1",
-		Name:        "Name 1",
-		Subject:     "Subject 1",
-		HTMLBody:    "<p>1</p>",
-		Locale:      "en",
-		Status:      domain.TemplateStatusActive,
-		Version:     1,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		ID:           "tpl-1",
+		TemplateKey:  "key_1",
+		Name:         "Name 1",
+		TemplateType: domain.TemplateTypeCampaign,
+		Subject:      "Subject 1",
+		HTMLBody:     "<p>1</p>",
+		Locale:       "en",
+		Status:       domain.TemplateStatusActive,
+		Version:      1,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
 	}
 	repo.templates[t1.ID] = t1
 
-	// Update existing
+	// Update existing with matching type
 	updated, err := svc.Update(context.Background(), "tpl-1", UpdateInput{
-		TemplateKey: "key_1_updated",
-		Name:        "Name 1 Updated",
-		Subject:     "Subject 1 Updated",
-		HTMLBody:    "<p>1 updated</p>",
-		Locale:      "en",
-		Status:      "draft",
-		Version:     2,
+		TemplateKey:  "key_1_updated",
+		Name:         "Name 1 Updated",
+		TemplateType: "campaign",
+		Subject:      "Subject 1 Updated",
+		HTMLBody:     "<p>1 updated</p>",
+		Locale:       "en",
+		Status:       "draft",
+		Version:      2,
 	})
 	if err != nil {
 		t.Fatalf("expected update success, got %v", err)
 	}
 	if updated.Name != "Name 1 Updated" {
 		t.Errorf("expected updated name, got %s", updated.Name)
+	}
+	if updated.TemplateType != domain.TemplateTypeCampaign {
+		t.Errorf("expected preserved template type 'campaign', got %s", updated.TemplateType)
+	}
+
+	// Update existing without specifying type (empty preserves existing)
+	updated2, err := svc.Update(context.Background(), "tpl-1", UpdateInput{
+		TemplateKey: "key_1_updated",
+		Name:        "Name 1 Updated Again",
+		Subject:     "Subject 1 Updated",
+		HTMLBody:    "<p>1 updated</p>",
+		Locale:      "en",
+		Status:      "draft",
+		Version:     3,
+	})
+	if err != nil {
+		t.Fatalf("expected update success without type, got %v", err)
+	}
+	if updated2.TemplateType != domain.TemplateTypeCampaign {
+		t.Errorf("expected preserved template type 'campaign', got %s", updated2.TemplateType)
+	}
+
+	// Attempting to change type to a different type fails
+	_, err = svc.Update(context.Background(), "tpl-1", UpdateInput{
+		TemplateKey:  "key_1_updated",
+		Name:         "Name 1",
+		TemplateType: "direct",
+		Subject:      "Subject 1",
+		HTMLBody:     "<p>1</p>",
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput when trying to change immutable type, got %v", err)
+	}
+
+	// Attempting to change type to an invalid type fails
+	_, err = svc.Update(context.Background(), "tpl-1", UpdateInput{
+		TemplateKey:  "key_1_updated",
+		Name:         "Name 1",
+		TemplateType: "invalid_type",
+		Subject:      "Subject 1",
+		HTMLBody:     "<p>1</p>",
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput for invalid type on update, got %v", err)
 	}
 
 	// Update non-existing
@@ -200,14 +324,15 @@ func TestService_Delete_SuccessAndNotFound(t *testing.T) {
 	svc := NewService(repo)
 
 	t1 := &domain.EmailTemplate{
-		ID:          "tpl-1",
-		TemplateKey: "key_1",
-		Name:        "Name 1",
-		Subject:     "Subject 1",
-		HTMLBody:    "<p>1</p>",
-		Locale:      "en",
-		Status:      domain.TemplateStatusActive,
-		Version:     1,
+		ID:           "tpl-1",
+		TemplateKey:  "key_1",
+		Name:         "Name 1",
+		TemplateType: domain.TemplateTypeDirect,
+		Subject:      "Subject 1",
+		HTMLBody:     "<p>1</p>",
+		Locale:       "en",
+		Status:       domain.TemplateStatusActive,
+		Version:      1,
 	}
 	repo.templates[t1.ID] = t1
 
@@ -228,6 +353,7 @@ func TestService_Preview_SuccessAndHTMLEscaping(t *testing.T) {
 		ID:            "tpl-preview-1",
 		TemplateKey:   "welcome_user",
 		Name:          "Welcome Template",
+		TemplateType:  domain.TemplateTypeDirect,
 		Subject:       "Welcome, {{username}}!",
 		HTMLBody:      "<h1>Hello, {{username}}!</h1><p>Email: {{email}}</p>",
 		PlainTextBody: "Hello, {{username}}! Email: {{email}}",
@@ -302,6 +428,7 @@ func TestService_Preview_ExistingTemplateIDWithOverrides(t *testing.T) {
 		ID:            "tpl-existing-100",
 		TemplateKey:   "existing_key",
 		Name:          "Existing Name",
+		TemplateType:  domain.TemplateTypeCampaign,
 		Subject:       "Persisted DB Subject",
 		HTMLBody:      "<p>Persisted DB HTML</p>",
 		PlainTextBody: "Persisted DB PlainText",
@@ -357,14 +484,15 @@ func TestService_Preview_MissingVariablesAndNotFound(t *testing.T) {
 	svc := NewService(repo)
 
 	tpl := &domain.EmailTemplate{
-		ID:          "tpl-preview-2",
-		TemplateKey: "req_vars",
-		Name:        "Required Vars",
-		Subject:     "Subject {{code}}",
-		HTMLBody:    "<p>{{code}}</p>",
-		Locale:      "en",
-		Status:      domain.TemplateStatusActive,
-		Version:     1,
+		ID:           "tpl-preview-2",
+		TemplateKey:  "req_vars",
+		Name:         "Required Vars",
+		TemplateType: domain.TemplateTypeDirect,
+		Subject:      "Subject {{code}}",
+		HTMLBody:     "<p>{{code}}</p>",
+		Locale:       "en",
+		Status:       domain.TemplateStatusActive,
+		Version:      1,
 	}
 	repo.templates[tpl.ID] = tpl
 
