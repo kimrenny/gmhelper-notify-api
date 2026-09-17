@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gmhelper/notify-api/internal/api/handlers"
+	"github.com/gmhelper/notify-api/internal/app/agreement"
 	"github.com/gmhelper/notify-api/internal/app/automation"
 	"github.com/gmhelper/notify-api/internal/app/campaign"
 	"github.com/gmhelper/notify-api/internal/app/dashboard"
@@ -190,7 +191,13 @@ func (m *routerMockCampaignRepo) UpdateStatus(ctx context.Context, id string, st
 }
 
 func (m *routerMockCampaignRepo) ListByStatus(ctx context.Context, status domain.CampaignStatus) ([]*domain.NotificationCampaign, error) {
-	return nil, nil
+	var result []*domain.NotificationCampaign
+	for _, c := range m.campaigns {
+		if c.Status == status {
+			result = append(result, c)
+		}
+	}
+	return result, nil
 }
 
 func (m *routerMockCampaignRepo) ListScheduled(ctx context.Context, after time.Time) ([]*domain.NotificationCampaign, error) {
@@ -220,7 +227,7 @@ func TestRouter_HealthAndReady(t *testing.T) {
 	pinger := &dummyPinger{err: nil}
 	readiness := health.NewReadinessService(pinger)
 	healthHandler := handlers.NewHealthHandler(readiness, log)
-	router := NewRouter(healthHandler, nil, nil, nil, nil, nil, nil, nil)
+	router := NewRouter(healthHandler, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	// 1. GET /health
 	reqHealth := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -255,7 +262,7 @@ func TestRouter_NotFoundJSON(t *testing.T) {
 	pinger := &dummyPinger{err: nil}
 	readiness := health.NewReadinessService(pinger)
 	healthHandler := handlers.NewHealthHandler(readiness, log)
-	router := NewRouter(healthHandler, nil, nil, nil, nil, nil, nil, nil)
+	router := NewRouter(healthHandler, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/unknown-endpoint", nil)
 	rec := httptest.NewRecorder()
@@ -302,7 +309,7 @@ func TestRouter_DirectNotificationsRouting_AuthAndPrecedence(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.Authenticate(verifier, log)
 
-	router := NewRouter(nil, nil, nil, directHandler, nil, nil, nil, authMw)
+	router := NewRouter(nil, nil, nil, directHandler, nil, nil, nil, nil, authMw)
 
 	validToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -381,6 +388,9 @@ func TestRouter_AdministrativeRoutes_SecurityMatrix(t *testing.T) {
 	campaignService := campaign.NewService(campaignRepo)
 	campaignHandler := handlers.NewCampaignHandler(campaignService, log)
 
+	agreementService := agreement.NewService(campaignRepo, tplRepo)
+	agreementHandler := handlers.NewAgreementHandler(agreementService, log)
+
 	pinger := &dummyPinger{err: nil}
 	readiness := health.NewReadinessService(pinger)
 	healthHandler := handlers.NewHealthHandler(readiness, log)
@@ -400,7 +410,7 @@ func TestRouter_AdministrativeRoutes_SecurityMatrix(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(healthHandler, templateHandler, campaignHandler, directHandler, userHandler, dashboardHandler, automationHandler, authMw)
+	router := NewRouter(healthHandler, templateHandler, campaignHandler, directHandler, userHandler, dashboardHandler, automationHandler, agreementHandler, authMw)
 
 	adminToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-admin", "admin", 15*time.Minute)
 	ownerToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-owner", "owner", 15*time.Minute)
@@ -436,6 +446,8 @@ func TestRouter_AdministrativeRoutes_SecurityMatrix(t *testing.T) {
 		{method: http.MethodGet, path: "/api/v1/automation/rules/rule-123"},
 		{method: http.MethodPut, path: "/api/v1/automation/rules/rule-123"},
 		{method: http.MethodDelete, path: "/api/v1/automation/rules/rule-123"},
+		{method: http.MethodPost, path: "/api/v1/agreements/broadcast"},
+		{method: http.MethodPost, path: "/api/v1/agreements"},
 	}
 
 	for _, ep := range endpoints {
@@ -634,7 +646,7 @@ func TestRouter_UserSearchRouting(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, nil, nil, userHandler, nil, nil, authMw)
+	router := NewRouter(nil, nil, nil, nil, userHandler, nil, nil, nil, authMw)
 
 	adminToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-admin", "admin", 15*time.Minute)
 
@@ -688,7 +700,7 @@ func TestRouter_CampaignEndpoints(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, campaignHandler, nil, nil, nil, nil, authMw)
+	router := NewRouter(nil, nil, campaignHandler, nil, nil, nil, nil, nil, authMw)
 
 	adminToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-admin", "admin", 15*time.Minute)
 
@@ -753,7 +765,7 @@ func TestRouter_CampaignDelete(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.Authenticate(verifier, log)
 
-	router := NewRouter(nil, nil, campaignHandler, nil, nil, nil, nil, authMw)
+	router := NewRouter(nil, nil, campaignHandler, nil, nil, nil, nil, nil, authMw)
 
 	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -813,7 +825,7 @@ func TestRouter_CampaignScheduleAndCancel(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, campaignHandler, nil, nil, nil, nil, authMw)
+	router := NewRouter(nil, nil, campaignHandler, nil, nil, nil, nil, nil, authMw)
 
 	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -917,7 +929,7 @@ func TestRouter_DashboardStats(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, nil, nil, nil, dashboardHandler, nil, authMw)
+	router := NewRouter(nil, nil, nil, nil, nil, dashboardHandler, nil, nil, authMw)
 
 	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -998,7 +1010,7 @@ func TestRouter_AutomationEndpoints(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, nil, nil, nil, nil, automationHandler, authMw)
+	router := NewRouter(nil, nil, nil, nil, nil, nil, automationHandler, nil, authMw)
 
 	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -1134,5 +1146,96 @@ func TestRouter_AutomationEndpoints(t *testing.T) {
 
 	if recGetAfterDel.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 Not Found after delete, got %d", recGetAfterDel.Code)
+	}
+}
+
+func TestRouter_AgreementEndpoints(t *testing.T) {
+	log, _ := logger.NewLogger("info")
+	campaignRepo := &routerMockCampaignRepo{
+		campaigns: make(map[string]*domain.NotificationCampaign),
+	}
+	tplRepo := &routerMockTplRepo{}
+	agreementService := agreement.NewService(campaignRepo, tplRepo)
+	agreementHandler := handlers.NewAgreementHandler(agreementService, log)
+
+	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
+	authMw := middleware.AdminAuth(verifier, log)
+
+	router := NewRouter(nil, nil, nil, nil, nil, nil, nil, agreementHandler, authMw)
+
+	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to generate token: %v", err)
+	}
+	userToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-regular", "user", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to generate user token: %v", err)
+	}
+
+	// 1. Unauthenticated POST /api/v1/agreements/broadcast -> 401
+	payload, _ := json.Marshal(handlers.CreateAgreementBroadcastRequest{
+		TemplateID: "tpl-1",
+		Name:       "User Agreement Broadcast",
+	})
+	reqUnauth := httptest.NewRequest(http.MethodPost, "/api/v1/agreements/broadcast", bytes.NewReader(payload))
+	reqUnauth.Header.Set("Content-Type", "application/json")
+	recUnauth := httptest.NewRecorder()
+	router.ServeHTTP(recUnauth, reqUnauth)
+	if recUnauth.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized, got %d", recUnauth.Code)
+	}
+
+	// 2. Regular user POST /api/v1/agreements/broadcast -> 403
+	reqUser := httptest.NewRequest(http.MethodPost, "/api/v1/agreements/broadcast", bytes.NewReader(payload))
+	reqUser.Header.Set("Authorization", "Bearer "+userToken)
+	reqUser.Header.Set("Content-Type", "application/json")
+	recUser := httptest.NewRecorder()
+	router.ServeHTTP(recUser, reqUser)
+	if recUser.Code != http.StatusForbidden {
+		t.Errorf("expected 403 Forbidden, got %d", recUser.Code)
+	}
+
+	// 3. Admin POST /api/v1/agreements/broadcast -> 201 Created
+	reqAdmin := httptest.NewRequest(http.MethodPost, "/api/v1/agreements/broadcast", bytes.NewReader(payload))
+	reqAdmin.Header.Set("Authorization", "Bearer "+adminToken)
+	reqAdmin.Header.Set("Content-Type", "application/json")
+	recAdmin := httptest.NewRecorder()
+	router.ServeHTTP(recAdmin, reqAdmin)
+	if recAdmin.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d: %s", recAdmin.Code, recAdmin.Body.String())
+	}
+
+	var resp handlers.AgreementBroadcastResponse
+	if err := json.Unmarshal(recAdmin.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if resp.CampaignType != "user_agreement" {
+		t.Errorf("expected CampaignType 'user_agreement', got '%s'", resp.CampaignType)
+	}
+	if resp.Status != string(domain.CampaignStatusScheduled) {
+		t.Errorf("expected Status '%s', got '%s'", domain.CampaignStatusScheduled, resp.Status)
+	}
+	if resp.TemplateID != "tpl-1" {
+		t.Errorf("expected TemplateID 'tpl-1', got '%s'", resp.TemplateID)
+	}
+
+	// 4. Duplicate creation while one is already active -> 409 Conflict
+	reqDup := httptest.NewRequest(http.MethodPost, "/api/v1/agreements/broadcast", bytes.NewReader(payload))
+	reqDup.Header.Set("Authorization", "Bearer "+adminToken)
+	reqDup.Header.Set("Content-Type", "application/json")
+	recDup := httptest.NewRecorder()
+	router.ServeHTTP(recDup, reqDup)
+	if recDup.Code != http.StatusConflict {
+		t.Errorf("expected 409 Conflict for concurrent broadcast, got %d (body: %s)", recDup.Code, recDup.Body.String())
+	}
+
+	// 5. Test alias route POST /api/v1/agreements -> 409 Conflict (since previous one is still scheduled)
+	reqAlias := httptest.NewRequest(http.MethodPost, "/api/v1/agreements", bytes.NewReader(payload))
+	reqAlias.Header.Set("Authorization", "Bearer "+adminToken)
+	reqAlias.Header.Set("Content-Type", "application/json")
+	recAlias := httptest.NewRecorder()
+	router.ServeHTTP(recAlias, reqAlias)
+	if recAlias.Code != http.StatusConflict {
+		t.Errorf("expected 409 Conflict on alias route, got %d", recAlias.Code)
 	}
 }
