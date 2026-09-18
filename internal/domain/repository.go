@@ -85,6 +85,8 @@ type AutomationRuleRepository interface {
 type AppSettingRepository interface {
 	GetByKey(ctx context.Context, key string) (*AppSetting, error)
 	Save(ctx context.Context, setting *AppSetting) error
+	ListByCategory(ctx context.Context, category string) ([]*AppSetting, error)
+	ListAll(ctx context.Context) ([]*AppSetting, error)
 }
 
 type DashboardRepository interface {

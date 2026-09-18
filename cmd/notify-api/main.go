@@ -21,6 +21,7 @@ import (
 	"github.com/gmhelper/notify-api/internal/app/dashboard"
 	"github.com/gmhelper/notify-api/internal/app/direct"
 	"github.com/gmhelper/notify-api/internal/app/health"
+	"github.com/gmhelper/notify-api/internal/app/settings"
 	"github.com/gmhelper/notify-api/internal/app/template"
 	"github.com/gmhelper/notify-api/internal/app/user"
 
@@ -128,13 +129,17 @@ func main() {
 	agreementService := agreement.NewService(campaignRepo, templateRepo)
 	agreementHandler := handlers.NewAgreementHandler(agreementService, log)
 
+	settingsRepo := postgres.NewAppSettingRepository(db.DB())
+	settingsService := settings.NewService(settingsRepo)
+	settingsHandler := handlers.NewSettingsHandler(settingsService, log)
+
 	jwtVerifier, err := auth.NewJWTVerifier(cfg.AuthSecret, cfg.AuthIssuer, cfg.AuthAudience)
 	if err != nil {
 		log.Fatal("failed to initialize jwt verifier", zapError(err))
 	}
 	authMiddleware := middleware.AdminAuth(jwtVerifier, log)
 
-	router := api.NewRouter(healthHandler, templateHandler, campaignHandler, directHandler, userHandler, dashboardHandler, automationHandler, agreementHandler, authMiddleware)
+	router := api.NewRouter(healthHandler, templateHandler, campaignHandler, directHandler, userHandler, dashboardHandler, automationHandler, agreementHandler, settingsHandler, authMiddleware)
 
 	handler := middleware.Chain(router,
 		middleware.RequestID(),

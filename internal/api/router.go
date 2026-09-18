@@ -17,6 +17,7 @@ func NewRouter(
 	dashboardHandler *handlers.DashboardHandler,
 	automationHandler *handlers.AutomationHandler,
 	agreementHandler *handlers.AgreementHandler,
+	settingsHandler *handlers.SettingsHandler,
 	authMiddleware middleware.Middleware,
 ) http.Handler {
 	mux := http.NewServeMux()
@@ -29,6 +30,12 @@ func NewRouter(
 
 	// API v1 prefix handler
 	apiV1Mux := http.NewServeMux()
+
+	// Settings endpoints
+	if settingsHandler != nil {
+		apiV1Mux.HandleFunc("GET /settings", settingsHandler.GetSettings)
+		apiV1Mux.HandleFunc("PUT /settings", settingsHandler.UpdateSettings)
+	}
 
 	// Agreement endpoints
 	if agreementHandler != nil {
