@@ -67,7 +67,7 @@ func TestSettingsHandler_GetSettings_Success(t *testing.T) {
 			settings.KeyDefaultLocale:   {Key: settings.KeyDefaultLocale, Value: "ua", Category: settings.CategoryNotification},
 		},
 	}
-	service := settings.NewService(repo)
+	service := settings.NewService(repo, nil)
 	log, _ := logger.NewLogger("error")
 	handler := NewSettingsHandler(service, log)
 
@@ -92,7 +92,7 @@ func TestSettingsHandler_GetSettings_Success(t *testing.T) {
 
 func TestSettingsHandler_GetSettings_InternalError(t *testing.T) {
 	repo := &mockSettingRepoForHandler{listErr: errors.New("db query failed")}
-	service := settings.NewService(repo)
+	service := settings.NewService(repo, nil)
 	log, _ := logger.NewLogger("error")
 	handler := NewSettingsHandler(service, log)
 
@@ -117,7 +117,7 @@ func TestSettingsHandler_GetSettings_InternalError(t *testing.T) {
 
 func TestSettingsHandler_UpdateSettings_Success(t *testing.T) {
 	repo := &mockSettingRepoForHandler{settings: make(map[string]*domain.AppSetting)}
-	service := settings.NewService(repo)
+	service := settings.NewService(repo, nil)
 	log, _ := logger.NewLogger("error")
 	handler := NewSettingsHandler(service, log)
 
@@ -149,7 +149,7 @@ func TestSettingsHandler_UpdateSettings_Success(t *testing.T) {
 
 func TestSettingsHandler_UpdateSettings_InvalidJSON(t *testing.T) {
 	repo := &mockSettingRepoForHandler{settings: make(map[string]*domain.AppSetting)}
-	service := settings.NewService(repo)
+	service := settings.NewService(repo, nil)
 	log, _ := logger.NewLogger("error")
 	handler := NewSettingsHandler(service, log)
 
@@ -165,7 +165,7 @@ func TestSettingsHandler_UpdateSettings_InvalidJSON(t *testing.T) {
 
 func TestSettingsHandler_UpdateSettings_ValidationErrors(t *testing.T) {
 	repo := &mockSettingRepoForHandler{settings: make(map[string]*domain.AppSetting)}
-	service := settings.NewService(repo)
+	service := settings.NewService(repo, nil)
 	log, _ := logger.NewLogger("error")
 	handler := NewSettingsHandler(service, log)
 
@@ -197,7 +197,7 @@ func TestSettingsHandler_UpdateSettings_InternalError(t *testing.T) {
 		settings: make(map[string]*domain.AppSetting),
 		saveErr:  errors.New("db error"),
 	}
-	service := settings.NewService(repo)
+	service := settings.NewService(repo, nil)
 	log, _ := logger.NewLogger("error")
 	handler := NewSettingsHandler(service, log)
 

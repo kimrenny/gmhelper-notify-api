@@ -2,12 +2,15 @@ package settings
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gmhelper/notify-api/internal/app/audit"
 	"github.com/gmhelper/notify-api/internal/domain"
+	"github.com/gmhelper/notify-api/internal/http/middleware"
 )
 
 type mockAppSettingRepo struct {
@@ -75,7 +78,7 @@ func stringPtr(s string) *string {
 
 func TestService_GetSettings_DefaultsWhenEmpty(t *testing.T) {
 	repo := newMockRepo()
-	svc := NewService(repo)
+	svc := NewService(repo, nil)
 
 	dto, err := svc.GetSettings(context.Background())
 	if err != nil {
@@ -99,7 +102,7 @@ func TestService_GetSettings_WithPersistedValues(t *testing.T) {
 	repo.settings[KeyReplyToEmail] = &domain.AppSetting{Key: KeyReplyToEmail, Value: "support@gmhelper.com", Category: CategoryNotification}
 	repo.settings[KeyDefaultLocale] = &domain.AppSetting{Key: KeyDefaultLocale, Value: "ua", Category: CategoryNotification}
 
-	svc := NewService(repo)
+	svc := NewService(repo, nil)
 	dto, err := svc.GetSettings(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -118,7 +121,7 @@ func TestService_GetSettings_WithPersistedValues(t *testing.T) {
 
 func TestService_UpdateSettings_ValidAll(t *testing.T) {
 	repo := newMockRepo()
-	svc := NewService(repo)
+	svc := NewService(repo, nil)
 
 	input := UpdateAppSettingsInput{
 		DefaultFromName: stringPtr("GMHelper Alerts"),
@@ -157,7 +160,7 @@ func TestService_UpdateSettings_EmptyReplyToAllowed(t *testing.T) {
 	repo := newMockRepo()
 	repo.settings[KeyReplyToEmail] = &domain.AppSetting{Key: KeyReplyToEmail, Value: "old@example.com", Category: CategoryNotification}
 
-	svc := NewService(repo)
+	svc := NewService(repo, nil)
 	input := UpdateAppSettingsInput{
 		ReplyToEmail: stringPtr(""),
 	}
@@ -228,7 +231,7 @@ func TestService_UpdateSettings_ValidationErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := newMockRepo()
-			svc := NewService(repo)
+			svc := NewService(repo, nil)
 
 			_, err := svc.UpdateSettings(context.Background(), tt.input)
 			if err == nil {
@@ -247,7 +250,7 @@ func TestService_UpdateSettings_ValidationErrors(t *testing.T) {
 func TestService_UpdateSettings_RepositoryError(t *testing.T) {
 	repo := newMockRepo()
 	repo.saveErr = errors.New("db error on save")
-	svc := NewService(repo)
+	svc := NewService(repo, nil)
 
 	input := UpdateAppSettingsInput{
 		DefaultFromName: stringPtr("Valid Name"),
@@ -259,5 +262,208 @@ func TestService_UpdateSettings_RepositoryError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "failed to save default from name setting") {
 		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+type mockActivityLogRepoForSettings struct {
+	recordedLogs []*domain.ActivityLog
+	createErr    error
+}
+
+func (m *mockActivityLogRepoForSettings) Create(ctx context.Context, log *domain.ActivityLog) error {
+	if m.createErr != nil {
+		return m.createErr
+	}
+	m.recordedLogs = append(m.recordedLogs, log)
+	return nil
+}
+
+func (m *mockActivityLogRepoForSettings) GetByID(ctx context.Context, id string) (*domain.ActivityLog, error) {
+	return nil, domain.ErrNotFound
+}
+
+func (m *mockActivityLogRepoForSettings) List(ctx context.Context, filter domain.ActivityLogFilter) ([]*domain.ActivityLog, int, error) {
+	return nil, 0, nil
+}
+
+func authContext(userID, role string) context.Context {
+	p := &domain.Principal{UserID: userID, Role: role}
+	return middleware.ContextWithPrincipal(context.Background(), p)
+}
+
+func TestSettingsService_Audit_SuccessfulUpdate(t *testing.T) {
+	repo := newMockRepo()
+	repo.settings[KeyDefaultFromName] = &domain.AppSetting{Key: KeyDefaultFromName, Value: "Old Name", Category: CategoryNotification}
+	repo.settings[KeyReplyToEmail] = &domain.AppSetting{Key: KeyReplyToEmail, Value: "old@example.com", Category: CategoryNotification}
+	repo.settings[KeyDefaultLocale] = &domain.AppSetting{Key: KeyDefaultLocale, Value: "en", Category: CategoryNotification}
+
+	auditRepo := &mockActivityLogRepoForSettings{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(repo, auditSvc)
+
+	ctx := authContext("usr-owner-1", "Owner")
+	input := UpdateAppSettingsInput{
+		DefaultFromName: stringPtr("New Name"),
+		ReplyToEmail:    stringPtr("new@example.com"),
+		DefaultLocale:   stringPtr("ua"),
+	}
+
+	updated, err := svc.UpdateSettings(ctx, input)
+	if err != nil {
+		t.Fatalf("expected update success, got: %v", err)
+	}
+
+	if updated.DefaultFromName != "New Name" || updated.ReplyToEmail != "new@example.com" || updated.DefaultLocale != "ua" {
+		t.Errorf("unexpected updated values: %+v", updated)
+	}
+
+	if len(auditRepo.recordedLogs) != 1 {
+		t.Fatalf("expected 1 audit log recorded, got %d", len(auditRepo.recordedLogs))
+	}
+
+	log := auditRepo.recordedLogs[0]
+	if log.EventType != domain.EventSettingsUpdated {
+		t.Errorf("expected EventType %s, got %s", domain.EventSettingsUpdated, log.EventType)
+	}
+	if log.ActorType != domain.ActorTypeUser || log.ActorUserID == nil || *log.ActorUserID != "usr-owner-1" {
+		t.Errorf("unexpected actor: %+v", log)
+	}
+	if log.TargetType != domain.TargetTypeSettings || log.TargetID != "notification" {
+		t.Errorf("expected target settings with ID 'notification', got type=%s id=%s", log.TargetType, log.TargetID)
+	}
+	if log.Summary != "Updated notification settings" {
+		t.Errorf("expected summary 'Updated notification settings', got '%s'", log.Summary)
+	}
+
+	var details map[string]map[string]string
+	if err := json.Unmarshal(log.Details, &details); err != nil {
+		t.Fatalf("failed to unmarshal details: %v", err)
+	}
+
+	if details["before"]["defaultFromName"] != "Old Name" || details["after"]["defaultFromName"] != "New Name" {
+		t.Errorf("unexpected from name diff: %+v", details)
+	}
+	if details["before"]["replyToEmail"] != "old@example.com" || details["after"]["replyToEmail"] != "new@example.com" {
+		t.Errorf("unexpected reply-to diff: %+v", details)
+	}
+	if details["before"]["defaultLocale"] != "en" || details["after"]["defaultLocale"] != "ua" {
+		t.Errorf("unexpected locale diff: %+v", details)
+	}
+}
+
+func TestSettingsService_Audit_NoOpUpdate_NoAudit(t *testing.T) {
+	repo := newMockRepo()
+	repo.settings[KeyDefaultFromName] = &domain.AppSetting{Key: KeyDefaultFromName, Value: "Same Name", Category: CategoryNotification}
+	repo.settings[KeyReplyToEmail] = &domain.AppSetting{Key: KeyReplyToEmail, Value: "same@example.com", Category: CategoryNotification}
+	repo.settings[KeyDefaultLocale] = &domain.AppSetting{Key: KeyDefaultLocale, Value: "en", Category: CategoryNotification}
+
+	auditRepo := &mockActivityLogRepoForSettings{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(repo, auditSvc)
+
+	ctx := authContext("usr-owner-1", "Owner")
+	input := UpdateAppSettingsInput{
+		DefaultFromName: stringPtr("Same Name"),
+		ReplyToEmail:    stringPtr("same@example.com"),
+		DefaultLocale:   stringPtr("en"),
+	}
+
+	_, err := svc.UpdateSettings(ctx, input)
+	if err != nil {
+		t.Fatalf("expected success on no-op update, got: %v", err)
+	}
+
+	if len(auditRepo.recordedLogs) != 0 {
+		t.Errorf("expected 0 audit logs for no-op update, got %d", len(auditRepo.recordedLogs))
+	}
+}
+
+func TestSettingsService_Audit_ValidationFailure_NoAudit(t *testing.T) {
+	repo := newMockRepo()
+	auditRepo := &mockActivityLogRepoForSettings{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(repo, auditSvc)
+
+	ctx := authContext("usr-owner-1", "Owner")
+	input := UpdateAppSettingsInput{
+		ReplyToEmail: stringPtr("invalid-email-address"),
+	}
+
+	_, err := svc.UpdateSettings(ctx, input)
+	if err == nil {
+		t.Fatal("expected error on invalid email, got nil")
+	}
+
+	if len(auditRepo.recordedLogs) != 0 {
+		t.Errorf("expected 0 audit logs on validation failure, got %d", len(auditRepo.recordedLogs))
+	}
+}
+
+func TestSettingsService_Audit_SecretsExcluded(t *testing.T) {
+	repo := newMockRepo()
+	auditRepo := &mockActivityLogRepoForSettings{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(repo, auditSvc)
+
+	ctx := authContext("usr-owner-1", "Owner")
+	input := UpdateAppSettingsInput{
+		DefaultFromName: stringPtr("Safe Name"),
+		DefaultLocale:   stringPtr("de"),
+	}
+
+	_, err := svc.UpdateSettings(ctx, input)
+	if err != nil {
+		t.Fatalf("expected update success, got: %v", err)
+	}
+
+	if len(auditRepo.recordedLogs) != 1 {
+		t.Fatalf("expected 1 audit log, got %d", len(auditRepo.recordedLogs))
+	}
+
+	detailsJSON := string(auditRepo.recordedLogs[0].Details)
+	forbiddenWords := []string{"password", "secret", "smtp", "token", "jwt", "database", "postgres"}
+	for _, word := range forbiddenWords {
+		if strings.Contains(strings.ToLower(detailsJSON), word) {
+			t.Errorf("audit details contained forbidden secret or infrastructure keyword '%s': %s", word, detailsJSON)
+		}
+	}
+}
+
+func TestSettingsService_Audit_AuditFailure_PropagatesError(t *testing.T) {
+	repo := newMockRepo()
+	auditRepo := &mockActivityLogRepoForSettings{
+		createErr: errors.New("audit log write failure"),
+	}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(repo, auditSvc)
+
+	ctx := authContext("usr-owner-1", "Owner")
+	input := UpdateAppSettingsInput{
+		DefaultFromName: stringPtr("New Name"),
+	}
+
+	_, err := svc.UpdateSettings(ctx, input)
+	if err == nil {
+		t.Fatal("expected audit failure to propagate, got nil")
+	}
+	if !strings.Contains(err.Error(), "audit log write failure") {
+		t.Errorf("expected audit failure message, got: %v", err)
+	}
+}
+
+func TestSettingsService_Audit_MissingPrincipal_ReturnsError(t *testing.T) {
+	repo := newMockRepo()
+	auditRepo := &mockActivityLogRepoForSettings{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(repo, auditSvc)
+
+	// Unauthenticated context
+	input := UpdateAppSettingsInput{
+		DefaultFromName: stringPtr("New Name"),
+	}
+
+	_, err := svc.UpdateSettings(context.Background(), input)
+	if !errors.Is(err, audit.ErrMissingPrincipal) {
+		t.Fatalf("expected ErrMissingPrincipal for unauthenticated context, got: %v", err)
 	}
 }

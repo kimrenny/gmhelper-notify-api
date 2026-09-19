@@ -2,11 +2,14 @@ package campaign
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/gmhelper/notify-api/internal/app/audit"
 	"github.com/gmhelper/notify-api/internal/app/email"
 	"github.com/gmhelper/notify-api/internal/domain"
 	"github.com/gmhelper/notify-api/internal/infra/userclient"
@@ -150,7 +153,7 @@ func (m *mockUserResolver) SearchUsers(ctx context.Context, query string, limit 
 }
 
 func TestDeliverClaimed_NilRecipient(t *testing.T) {
-	svc := NewDeliveryService(nil, nil, nil, nil, nil, nil)
+	svc := NewDeliveryService(nil, nil, nil, nil, nil, nil, nil)
 	err := svc.DeliverClaimed(context.Background(), nil)
 	if !errors.Is(err, ErrRecipientNil) {
 		t.Fatalf("expected ErrRecipientNil, got %v", err)
@@ -203,7 +206,7 @@ func TestDeliverClaimed_Success(t *testing.T) {
 		},
 	}
 
-	svc := NewDeliveryService(cRepo, rRepo, tRepo, aRepo, sender, uResolver)
+	svc := NewDeliveryService(cRepo, rRepo, tRepo, aRepo, sender, uResolver, nil)
 
 	err := svc.DeliverClaimed(ctx, recipient)
 	if err != nil {
@@ -267,7 +270,7 @@ func TestDeliverClaimed_CampaignLoadFailure(t *testing.T) {
 	aRepo := newMockAttemptRepo()
 	sender := &mockSender{}
 
-	svc := NewDeliveryService(cRepo, rRepo, tRepo, aRepo, sender, nil)
+	svc := NewDeliveryService(cRepo, rRepo, tRepo, aRepo, sender, nil, nil)
 
 	err := svc.DeliverClaimed(ctx, recipient)
 	if err == nil {
@@ -310,7 +313,7 @@ func TestDeliverClaimed_TemplateInactive(t *testing.T) {
 	aRepo := newMockAttemptRepo()
 	sender := &mockSender{}
 
-	svc := NewDeliveryService(cRepo, rRepo, tRepo, aRepo, sender, nil)
+	svc := NewDeliveryService(cRepo, rRepo, tRepo, aRepo, sender, nil, nil)
 
 	err := svc.DeliverClaimed(ctx, recipient)
 	if !errors.Is(err, ErrTemplateInactive) {
@@ -361,7 +364,7 @@ func TestDeliverClaimed_UserResolverError_FallbacksGracefully(t *testing.T) {
 		},
 	}
 
-	svc := NewDeliveryService(cRepo, rRepo, tRepo, aRepo, sender, uResolver)
+	svc := NewDeliveryService(cRepo, rRepo, tRepo, aRepo, sender, uResolver, nil)
 
 	err := svc.DeliverClaimed(ctx, recipient)
 	if err != nil {
@@ -411,7 +414,7 @@ func TestDeliverClaimed_RenderError(t *testing.T) {
 	aRepo := newMockAttemptRepo()
 	sender := &mockSender{}
 
-	svc := NewDeliveryService(cRepo, rRepo, tRepo, aRepo, sender, nil)
+	svc := NewDeliveryService(cRepo, rRepo, tRepo, aRepo, sender, nil, nil)
 
 	err := svc.DeliverClaimed(ctx, recipient)
 	if err == nil {
@@ -456,7 +459,7 @@ func TestDeliverClaimed_SMTPSendFailure(t *testing.T) {
 		sendErr: errors.New("smtp connection refused"),
 	}
 
-	svc := NewDeliveryService(cRepo, rRepo, tRepo, aRepo, sender, nil)
+	svc := NewDeliveryService(cRepo, rRepo, tRepo, aRepo, sender, nil, nil)
 
 	err := svc.DeliverClaimed(ctx, recipient)
 	if err == nil {
@@ -498,7 +501,7 @@ func TestFinalizeCampaignIfDone(t *testing.T) {
 	rRepo.recipients["r1"] = &domain.CampaignRecipient{ID: "r1", CampaignID: "c1", DeliveryStatus: domain.DeliveryStatusPending}
 	rRepo.recipients["r2"] = &domain.CampaignRecipient{ID: "r2", CampaignID: "c1", DeliveryStatus: domain.DeliveryStatusSent}
 
-	svc := NewDeliveryService(cRepo, rRepo, nil, nil, nil, nil)
+	svc := NewDeliveryService(cRepo, rRepo, nil, nil, nil, nil, nil)
 
 	finalized, status, err := svc.FinalizeCampaignIfDone(ctx, "c1")
 	if err != nil {
@@ -578,5 +581,261 @@ func TestFinalizeCampaignIfDone(t *testing.T) {
 	}
 	if cRepo.campaigns["c4"].Status != domain.CampaignStatusRunning {
 		t.Fatalf("expected campaign status running, got %s", cRepo.campaigns["c4"].Status)
+	}
+}
+
+func TestDeliveryService_Audit_Finalize_Completed(t *testing.T) {
+	ctx := context.Background()
+	cRepo := &mockRepo{
+		campaigns: map[string]*domain.NotificationCampaign{
+			"camp-fin-1": {ID: "camp-fin-1", Name: "Spring Promo", Status: domain.CampaignStatusRunning},
+		},
+	}
+	rRepo := newMockRecipientRepo()
+	rRepo.recipients["r1"] = &domain.CampaignRecipient{ID: "r1", CampaignID: "camp-fin-1", DeliveryStatus: domain.DeliveryStatusSent}
+	rRepo.recipients["r2"] = &domain.CampaignRecipient{ID: "r2", CampaignID: "camp-fin-1", DeliveryStatus: domain.DeliveryStatusSent}
+
+	auditRepo := &mockActivityLogRepoForCampaign{}
+	auditSvc := audit.NewService(auditRepo)
+
+	svc := NewDeliveryService(cRepo, rRepo, nil, nil, nil, nil, auditSvc)
+
+	finalized, status, err := svc.FinalizeCampaignIfDone(ctx, "camp-fin-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !finalized || status != domain.CampaignStatusCompleted {
+		t.Fatalf("expected finalized completed, got %v %s", finalized, status)
+	}
+
+	if len(auditRepo.logs) != 1 {
+		t.Fatalf("expected 1 audit log, got %d", len(auditRepo.logs))
+	}
+	entry := auditRepo.logs[0]
+	if entry.EventType != domain.EventCampaignCompleted {
+		t.Errorf("expected event %s, got %s", domain.EventCampaignCompleted, entry.EventType)
+	}
+	if entry.ActorType != domain.ActorTypeSystem {
+		t.Errorf("expected actor type system, got %s", entry.ActorType)
+	}
+	if entry.TargetType != domain.TargetTypeCampaign {
+		t.Errorf("expected target type campaign, got %s", entry.TargetType)
+	}
+	if entry.TargetID != "camp-fin-1" {
+		t.Errorf("expected target ID camp-fin-1, got %s", entry.TargetID)
+	}
+	if entry.TargetName == nil || *entry.TargetName != "Spring Promo" {
+		t.Errorf("expected target name 'Spring Promo', got %v", entry.TargetName)
+	}
+	if entry.Status != domain.ActivityStatusSuccess {
+		t.Errorf("expected status success, got %s", entry.Status)
+	}
+
+	var details map[string]interface{}
+	if err := json.Unmarshal(entry.Details, &details); err != nil {
+		t.Fatalf("failed to unmarshal details: %v", err)
+	}
+	if details["totalRecipients"] != float64(2) {
+		t.Errorf("expected 2 total recipients, got %v", details["totalRecipients"])
+	}
+	if details["sentCount"] != float64(2) {
+		t.Errorf("expected 2 sent, got %v", details["sentCount"])
+	}
+	if details["failedCount"] != float64(0) {
+		t.Errorf("expected 0 failed, got %v", details["failedCount"])
+	}
+}
+
+func TestDeliveryService_Audit_Finalize_PartiallyFailed(t *testing.T) {
+	ctx := context.Background()
+	cRepo := &mockRepo{
+		campaigns: map[string]*domain.NotificationCampaign{
+			"camp-fin-partial": {ID: "camp-fin-partial", Name: "Partial Promo", Status: domain.CampaignStatusRunning},
+		},
+	}
+	rRepo := newMockRecipientRepo()
+	rRepo.recipients["r1"] = &domain.CampaignRecipient{ID: "r1", CampaignID: "camp-fin-partial", DeliveryStatus: domain.DeliveryStatusSent}
+	rRepo.recipients["r2"] = &domain.CampaignRecipient{ID: "r2", CampaignID: "camp-fin-partial", DeliveryStatus: domain.DeliveryStatusFailed}
+
+	auditRepo := &mockActivityLogRepoForCampaign{}
+	auditSvc := audit.NewService(auditRepo)
+
+	svc := NewDeliveryService(cRepo, rRepo, nil, nil, nil, nil, auditSvc)
+
+	finalized, status, err := svc.FinalizeCampaignIfDone(ctx, "camp-fin-partial")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !finalized || status != domain.CampaignStatusPartiallyFailed {
+		t.Fatalf("expected finalized partially_failed, got %v %s", finalized, status)
+	}
+
+	if len(auditRepo.logs) != 1 {
+		t.Fatalf("expected 1 audit log, got %d", len(auditRepo.logs))
+	}
+	entry := auditRepo.logs[0]
+	if entry.EventType != domain.EventCampaignCompleted {
+		t.Errorf("expected event %s, got %s", domain.EventCampaignCompleted, entry.EventType)
+	}
+	if entry.Status != domain.ActivityStatusWarning {
+		t.Errorf("expected status warning for partially failed, got %s", entry.Status)
+	}
+
+	var details map[string]interface{}
+	if err := json.Unmarshal(entry.Details, &details); err != nil {
+		t.Fatalf("failed to unmarshal details: %v", err)
+	}
+	if details["sentCount"] != float64(1) || details["failedCount"] != float64(1) {
+		t.Errorf("unexpected counts: %v", details)
+	}
+}
+
+func TestDeliveryService_Audit_Finalize_Failed(t *testing.T) {
+	ctx := context.Background()
+	cRepo := &mockRepo{
+		campaigns: map[string]*domain.NotificationCampaign{
+			"camp-fin-fail": {ID: "camp-fin-fail", Name: "Failed Promo", Status: domain.CampaignStatusRunning},
+		},
+	}
+	rRepo := newMockRecipientRepo()
+	rRepo.recipients["r1"] = &domain.CampaignRecipient{ID: "r1", CampaignID: "camp-fin-fail", DeliveryStatus: domain.DeliveryStatusFailed}
+	rRepo.recipients["r2"] = &domain.CampaignRecipient{ID: "r2", CampaignID: "camp-fin-fail", DeliveryStatus: domain.DeliveryStatusFailed}
+
+	auditRepo := &mockActivityLogRepoForCampaign{}
+	auditSvc := audit.NewService(auditRepo)
+
+	svc := NewDeliveryService(cRepo, rRepo, nil, nil, nil, nil, auditSvc)
+
+	finalized, status, err := svc.FinalizeCampaignIfDone(ctx, "camp-fin-fail")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !finalized || status != domain.CampaignStatusFailed {
+		t.Fatalf("expected finalized failed, got %v %s", finalized, status)
+	}
+
+	if len(auditRepo.logs) != 1 {
+		t.Fatalf("expected 1 audit log, got %d", len(auditRepo.logs))
+	}
+	entry := auditRepo.logs[0]
+	if entry.EventType != domain.EventCampaignFailed {
+		t.Errorf("expected event %s, got %s", domain.EventCampaignFailed, entry.EventType)
+	}
+	if entry.Status != domain.ActivityStatusFailure {
+		t.Errorf("expected status failure, got %s", entry.Status)
+	}
+	if entry.ErrorMessage == nil || *entry.ErrorMessage == "" {
+		t.Errorf("expected non-empty error message, got %v", entry.ErrorMessage)
+	}
+
+	var details map[string]interface{}
+	if err := json.Unmarshal(entry.Details, &details); err != nil {
+		t.Fatalf("failed to unmarshal details: %v", err)
+	}
+	if details["failedCount"] != float64(2) {
+		t.Errorf("expected 2 failed, got %v", details["failedCount"])
+	}
+}
+
+func TestDeliveryService_Audit_Finalize_AuditFailure_DoesNotFailCampaign(t *testing.T) {
+	ctx := context.Background()
+	cRepo := &mockRepo{
+		campaigns: map[string]*domain.NotificationCampaign{
+			"camp-fin-audit-err": {ID: "camp-fin-audit-err", Name: "Fin Audit Err", Status: domain.CampaignStatusRunning},
+		},
+	}
+	rRepo := newMockRecipientRepo()
+	rRepo.recipients["r1"] = &domain.CampaignRecipient{ID: "r1", CampaignID: "camp-fin-audit-err", DeliveryStatus: domain.DeliveryStatusSent}
+
+	auditRepo := &mockActivityLogRepoForCampaign{createErr: errors.New("audit db failure")}
+	auditSvc := audit.NewService(auditRepo)
+
+	svc := NewDeliveryService(cRepo, rRepo, nil, nil, nil, nil, auditSvc)
+
+	finalized, status, err := svc.FinalizeCampaignIfDone(ctx, "camp-fin-audit-err")
+	if err != nil {
+		t.Fatalf("unexpected error finalizing campaign when audit fails: %v", err)
+	}
+	if !finalized || status != domain.CampaignStatusCompleted {
+		t.Fatalf("expected campaign to finalize to completed despite audit failure, got %v %s", finalized, status)
+	}
+	if cRepo.campaigns["camp-fin-audit-err"].Status != domain.CampaignStatusCompleted {
+		t.Errorf("expected campaign in repo to be completed, got %s", cRepo.campaigns["camp-fin-audit-err"].Status)
+	}
+}
+
+func TestDeliveryService_FinalizeCampaignIfDone_AlreadyTerminal_DoesNotEmitDuplicateAudit(t *testing.T) {
+	ctx := context.Background()
+	completedAt := time.Now().UTC()
+	cRepo := &mockRepo{
+		campaigns: map[string]*domain.NotificationCampaign{
+			"camp-already-done": {
+				ID:          "camp-already-done",
+				Name:        "Already Completed",
+				Status:      domain.CampaignStatusCompleted,
+				CompletedAt: &completedAt,
+			},
+		},
+	}
+	rRepo := newMockRecipientRepo()
+	rRepo.recipients["r1"] = &domain.CampaignRecipient{ID: "r1", CampaignID: "camp-already-done", DeliveryStatus: domain.DeliveryStatusSent}
+
+	auditRepo := &mockActivityLogRepoForCampaign{}
+	auditSvc := audit.NewService(auditRepo)
+
+	svc := NewDeliveryService(cRepo, rRepo, nil, nil, nil, nil, auditSvc)
+
+	// Call Finalize on an already completed campaign
+	finalized, status, err := svc.FinalizeCampaignIfDone(ctx, "camp-already-done")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if finalized {
+		t.Fatal("expected finalized=false on already completed campaign")
+	}
+	if status != domain.CampaignStatusCompleted {
+		t.Fatalf("expected completed status, got %s", status)
+	}
+	// Verify NO new audit log emitted
+	if len(auditRepo.logs) != 0 {
+		t.Fatalf("expected 0 audit logs for already completed campaign, got %d", len(auditRepo.logs))
+	}
+}
+
+func TestDeliveryService_FinalizeCampaignIfDone_CancelledCampaign_DoesNotCompleteOrEmitAudit(t *testing.T) {
+	ctx := context.Background()
+	cRepo := &mockRepo{
+		campaigns: map[string]*domain.NotificationCampaign{
+			"camp-cancelled": {
+				ID:     "camp-cancelled",
+				Name:   "Cancelled Campaign",
+				Status: domain.CampaignStatusCancelled,
+			},
+		},
+	}
+	rRepo := newMockRecipientRepo()
+	rRepo.recipients["r1"] = &domain.CampaignRecipient{ID: "r1", CampaignID: "camp-cancelled", DeliveryStatus: domain.DeliveryStatusSent}
+
+	auditRepo := &mockActivityLogRepoForCampaign{}
+	auditSvc := audit.NewService(auditRepo)
+
+	svc := NewDeliveryService(cRepo, rRepo, nil, nil, nil, nil, auditSvc)
+
+	finalized, status, err := svc.FinalizeCampaignIfDone(ctx, "camp-cancelled")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if finalized {
+		t.Fatal("expected finalized=false on cancelled campaign")
+	}
+	if status != domain.CampaignStatusCancelled {
+		t.Fatalf("expected cancelled status, got %s", status)
+	}
+	if cRepo.campaigns["camp-cancelled"].Status != domain.CampaignStatusCancelled {
+		t.Fatalf("expected campaign status to remain cancelled, got %s", cRepo.campaigns["camp-cancelled"].Status)
+	}
+	// Verify NO audit log emitted
+	if len(auditRepo.logs) != 0 {
+		t.Fatalf("expected 0 audit logs on cancelled campaign, got %d", len(auditRepo.logs))
 	}
 }

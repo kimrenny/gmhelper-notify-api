@@ -92,3 +92,21 @@ type AppSettingRepository interface {
 type DashboardRepository interface {
 	GetDashboardStats(ctx context.Context, recentLimit int) (*DashboardStats, error)
 }
+
+type ActivityLogFilter struct {
+	EventType   *string
+	ActorUserID *string
+	TargetType  *ActivityTargetType
+	TargetID    *string
+	Status      *ActivityStatus
+	FromDate    *time.Time
+	ToDate      *time.Time
+	Limit       int
+	Offset      int
+}
+
+type ActivityLogRepository interface {
+	Create(ctx context.Context, log *ActivityLog) error
+	GetByID(ctx context.Context, id string) (*ActivityLog, error)
+	List(ctx context.Context, filter ActivityLogFilter) ([]*ActivityLog, int, error)
+}

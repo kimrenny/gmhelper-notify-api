@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gmhelper/notify-api/internal/app/audit"
 	"github.com/gmhelper/notify-api/internal/app/direct"
 	"github.com/gmhelper/notify-api/internal/app/email"
 	"github.com/gmhelper/notify-api/internal/app/user"
@@ -21,6 +22,27 @@ var (
 	ErrCampaignNotExecutable = errors.New("referenced campaign is not in running state")
 )
 
+type campaignCompletedDetails struct {
+	CampaignID      string                `json:"campaignId"`
+	CampaignName    string                `json:"campaignName"`
+	Status          domain.CampaignStatus `json:"status"`
+	TotalRecipients int                   `json:"totalRecipients"`
+	SentCount       int                   `json:"sentCount"`
+	FailedCount     int                   `json:"failedCount"`
+	CompletedAt     time.Time             `json:"completedAt"`
+}
+
+type campaignFailedDetails struct {
+	CampaignID      string                `json:"campaignId"`
+	CampaignName    string                `json:"campaignName"`
+	Status          domain.CampaignStatus `json:"status"`
+	TotalRecipients int                   `json:"totalRecipients"`
+	SentCount       int                   `json:"sentCount"`
+	FailedCount     int                   `json:"failedCount"`
+	CompletedAt     time.Time             `json:"completedAt"`
+	ErrorMessage    string                `json:"errorMessage"`
+}
+
 // DeliveryService delivers claimed campaign recipients and manages campaign lifecycle finalization.
 type DeliveryService struct {
 	campaignRepo  domain.NotificationCampaignRepository
@@ -30,6 +52,7 @@ type DeliveryService struct {
 	sender        email.Sender
 	userResolver  user.UserResolver
 	logger        logger.Logger
+	audit         *audit.Service
 }
 
 // NewDeliveryService constructs a new DeliveryService for campaign recipients.
@@ -40,8 +63,9 @@ func NewDeliveryService(
 	attemptRepo domain.DeliveryAttemptRepository,
 	sender email.Sender,
 	userResolver user.UserResolver,
+	auditSvc *audit.Service,
 ) *DeliveryService {
-	return NewDeliveryServiceWithLogger(campaignRepo, recipientRepo, templateRepo, attemptRepo, sender, userResolver, nil)
+	return NewDeliveryServiceWithLogger(campaignRepo, recipientRepo, templateRepo, attemptRepo, sender, userResolver, nil, auditSvc)
 }
 
 // NewDeliveryServiceWithLogger constructs a new DeliveryService with an optional logger.
@@ -53,6 +77,7 @@ func NewDeliveryServiceWithLogger(
 	sender email.Sender,
 	userResolver user.UserResolver,
 	log logger.Logger,
+	auditSvc *audit.Service,
 ) *DeliveryService {
 	return &DeliveryService{
 		campaignRepo:  campaignRepo,
@@ -62,6 +87,7 @@ func NewDeliveryServiceWithLogger(
 		sender:        sender,
 		userResolver:  userResolver,
 		logger:        log,
+		audit:         auditSvc,
 	}
 }
 
@@ -192,6 +218,20 @@ func (s *DeliveryService) DeliverClaimed(ctx context.Context, recipient *domain.
 
 // FinalizeCampaignIfDone checks if all recipients for the given campaign have completed (none pending or sending) and transitions the campaign to a terminal state.
 func (s *DeliveryService) FinalizeCampaignIfDone(ctx context.Context, campaignID string) (bool, domain.CampaignStatus, error) {
+	camp, err := s.campaignRepo.GetByID(ctx, campaignID)
+	if err != nil {
+		return false, "", err
+	}
+
+	// If campaign is already in a terminal state (completed, partially_failed, failed, cancelled),
+	// do not attempt to finalize again and do not emit duplicate audit events.
+	if camp.Status == domain.CampaignStatusCompleted ||
+		camp.Status == domain.CampaignStatusPartiallyFailed ||
+		camp.Status == domain.CampaignStatusFailed ||
+		camp.Status == domain.CampaignStatusCancelled {
+		return false, camp.Status, nil
+	}
+
 	stats, err := s.recipientRepo.GetDeliveryStatsByCampaign(ctx, campaignID)
 	if err != nil {
 		return false, "", err
@@ -200,12 +240,12 @@ func (s *DeliveryService) FinalizeCampaignIfDone(ctx context.Context, campaignID
 	// If no recipients exist yet, population is still in progress (or managed by AudiencePopulator).
 	// Delivery runner must not prematurely finalize campaigns with zero recipients.
 	if stats.TotalCount == 0 {
-		return false, domain.CampaignStatusRunning, nil
+		return false, camp.Status, nil
 	}
 
 	// If any recipient is still pending or currently sending, do not finalize
 	if stats.PendingCount > 0 || stats.SendingCount > 0 {
-		return false, domain.CampaignStatusRunning, nil
+		return false, camp.Status, nil
 	}
 
 	var finalStatus domain.CampaignStatus
@@ -223,6 +263,77 @@ func (s *DeliveryService) FinalizeCampaignIfDone(ctx context.Context, campaignID
 	completedAt := time.Now().UTC()
 	if err := s.campaignRepo.UpdateStatus(ctx, campaignID, finalStatus, nil, &completedAt); err != nil {
 		return false, "", err
+	}
+
+	if s.audit != nil {
+		campaignName := camp.Name
+		if campaignName == "" {
+			campaignName = campaignID
+		}
+
+		if finalStatus == domain.CampaignStatusCompleted || finalStatus == domain.CampaignStatusPartiallyFailed {
+			status := domain.ActivityStatusSuccess
+			summary := fmt.Sprintf("Campaign %q completed execution", campaignName)
+			if finalStatus == domain.CampaignStatusPartiallyFailed {
+				status = domain.ActivityStatusWarning
+				summary = fmt.Sprintf("Campaign %q completed with partial failures", campaignName)
+			}
+			if _, auditErr := s.audit.Record(ctx, audit.RecordInput{
+				EventType:  domain.EventCampaignCompleted,
+				Actor:      audit.SystemActor(),
+				TargetType: domain.TargetTypeCampaign,
+				TargetID:   campaignID,
+				TargetName: &campaignName,
+				Status:     status,
+				Summary:    summary,
+				Details: campaignCompletedDetails{
+					CampaignID:      campaignID,
+					CampaignName:    campaignName,
+					Status:          finalStatus,
+					TotalRecipients: stats.TotalCount,
+					SentCount:       stats.SentCount,
+					FailedCount:     stats.FailedCount,
+					CompletedAt:     completedAt,
+				},
+			}); auditErr != nil {
+				if s.logger != nil {
+					s.logger.Error("failed to record campaign completed audit log",
+						logger.String("campaignId", campaignID),
+						logger.Error(auditErr),
+					)
+				}
+			}
+		} else if finalStatus == domain.CampaignStatusFailed {
+			errMsg := "all recipient deliveries failed"
+			summary := fmt.Sprintf("Campaign %q failed execution", campaignName)
+			if _, auditErr := s.audit.Record(ctx, audit.RecordInput{
+				EventType:    domain.EventCampaignFailed,
+				Actor:        audit.SystemActor(),
+				TargetType:   domain.TargetTypeCampaign,
+				TargetID:     campaignID,
+				TargetName:   &campaignName,
+				Status:       domain.ActivityStatusFailure,
+				Summary:      summary,
+				ErrorMessage: &errMsg,
+				Details: campaignFailedDetails{
+					CampaignID:      campaignID,
+					CampaignName:    campaignName,
+					Status:          finalStatus,
+					TotalRecipients: stats.TotalCount,
+					SentCount:       stats.SentCount,
+					FailedCount:     stats.FailedCount,
+					CompletedAt:     completedAt,
+					ErrorMessage:    errMsg,
+				},
+			}); auditErr != nil {
+				if s.logger != nil {
+					s.logger.Error("failed to record campaign failed audit log",
+						logger.String("campaignId", campaignID),
+						logger.Error(auditErr),
+					)
+				}
+			}
+		}
 	}
 
 	return true, finalStatus, nil

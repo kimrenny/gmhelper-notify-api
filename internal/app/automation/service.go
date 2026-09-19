@@ -1,11 +1,16 @@
 package automation
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
+	"github.com/gmhelper/notify-api/internal/app/audit"
 	"github.com/gmhelper/notify-api/internal/domain"
 	"github.com/google/uuid"
 )
@@ -33,12 +38,14 @@ type UpdateInput struct {
 type Service struct {
 	repo         domain.AutomationRuleRepository
 	templateRepo domain.EmailTemplateRepository
+	audit        *audit.Service
 }
 
-func NewService(repo domain.AutomationRuleRepository, templateRepo domain.EmailTemplateRepository) *Service {
+func NewService(repo domain.AutomationRuleRepository, templateRepo domain.EmailTemplateRepository, audit *audit.Service) *Service {
 	return &Service{
 		repo:         repo,
 		templateRepo: templateRepo,
+		audit:        audit,
 	}
 }
 
@@ -70,6 +77,15 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*domain.Automa
 
 	if name == "" || templateID == "" {
 		return nil, ErrInvalidInput
+	}
+
+	var actor audit.Actor
+	if s.audit != nil {
+		var err error
+		actor, err = audit.ActorFromContext(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if s.templateRepo != nil {
@@ -109,6 +125,23 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*domain.Automa
 		return nil, err
 	}
 
+	if s.audit != nil {
+		targetName := rule.Name
+		_, err := s.audit.Record(ctx, audit.RecordInput{
+			EventType:  domain.EventAutomationCreated,
+			Actor:      actor,
+			TargetType: domain.TargetTypeAutomationRule,
+			TargetID:   rule.ID,
+			TargetName: &targetName,
+			Status:     domain.ActivityStatusSuccess,
+			Summary:    fmt.Sprintf("Created automation rule %q", rule.Name),
+			Details:    ruleSnapshot(rule),
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	return rule, nil
 }
 
@@ -122,6 +155,15 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (*do
 		return nil, ErrInvalidInput
 	}
 
+	var actor audit.Actor
+	if s.audit != nil {
+		var err error
+		actor, err = audit.ActorFromContext(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	existing, err := s.repo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
@@ -130,12 +172,15 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (*do
 		return nil, ErrNotFound
 	}
 
+	before := cloneRule(existing)
+	target := cloneRule(existing)
+
 	if input.Name != nil {
 		name := strings.TrimSpace(*input.Name)
 		if name == "" {
 			return nil, ErrInvalidInput
 		}
-		existing.Name = name
+		target.Name = name
 	}
 
 	if input.TemplateID != nil {
@@ -155,28 +200,101 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (*do
 				return nil, ErrTemplateNotFound
 			}
 		}
-		existing.TemplateID = templateID
+		target.TemplateID = templateID
 	}
 
 	if input.Enabled != nil {
-		existing.Enabled = *input.Enabled
+		target.Enabled = *input.Enabled
 	}
 
 	if input.Config != nil {
-		existing.Config = *input.Config
+		target.Config = *input.Config
 	}
 
-	existing.UpdatedAt = time.Now().UTC()
+	target.UpdatedAt = time.Now().UTC()
 
-	if err := existing.Validate(ctx); err != nil {
+	if err := target.Validate(ctx); err != nil {
 		return nil, err
 	}
 
-	if err := s.repo.Update(ctx, existing); err != nil {
+	// Change detection / No-Op check
+	isChanged := before.Name != target.Name ||
+		before.TemplateID != target.TemplateID ||
+		before.Enabled != target.Enabled ||
+		!configsEqual(before.Config, target.Config)
+
+	if !isChanged {
+		return existing, nil
+	}
+
+	if err := s.repo.Update(ctx, target); err != nil {
 		return nil, err
 	}
 
-	return existing, nil
+	if s.audit != nil {
+		targetName := target.Name
+		onlyEnabledChanged := (before.Name == target.Name) &&
+			(before.TemplateID == target.TemplateID) &&
+			configsEqual(before.Config, target.Config) &&
+			(before.Enabled != target.Enabled)
+
+		var eventType string
+		var summary string
+		var details any
+
+		if onlyEnabledChanged {
+			if target.Enabled {
+				eventType = domain.EventAutomationEnabled
+				summary = fmt.Sprintf("Enabled automation rule %q", target.Name)
+			} else {
+				eventType = domain.EventAutomationDisabled
+				summary = fmt.Sprintf("Disabled automation rule %q", target.Name)
+			}
+			details = map[string]any{
+				"ruleId":           target.ID,
+				"ruleName":         target.Name,
+				"previousEnabled":  before.Enabled,
+				"resultingEnabled": target.Enabled,
+			}
+		} else {
+			eventType = domain.EventAutomationUpdated
+			summary = fmt.Sprintf("Updated automation rule %q", target.Name)
+			details = map[string]any{
+				"before": ruleSnapshot(before),
+				"after":  ruleSnapshot(target),
+			}
+		}
+
+		_, err = s.audit.Record(ctx, audit.RecordInput{
+			EventType:  eventType,
+			Actor:      actor,
+			TargetType: domain.TargetTypeAutomationRule,
+			TargetID:   target.ID,
+			TargetName: &targetName,
+			Status:     domain.ActivityStatusSuccess,
+			Summary:    summary,
+			Details:    details,
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return target, nil
+}
+
+func (s *Service) Enable(ctx context.Context, id string) (*domain.AutomationRule, error) {
+	enabled := true
+	return s.Update(ctx, id, UpdateInput{
+		Enabled: &enabled,
+	})
+}
+
+func (s *Service) Disable(ctx context.Context, id string) (*domain.AutomationRule, error) {
+	enabled := false
+	return s.Update(ctx, id, UpdateInput{
+		Enabled: &enabled,
+	})
 }
 
 func (s *Service) Delete(ctx context.Context, id string) error {
@@ -189,5 +307,75 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 		return ErrInvalidInput
 	}
 
-	return s.repo.Delete(ctx, id)
+	var actor audit.Actor
+	if s.audit != nil {
+		var err error
+		actor, err = audit.ActorFromContext(ctx, nil)
+		if err != nil {
+			return err
+		}
+	}
+
+	existing, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return domain.ErrNotFound
+	}
+
+	snapshot := ruleSnapshot(existing)
+
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return err
+	}
+
+	if s.audit != nil {
+		targetName := existing.Name
+		_, err := s.audit.Record(ctx, audit.RecordInput{
+			EventType:  domain.EventAutomationDeleted,
+			Actor:      actor,
+			TargetType: domain.TargetTypeAutomationRule,
+			TargetID:   existing.ID,
+			TargetName: &targetName,
+			Status:     domain.ActivityStatusSuccess,
+			Summary:    fmt.Sprintf("Deleted automation rule %q", existing.Name),
+			Details:    snapshot,
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func ruleSnapshot(r *domain.AutomationRule) map[string]any {
+	if r == nil {
+		return nil
+	}
+	return map[string]any{
+		"id":         r.ID,
+		"name":       r.Name,
+		"templateId": r.TemplateID,
+		"enabled":    r.Enabled,
+		"config":     r.Config,
+	}
+}
+
+func cloneRule(r *domain.AutomationRule) *domain.AutomationRule {
+	if r == nil {
+		return nil
+	}
+	cp := *r
+	return &cp
+}
+
+func configsEqual(c1, c2 domain.AutomationRuleConfig) bool {
+	b1, err1 := json.Marshal(c1)
+	b2, err2 := json.Marshal(c2)
+	if err1 == nil && err2 == nil {
+		return bytes.Equal(b1, b2)
+	}
+	return reflect.DeepEqual(c1, c2)
 }

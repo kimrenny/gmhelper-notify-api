@@ -2,11 +2,15 @@ package direct
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/gmhelper/notify-api/internal/app/audit"
 	"github.com/gmhelper/notify-api/internal/domain"
+	"github.com/gmhelper/notify-api/internal/http/middleware"
 	"github.com/gmhelper/notify-api/internal/infra/userclient"
 )
 
@@ -158,7 +162,7 @@ func setupTestService(resolvers ...UserResolver) (*Service, *mockTemplateRepo, *
 	if len(resolvers) > 0 {
 		resolver = resolvers[0]
 	}
-	svc := NewService(tplRepo, directRepo, resolver)
+	svc := NewService(tplRepo, directRepo, resolver, nil)
 	return svc, tplRepo, directRepo
 }
 
@@ -747,5 +751,224 @@ func TestMergeUserPayload_ApprovedFieldsOnly(t *testing.T) {
 		if _, exists := merged[key]; exists {
 			t.Errorf("unapproved key '%s' must not be exposed in template variables", key)
 		}
+	}
+}
+
+type mockActivityLogRepoForDirect struct {
+	recordedLogs []*domain.ActivityLog
+	createErr    error
+}
+
+func (m *mockActivityLogRepoForDirect) Create(ctx context.Context, log *domain.ActivityLog) error {
+	if m.createErr != nil {
+		return m.createErr
+	}
+	m.recordedLogs = append(m.recordedLogs, log)
+	return nil
+}
+
+func (m *mockActivityLogRepoForDirect) GetByID(ctx context.Context, id string) (*domain.ActivityLog, error) {
+	return nil, domain.ErrNotFound
+}
+
+func (m *mockActivityLogRepoForDirect) List(ctx context.Context, filter domain.ActivityLogFilter) ([]*domain.ActivityLog, int, error) {
+	return nil, 0, nil
+}
+
+func authContext(userID, role string) context.Context {
+	p := &domain.Principal{UserID: userID, Role: role}
+	return middleware.ContextWithPrincipal(context.Background(), p)
+}
+
+func TestDirectService_Audit_Create_Success(t *testing.T) {
+	tplRepo := &mockTemplateRepo{
+		templates: map[string]*domain.EmailTemplate{
+			"tpl-active-1": {
+				ID:            "tpl-active-1",
+				TemplateKey:   "order_update",
+				Name:          "Order Update",
+				TemplateType:  domain.TemplateTypeDirect,
+				Subject:       "Order {{orderId}} is ready",
+				HTMLBody:      "<p>Your order {{orderId}} is ready.</p>",
+				PlainTextBody: "Your order {{orderId}} is ready.",
+				Locale:        "en",
+				Status:        domain.TemplateStatusActive,
+				Version:       1,
+			},
+		},
+	}
+	directRepo := &mockDirectRepo{
+		notifications: make(map[string]*domain.DirectNotification),
+		attempts:      make(map[string]*domain.DeliveryAttempt),
+	}
+	auditRepo := &mockActivityLogRepoForDirect{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(tplRepo, directRepo, &mockUserResolver{}, auditSvc)
+
+	ctx := authContext("usr-admin-1", "Admin")
+	input := CreateInput{
+		TemplateID:       "tpl-active-1",
+		RecipientEmail:   "customer@example.com",
+		RecipientName:    "John Doe",
+		NotificationType: domain.NotificationTypeDirect,
+		Payload: map[string]any{
+			"orderId": "ORD-12345",
+		},
+	}
+
+	res, err := svc.Create(ctx, input)
+	if err != nil {
+		t.Fatalf("expected successful creation, got %v", err)
+	}
+
+	if len(auditRepo.recordedLogs) != 1 {
+		t.Fatalf("expected exactly 1 audit log recorded, got %d", len(auditRepo.recordedLogs))
+	}
+
+	log := auditRepo.recordedLogs[0]
+	if log.EventType != domain.EventDirectCreated {
+		t.Errorf("expected event type %q, got %q", domain.EventDirectCreated, log.EventType)
+	}
+	if log.ActorType != domain.ActorTypeUser {
+		t.Errorf("expected actor type %q, got %q", domain.ActorTypeUser, log.ActorType)
+	}
+	if log.ActorUserID == nil || *log.ActorUserID != "usr-admin-1" {
+		t.Errorf("expected actor user ID 'usr-admin-1', got %v", log.ActorUserID)
+	}
+	if log.TargetType != domain.TargetTypeDirectNotification {
+		t.Errorf("expected target type %q, got %q", domain.TargetTypeDirectNotification, log.TargetType)
+	}
+	if log.TargetID != res.Notification.ID {
+		t.Errorf("expected target ID %q, got %q", res.Notification.ID, log.TargetID)
+	}
+	if log.TargetName == nil || *log.TargetName != "customer@example.com" {
+		t.Errorf("expected target name 'customer@example.com', got %v", log.TargetName)
+	}
+	if log.Status != domain.ActivityStatusSuccess {
+		t.Errorf("expected status %q, got %q", domain.ActivityStatusSuccess, log.Status)
+	}
+	if !strings.Contains(log.Summary, "customer@example.com") {
+		t.Errorf("expected summary to contain recipient email, got %q", log.Summary)
+	}
+
+	var details directMessageDetails
+	if err := json.Unmarshal(log.Details, &details); err != nil {
+		t.Fatalf("failed to unmarshal audit details: %v", err)
+	}
+	if details.ID != res.Notification.ID {
+		t.Errorf("expected details ID %q, got %q", res.Notification.ID, details.ID)
+	}
+	if details.TemplateID != "tpl-active-1" {
+		t.Errorf("expected templateId 'tpl-active-1', got %q", details.TemplateID)
+	}
+	if details.TemplateKey != "order_update" {
+		t.Errorf("expected templateKey 'order_update', got %q", details.TemplateKey)
+	}
+	if details.RecipientEmail != "customer@example.com" {
+		t.Errorf("expected recipientEmail 'customer@example.com', got %q", details.RecipientEmail)
+	}
+	if details.RecipientName != "John Doe" {
+		t.Errorf("expected recipientName 'John Doe', got %q", details.RecipientName)
+	}
+	if details.Subject != "Order ORD-12345 is ready" {
+		t.Errorf("expected rendered subject, got %q", details.Subject)
+	}
+	if details.BodyHTML != "<p>Your order ORD-12345 is ready.</p>" {
+		t.Errorf("expected rendered HTML body, got %q", details.BodyHTML)
+	}
+}
+
+func TestDirectService_Audit_Create_FailedMutation_NoAudit(t *testing.T) {
+	tplRepo := &mockTemplateRepo{
+		templates: map[string]*domain.EmailTemplate{},
+	}
+	directRepo := &mockDirectRepo{
+		notifications: make(map[string]*domain.DirectNotification),
+		attempts:      make(map[string]*domain.DeliveryAttempt),
+	}
+	auditRepo := &mockActivityLogRepoForDirect{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(tplRepo, directRepo, &mockUserResolver{}, auditSvc)
+
+	ctx := authContext("usr-admin-1", "Admin")
+	_, err := svc.Create(ctx, CreateInput{
+		TemplateID:     "tpl-non-existent",
+		RecipientEmail: "customer@example.com",
+	})
+	if err == nil {
+		t.Fatal("expected error on non-existent template, got nil")
+	}
+
+	if len(auditRepo.recordedLogs) != 0 {
+		t.Errorf("expected 0 audit logs on failed creation, got %d", len(auditRepo.recordedLogs))
+	}
+}
+
+func TestDirectService_Audit_Create_MissingPrincipal_ReturnsError(t *testing.T) {
+	tplRepo := &mockTemplateRepo{
+		templates: map[string]*domain.EmailTemplate{
+			"tpl-active-1": {
+				ID:           "tpl-active-1",
+				TemplateKey:  "welcome",
+				Name:         "Welcome",
+				TemplateType: domain.TemplateTypeDirect,
+				Subject:      "Welcome",
+				HTMLBody:     "<p>Welcome</p>",
+				Status:       domain.TemplateStatusActive,
+			},
+		},
+	}
+	directRepo := &mockDirectRepo{
+		notifications: make(map[string]*domain.DirectNotification),
+		attempts:      make(map[string]*domain.DeliveryAttempt),
+	}
+	auditRepo := &mockActivityLogRepoForDirect{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(tplRepo, directRepo, &mockUserResolver{}, auditSvc)
+
+	// Context without authenticated principal
+	_, err := svc.Create(context.Background(), CreateInput{
+		TemplateID:     "tpl-active-1",
+		RecipientEmail: "customer@example.com",
+	})
+	if !errors.Is(err, audit.ErrMissingPrincipal) {
+		t.Fatalf("expected ErrMissingPrincipal for unauthenticated context, got %v", err)
+	}
+}
+
+func TestDirectService_Audit_Create_AuditFailure_PropagatesError(t *testing.T) {
+	tplRepo := &mockTemplateRepo{
+		templates: map[string]*domain.EmailTemplate{
+			"tpl-active-1": {
+				ID:           "tpl-active-1",
+				TemplateKey:  "welcome",
+				Name:         "Welcome",
+				TemplateType: domain.TemplateTypeDirect,
+				Subject:      "Welcome",
+				HTMLBody:     "<p>Welcome</p>",
+				Status:       domain.TemplateStatusActive,
+			},
+		},
+	}
+	directRepo := &mockDirectRepo{
+		notifications: make(map[string]*domain.DirectNotification),
+		attempts:      make(map[string]*domain.DeliveryAttempt),
+	}
+	auditRepo := &mockActivityLogRepoForDirect{
+		createErr: errors.New("audit table write failed"),
+	}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(tplRepo, directRepo, &mockUserResolver{}, auditSvc)
+
+	ctx := authContext("usr-admin-1", "Admin")
+	_, err := svc.Create(ctx, CreateInput{
+		TemplateID:     "tpl-active-1",
+		RecipientEmail: "customer@example.com",
+	})
+	if err == nil {
+		t.Fatal("expected audit error to propagate, got nil")
+	}
+	if !strings.Contains(err.Error(), "audit table write failed") {
+		t.Errorf("expected audit table write failed message, got: %v", err)
 	}
 }

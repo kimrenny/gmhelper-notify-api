@@ -183,7 +183,7 @@ func setupAutomationTest() (*AutomationHandler, *handlerMockAutomationRepo, *han
 		TemplateType: domain.TemplateTypeAutomation,
 	}
 
-	svc := automation.NewService(autoRepo, tplRepo)
+	svc := automation.NewService(autoRepo, tplRepo, nil)
 	log, _ := logger.NewLogger("error")
 	handler := NewAutomationHandler(svc, log)
 
@@ -457,7 +457,9 @@ func TestAutomationHandler_Update(t *testing.T) {
 
 	// 7. Service error -> 500
 	autoRepo.updateErr = errors.New("db error")
-	reqErr := httptest.NewRequest(http.MethodPut, "/api/v1/automation/rules/r-edit", bytes.NewReader(body))
+	anotherName := "Another Name Changed"
+	bodyErrPayload, _ := json.Marshal(UpdateAutomationRuleRequest{Name: &anotherName})
+	reqErr := httptest.NewRequest(http.MethodPut, "/api/v1/automation/rules/r-edit", bytes.NewReader(bodyErrPayload))
 	reqErr.SetPathValue("id", "r-edit")
 	recErr := httptest.NewRecorder()
 	handler.Update(recErr, reqErr)

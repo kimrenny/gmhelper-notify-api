@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/gmhelper/notify-api/internal/app/audit"
 	"github.com/gmhelper/notify-api/internal/app/email"
 	"github.com/gmhelper/notify-api/internal/domain"
 )
@@ -72,7 +74,7 @@ func setupTestDeliveryService() (*DeliveryService, *mockDirectRepo, *mockAttempt
 	}
 	sender := &mockSender{}
 
-	svc := NewDeliveryService(directRepo, attemptRepo, templateRepo, sender)
+	svc := NewDeliveryService(directRepo, attemptRepo, templateRepo, sender, nil)
 	return svc, directRepo, attemptRepo, templateRepo, sender
 }
 
@@ -224,7 +226,7 @@ func TestDeliveryService_Deliver_SMTPFailure(t *testing.T) {
 	}
 
 	// 2. At max attempts (e.g. maxAttempts = 1 or notification already at 4 attempts) -> permanently failed
-	svcMax1 := NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, templateRepo, sender, 1)
+	svcMax1 := NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, templateRepo, sender, 1, nil)
 	notif2 := &domain.DirectNotification{
 		ID:             "notif-max-reached",
 		TemplateID:     tpl.ID,
@@ -455,5 +457,317 @@ func TestDeliveryService_DeliverClaimed_InvalidStatus(t *testing.T) {
 	}
 	if err := svc.DeliverClaimed(context.Background(), notifPending); !errors.Is(err, ErrInvalidDeliveryState) {
 		t.Errorf("expected ErrInvalidDeliveryState for pending notification in DeliverClaimed, got %v", err)
+	}
+}
+
+func TestDeliveryService_Audit_Deliver_Success_SystemActor(t *testing.T) {
+	directRepo := &mockDirectRepo{
+		notifications: make(map[string]*domain.DirectNotification),
+		attempts:      make(map[string]*domain.DeliveryAttempt),
+	}
+	attemptRepo := &mockAttemptRepo{
+		attempts: make(map[string]*domain.DeliveryAttempt),
+	}
+	templateRepo := &mockTemplateRepo{
+		templates: map[string]*domain.EmailTemplate{
+			"tpl-delivery-1": {
+				ID:            "tpl-delivery-1",
+				TemplateKey:   "alert",
+				Name:          "Alert",
+				Subject:       "System Alert",
+				HTMLBody:      "<p>System Alert Body</p>",
+				PlainTextBody: "System Alert Body",
+				Status:        domain.TemplateStatusActive,
+			},
+		},
+	}
+	sender := &mockSender{}
+	auditRepo := &mockActivityLogRepoForDirect{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewDeliveryService(directRepo, attemptRepo, templateRepo, sender, auditSvc)
+
+	notif := &domain.DirectNotification{
+		ID:             "notif-1",
+		TemplateID:     "tpl-delivery-1",
+		RecipientEmail: "user@example.com",
+		DeliveryStatus: domain.DeliveryStatusPending,
+		AttemptsCount:  0,
+	}
+	directRepo.notifications[notif.ID] = notif
+
+	// Deliver with background/system context (no user principal)
+	err := svc.Deliver(context.Background(), notif.ID)
+	if err != nil {
+		t.Fatalf("expected Deliver success, got: %v", err)
+	}
+
+	if len(auditRepo.recordedLogs) != 1 {
+		t.Fatalf("expected exactly 1 audit log recorded, got %d", len(auditRepo.recordedLogs))
+	}
+
+	log := auditRepo.recordedLogs[0]
+	if log.EventType != domain.EventDirectDelivered {
+		t.Errorf("expected event type %q, got %q", domain.EventDirectDelivered, log.EventType)
+	}
+	if log.ActorType != domain.ActorTypeSystem {
+		t.Errorf("expected actor type %q for worker/unauthenticated delivery, got %q", domain.ActorTypeSystem, log.ActorType)
+	}
+	if log.TargetType != domain.TargetTypeDirectNotification {
+		t.Errorf("expected target type %q, got %q", domain.TargetTypeDirectNotification, log.TargetType)
+	}
+	if log.TargetID != notif.ID {
+		t.Errorf("expected target ID %q, got %q", notif.ID, log.TargetID)
+	}
+	if log.Status != domain.ActivityStatusSuccess {
+		t.Errorf("expected status success, got %q", log.Status)
+	}
+	if !strings.Contains(log.Summary, "user@example.com") {
+		t.Errorf("expected summary to contain recipient email, got %q", log.Summary)
+	}
+
+	var details directDeliveredDetails
+	if err := json.Unmarshal(log.Details, &details); err != nil {
+		t.Fatalf("failed to unmarshal details: %v", err)
+	}
+	if details.NotificationID != notif.ID {
+		t.Errorf("expected notificationId %q, got %q", notif.ID, details.NotificationID)
+	}
+	if details.RecipientEmail != "user@example.com" {
+		t.Errorf("expected recipientEmail 'user@example.com', got %q", details.RecipientEmail)
+	}
+	if details.Subject != "System Alert" {
+		t.Errorf("expected subject 'System Alert', got %q", details.Subject)
+	}
+	if details.AttemptsCount != 1 {
+		t.Errorf("expected attemptsCount 1, got %d", details.AttemptsCount)
+	}
+}
+
+func TestDeliveryService_Audit_Deliver_Success_UserActorFromContext(t *testing.T) {
+	directRepo := &mockDirectRepo{
+		notifications: make(map[string]*domain.DirectNotification),
+		attempts:      make(map[string]*domain.DeliveryAttempt),
+	}
+	attemptRepo := &mockAttemptRepo{
+		attempts: make(map[string]*domain.DeliveryAttempt),
+	}
+	templateRepo := &mockTemplateRepo{
+		templates: map[string]*domain.EmailTemplate{
+			"tpl-delivery-1": {
+				ID:            "tpl-delivery-1",
+				TemplateKey:   "alert",
+				Name:          "Alert",
+				Subject:       "Manual Admin Trigger",
+				HTMLBody:      "<p>Manual Body</p>",
+				PlainTextBody: "Manual Body",
+				Status:        domain.TemplateStatusActive,
+			},
+		},
+	}
+	sender := &mockSender{}
+	auditRepo := &mockActivityLogRepoForDirect{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewDeliveryService(directRepo, attemptRepo, templateRepo, sender, auditSvc)
+
+	notif := &domain.DirectNotification{
+		ID:             "notif-manual-1",
+		TemplateID:     "tpl-delivery-1",
+		RecipientEmail: "user@example.com",
+		DeliveryStatus: domain.DeliveryStatusPending,
+		AttemptsCount:  0,
+	}
+	directRepo.notifications[notif.ID] = notif
+
+	ctx := authContext("usr-admin-manual", "Admin")
+	err := svc.Deliver(ctx, notif.ID)
+	if err != nil {
+		t.Fatalf("expected Deliver success, got: %v", err)
+	}
+
+	if len(auditRepo.recordedLogs) != 1 {
+		t.Fatalf("expected exactly 1 audit log recorded, got %d", len(auditRepo.recordedLogs))
+	}
+
+	log := auditRepo.recordedLogs[0]
+	if log.ActorType != domain.ActorTypeUser {
+		t.Errorf("expected actor type %q for authenticated delivery, got %q", domain.ActorTypeUser, log.ActorType)
+	}
+	if log.ActorUserID == nil || *log.ActorUserID != "usr-admin-manual" {
+		t.Errorf("expected actor user ID 'usr-admin-manual', got %v", log.ActorUserID)
+	}
+}
+
+func TestDeliveryService_Audit_Deliver_RetryFailure_NoAuditEvent(t *testing.T) {
+	directRepo := &mockDirectRepo{
+		notifications: make(map[string]*domain.DirectNotification),
+		attempts:      make(map[string]*domain.DeliveryAttempt),
+	}
+	attemptRepo := &mockAttemptRepo{
+		attempts: make(map[string]*domain.DeliveryAttempt),
+	}
+	templateRepo := &mockTemplateRepo{
+		templates: map[string]*domain.EmailTemplate{
+			"tpl-delivery-1": {
+				ID:            "tpl-delivery-1",
+				Subject:       "Subject",
+				HTMLBody:      "<p>Body</p>",
+				PlainTextBody: "Body",
+				Status:        domain.TemplateStatusActive,
+			},
+		},
+	}
+	sender := &mockSender{
+		sendErr: errors.New("temporary SMTP connection timeout"),
+	}
+	auditRepo := &mockActivityLogRepoForDirect{}
+	auditSvc := audit.NewService(auditRepo)
+
+	// maxAttempts = 3, this is attempt 1 (notification status returns to pending for retry)
+	svc := NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, templateRepo, sender, 3, auditSvc)
+
+	notif := &domain.DirectNotification{
+		ID:             "notif-retry",
+		TemplateID:     "tpl-delivery-1",
+		RecipientEmail: "user@example.com",
+		DeliveryStatus: domain.DeliveryStatusPending,
+		AttemptsCount:  0,
+	}
+	directRepo.notifications[notif.ID] = notif
+
+	err := svc.Deliver(context.Background(), notif.ID)
+	if err == nil {
+		t.Fatal("expected delivery error, got nil")
+	}
+
+	// Notification returned to pending
+	if notif.DeliveryStatus != domain.DeliveryStatusPending {
+		t.Errorf("expected notification status pending for retry, got %s", notif.DeliveryStatus)
+	}
+
+	// Crucial check: NO audit event should be generated for intermediate retry attempt!
+	if len(auditRepo.recordedLogs) != 0 {
+		t.Errorf("expected 0 audit logs for intermediate retry failure, got %d", len(auditRepo.recordedLogs))
+	}
+}
+
+func TestDeliveryService_Audit_Deliver_FinalFailure_RecordsDirectFailed(t *testing.T) {
+	directRepo := &mockDirectRepo{
+		notifications: make(map[string]*domain.DirectNotification),
+		attempts:      make(map[string]*domain.DeliveryAttempt),
+	}
+	attemptRepo := &mockAttemptRepo{
+		attempts: make(map[string]*domain.DeliveryAttempt),
+	}
+	templateRepo := &mockTemplateRepo{
+		templates: map[string]*domain.EmailTemplate{
+			"tpl-delivery-1": {
+				ID:            "tpl-delivery-1",
+				Subject:       "Subject",
+				HTMLBody:      "<p>Body</p>",
+				PlainTextBody: "Body",
+				Status:        domain.TemplateStatusActive,
+			},
+		},
+	}
+	sender := &mockSender{
+		sendErr: errors.New("550 5.1.1 User unknown"),
+	}
+	auditRepo := &mockActivityLogRepoForDirect{}
+	auditSvc := audit.NewService(auditRepo)
+
+	// maxAttempts = 1 -> attempt 1 fails and reaches final failed state!
+	svc := NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, templateRepo, sender, 1, auditSvc)
+
+	notif := &domain.DirectNotification{
+		ID:             "notif-final-fail",
+		TemplateID:     "tpl-delivery-1",
+		RecipientEmail: "baduser@example.com",
+		DeliveryStatus: domain.DeliveryStatusPending,
+		AttemptsCount:  0,
+	}
+	directRepo.notifications[notif.ID] = notif
+
+	err := svc.Deliver(context.Background(), notif.ID)
+	if err == nil {
+		t.Fatal("expected delivery error, got nil")
+	}
+
+	if notif.DeliveryStatus != domain.DeliveryStatusFailed {
+		t.Errorf("expected notification status failed, got %s", notif.DeliveryStatus)
+	}
+
+	if len(auditRepo.recordedLogs) != 1 {
+		t.Fatalf("expected exactly 1 audit log recorded for final failure, got %d", len(auditRepo.recordedLogs))
+	}
+
+	log := auditRepo.recordedLogs[0]
+	if log.EventType != domain.EventDirectFailed {
+		t.Errorf("expected event type %q, got %q", domain.EventDirectFailed, log.EventType)
+	}
+	if log.Status != domain.ActivityStatusFailure {
+		t.Errorf("expected status %q, got %q", domain.ActivityStatusFailure, log.Status)
+	}
+	if log.ErrorMessage == nil || !strings.Contains(*log.ErrorMessage, "550 5.1.1 User unknown") {
+		t.Errorf("expected error message to contain 550 5.1.1 User unknown, got %v", log.ErrorMessage)
+	}
+
+	var details directFailedDetails
+	if err := json.Unmarshal(log.Details, &details); err != nil {
+		t.Fatalf("failed to unmarshal details: %v", err)
+	}
+	if details.NotificationID != notif.ID {
+		t.Errorf("expected notificationId %q, got %q", notif.ID, details.NotificationID)
+	}
+	if details.RecipientEmail != "baduser@example.com" {
+		t.Errorf("expected recipientEmail 'baduser@example.com', got %q", details.RecipientEmail)
+	}
+	if details.ErrorMessage != "550 5.1.1 User unknown" {
+		t.Errorf("expected errorMessage, got %q", details.ErrorMessage)
+	}
+	if details.DeliveryStatus != string(domain.DeliveryStatusFailed) {
+		t.Errorf("expected deliveryStatus failed, got %q", details.DeliveryStatus)
+	}
+}
+
+func TestDeliveryService_Audit_Deliver_AuditFailure_PropagatesError(t *testing.T) {
+	directRepo := &mockDirectRepo{
+		notifications: make(map[string]*domain.DirectNotification),
+		attempts:      make(map[string]*domain.DeliveryAttempt),
+	}
+	attemptRepo := &mockAttemptRepo{
+		attempts: make(map[string]*domain.DeliveryAttempt),
+	}
+	templateRepo := &mockTemplateRepo{
+		templates: map[string]*domain.EmailTemplate{
+			"tpl-delivery-1": {
+				ID:            "tpl-delivery-1",
+				Subject:       "Subject",
+				HTMLBody:      "<p>Body</p>",
+				PlainTextBody: "Body",
+				Status:        domain.TemplateStatusActive,
+			},
+		},
+	}
+	sender := &mockSender{}
+	auditRepo := &mockActivityLogRepoForDirect{
+		createErr: errors.New("audit log write failed"),
+	}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewDeliveryService(directRepo, attemptRepo, templateRepo, sender, auditSvc)
+
+	notif := &domain.DirectNotification{
+		ID:             "notif-audit-fail",
+		TemplateID:     "tpl-delivery-1",
+		RecipientEmail: "user@example.com",
+		DeliveryStatus: domain.DeliveryStatusPending,
+	}
+	directRepo.notifications[notif.ID] = notif
+
+	err := svc.Deliver(context.Background(), notif.ID)
+	if err == nil {
+		t.Fatal("expected error when audit recording fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "audit log write failed") {
+		t.Errorf("expected audit error to be propagated, got %v", err)
 	}
 }

@@ -100,3 +100,19 @@ func AdminAuth(verifier auth.TokenVerifier, log logger.Logger) Middleware {
 		RequireAdminRole(),
 	)
 }
+
+// DefaultOwnerRoles lists the owner role in the GMHelper ecosystem.
+var DefaultOwnerRoles = []string{"owner"}
+
+// RequireOwnerRole restricts access strictly to principals with the owner role.
+func RequireOwnerRole() Middleware {
+	return RequireRole(DefaultOwnerRoles...)
+}
+
+// OwnerAuth combines authentication via JWT and role-based authorization for owner-only access.
+func OwnerAuth(verifier auth.TokenVerifier, log logger.Logger) Middleware {
+	return Combine(
+		Authenticate(verifier, log),
+		RequireOwnerRole(),
+	)
+}

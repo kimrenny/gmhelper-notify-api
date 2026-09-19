@@ -83,7 +83,7 @@ func (m *mockRepo) List(ctx context.Context) ([]*domain.EmailTemplate, error) {
 
 func setupTestRouter(repo domain.EmailTemplateRepository) http.Handler {
 	log, _ := logger.NewLogger("info")
-	svc := template.NewService(repo)
+	svc := template.NewService(repo, nil)
 	handler := NewTemplateHandler(svc, log)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/templates", handler.List)

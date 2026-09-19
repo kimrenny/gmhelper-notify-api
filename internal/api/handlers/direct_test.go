@@ -201,8 +201,8 @@ func setupDirectTestRouter() (http.Handler, *mockDirectRepo, *mockDirectAttemptR
 	}
 	sender := &mockDirectSender{}
 
-	directService := direct.NewService(tplRepo, directRepo, &mockDirectUserResolver{})
-	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, tplRepo, sender)
+	directService := direct.NewService(tplRepo, directRepo, &mockDirectUserResolver{}, nil)
+	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, tplRepo, sender, nil)
 	handler := NewDirectNotificationHandler(directService, deliveryService, log)
 
 	mux := http.NewServeMux()

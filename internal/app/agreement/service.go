@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gmhelper/notify-api/internal/app/audit"
 	"github.com/gmhelper/notify-api/internal/domain"
 	"github.com/google/uuid"
 )
@@ -23,15 +24,31 @@ type CreateBroadcastInput struct {
 	Name       string `json:"name,omitempty"`
 }
 
+type agreementBroadcastDetails struct {
+	CampaignID      string                `json:"campaignId"`
+	CampaignName    string                `json:"campaignName"`
+	TemplateID      string                `json:"templateId"`
+	TemplateKey     string                `json:"templateKey,omitempty"`
+	TemplateName    string                `json:"templateName,omitempty"`
+	TemplateLocale  string                `json:"templateLocale,omitempty"`
+	TemplateVersion int                   `json:"templateVersion,omitempty"`
+	Subject         string                `json:"subject"`
+	BodyHTML        string                `json:"bodyHtml"`
+	BodyPlain       string                `json:"bodyPlain"`
+	CampaignStatus  domain.CampaignStatus `json:"campaignStatus"`
+}
+
 type Service struct {
 	campaignRepo domain.NotificationCampaignRepository
 	templateRepo domain.EmailTemplateRepository
+	audit        *audit.Service
 }
 
-func NewService(campaignRepo domain.NotificationCampaignRepository, templateRepo domain.EmailTemplateRepository) *Service {
+func NewService(campaignRepo domain.NotificationCampaignRepository, templateRepo domain.EmailTemplateRepository, auditSvc *audit.Service) *Service {
 	return &Service{
 		campaignRepo: campaignRepo,
 		templateRepo: templateRepo,
+		audit:        auditSvc,
 	}
 }
 
@@ -111,6 +128,40 @@ func (s *Service) CreateBroadcast(ctx context.Context, input CreateBroadcastInpu
 
 	if err := s.campaignRepo.Create(ctx, campaign); err != nil {
 		return nil, err
+	}
+
+	if s.audit != nil {
+		actor, err := audit.ActorFromContext(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		summary := fmt.Sprintf("Created user agreement broadcast %q", campaign.Name)
+		_, auditErr := s.audit.Record(ctx, audit.RecordInput{
+			EventType:  domain.EventAgreementBroadcastCreated,
+			Actor:      actor,
+			TargetType: domain.TargetTypeAgreement,
+			TargetID:   campaign.ID,
+			TargetName: &campaign.Name,
+			Status:     domain.ActivityStatusSuccess,
+			Summary:    summary,
+			Details: agreementBroadcastDetails{
+				CampaignID:      campaign.ID,
+				CampaignName:    campaign.Name,
+				TemplateID:      tpl.ID,
+				TemplateKey:     tpl.TemplateKey,
+				TemplateName:    tpl.Name,
+				TemplateLocale:  tpl.Locale,
+				TemplateVersion: tpl.Version,
+				Subject:         tpl.Subject,
+				BodyHTML:        tpl.HTMLBody,
+				BodyPlain:       tpl.PlainTextBody,
+				CampaignStatus:  campaign.Status,
+			},
+		})
+		if auditErr != nil {
+			return nil, auditErr
+		}
 	}
 
 	return campaign, nil

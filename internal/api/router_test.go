@@ -12,6 +12,7 @@ import (
 
 	"github.com/gmhelper/notify-api/internal/api/handlers"
 	"github.com/gmhelper/notify-api/internal/app/agreement"
+	"github.com/gmhelper/notify-api/internal/app/audit"
 	"github.com/gmhelper/notify-api/internal/app/automation"
 	"github.com/gmhelper/notify-api/internal/app/campaign"
 	"github.com/gmhelper/notify-api/internal/app/dashboard"
@@ -264,7 +265,7 @@ func TestRouter_HealthAndReady(t *testing.T) {
 	pinger := &dummyPinger{err: nil}
 	readiness := health.NewReadinessService(pinger)
 	healthHandler := handlers.NewHealthHandler(readiness, log)
-	router := NewRouter(healthHandler, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	router := NewRouter(healthHandler, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	// 1. GET /health
 	reqHealth := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -299,7 +300,7 @@ func TestRouter_NotFoundJSON(t *testing.T) {
 	pinger := &dummyPinger{err: nil}
 	readiness := health.NewReadinessService(pinger)
 	healthHandler := handlers.NewHealthHandler(readiness, log)
-	router := NewRouter(healthHandler, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	router := NewRouter(healthHandler, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/unknown-endpoint", nil)
 	rec := httptest.NewRecorder()
@@ -339,14 +340,14 @@ func TestRouter_DirectNotificationsRouting_AuthAndPrecedence(t *testing.T) {
 	tplRepo := &routerMockTplRepo{}
 	sender := &routerMockSender{}
 
-	directService := direct.NewService(tplRepo, directRepo, nil)
-	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, tplRepo, sender)
+	directService := direct.NewService(tplRepo, directRepo, nil, nil)
+	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, tplRepo, sender, nil)
 	directHandler := handlers.NewDirectNotificationHandler(directService, deliveryService, log)
 
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.Authenticate(verifier, log)
 
-	router := NewRouter(nil, nil, nil, directHandler, nil, nil, nil, nil, nil, authMw)
+	router := NewRouter(nil, nil, nil, directHandler, nil, nil, nil, nil, nil, nil, authMw)
 
 	validToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -414,18 +415,18 @@ func TestRouter_AdministrativeRoutes_SecurityMatrix(t *testing.T) {
 	tplRepo := &routerMockTplRepo{}
 	sender := &routerMockSender{}
 
-	directService := direct.NewService(tplRepo, directRepo, nil)
-	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, tplRepo, sender)
+	directService := direct.NewService(tplRepo, directRepo, nil, nil)
+	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, tplRepo, sender, nil)
 	directHandler := handlers.NewDirectNotificationHandler(directService, deliveryService, log)
 
-	templateService := template.NewService(tplRepo)
+	templateService := template.NewService(tplRepo, nil)
 	templateHandler := handlers.NewTemplateHandler(templateService, log)
 
 	campaignRepo := &routerMockCampaignRepo{campaigns: make(map[string]*domain.NotificationCampaign)}
-	campaignService := campaign.NewService(campaignRepo)
+	campaignService := campaign.NewService(campaignRepo, nil, nil)
 	campaignHandler := handlers.NewCampaignHandler(campaignService, log)
 
-	agreementService := agreement.NewService(campaignRepo, tplRepo)
+	agreementService := agreement.NewService(campaignRepo, tplRepo, nil)
 	agreementHandler := handlers.NewAgreementHandler(agreementService, log)
 
 	pinger := &dummyPinger{err: nil}
@@ -441,17 +442,17 @@ func TestRouter_AdministrativeRoutes_SecurityMatrix(t *testing.T) {
 	dashboardHandler := handlers.NewDashboardHandler(dashboardService, log)
 
 	autoRepo := &routerMockAutomationRepo{rules: make(map[string]*domain.AutomationRule)}
-	automationService := automation.NewService(autoRepo, tplRepo)
+	automationService := automation.NewService(autoRepo, tplRepo, nil)
 	automationHandler := handlers.NewAutomationHandler(automationService, log)
 
 	settingsRepo := &routerMockSettingsRepo{settings: make(map[string]*domain.AppSetting)}
-	settingsService := settings.NewService(settingsRepo)
+	settingsService := settings.NewService(settingsRepo, nil)
 	settingsHandler := handlers.NewSettingsHandler(settingsService, log)
 
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(healthHandler, templateHandler, campaignHandler, directHandler, userHandler, dashboardHandler, automationHandler, agreementHandler, settingsHandler, authMw)
+	router := NewRouter(healthHandler, templateHandler, campaignHandler, directHandler, userHandler, dashboardHandler, automationHandler, agreementHandler, settingsHandler, nil, authMw)
 
 	adminToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-admin", "admin", 15*time.Minute)
 	ownerToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-owner", "owner", 15*time.Minute)
@@ -689,7 +690,7 @@ func TestRouter_UserSearchRouting(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, nil, nil, userHandler, nil, nil, nil, nil, authMw)
+	router := NewRouter(nil, nil, nil, nil, userHandler, nil, nil, nil, nil, nil, authMw)
 
 	adminToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-admin", "admin", 15*time.Minute)
 
@@ -737,13 +738,13 @@ func TestRouter_CampaignEndpoints(t *testing.T) {
 			},
 		},
 	}
-	campaignService := campaign.NewService(campaignRepo)
+	campaignService := campaign.NewService(campaignRepo, nil, nil)
 	campaignHandler := handlers.NewCampaignHandler(campaignService, log)
 
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, campaignHandler, nil, nil, nil, nil, nil, nil, authMw)
+	router := NewRouter(nil, nil, campaignHandler, nil, nil, nil, nil, nil, nil, nil, authMw)
 
 	adminToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-admin", "admin", 15*time.Minute)
 
@@ -802,13 +803,13 @@ func TestRouter_CampaignDelete(t *testing.T) {
 			},
 		},
 	}
-	campaignService := campaign.NewService(campaignRepo)
+	campaignService := campaign.NewService(campaignRepo, nil, nil)
 	campaignHandler := handlers.NewCampaignHandler(campaignService, log)
 
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.Authenticate(verifier, log)
 
-	router := NewRouter(nil, nil, campaignHandler, nil, nil, nil, nil, nil, nil, authMw)
+	router := NewRouter(nil, nil, campaignHandler, nil, nil, nil, nil, nil, nil, nil, authMw)
 
 	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -862,13 +863,13 @@ func TestRouter_CampaignScheduleAndCancel(t *testing.T) {
 			},
 		},
 	}
-	campaignService := campaign.NewService(campaignRepo)
+	campaignService := campaign.NewService(campaignRepo, nil, nil)
 	campaignHandler := handlers.NewCampaignHandler(campaignService, log)
 
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, campaignHandler, nil, nil, nil, nil, nil, nil, authMw)
+	router := NewRouter(nil, nil, campaignHandler, nil, nil, nil, nil, nil, nil, nil, authMw)
 
 	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -972,7 +973,7 @@ func TestRouter_DashboardStats(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, nil, nil, nil, dashboardHandler, nil, nil, nil, authMw)
+	router := NewRouter(nil, nil, nil, nil, nil, dashboardHandler, nil, nil, nil, nil, authMw)
 
 	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -1047,13 +1048,13 @@ func TestRouter_AutomationEndpoints(t *testing.T) {
 		},
 	}
 	tplRepo := &routerMockTplRepo{}
-	automationService := automation.NewService(autoRepo, tplRepo)
+	automationService := automation.NewService(autoRepo, tplRepo, nil)
 	automationHandler := handlers.NewAutomationHandler(automationService, log)
 
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, nil, nil, nil, nil, automationHandler, nil, nil, authMw)
+	router := NewRouter(nil, nil, nil, nil, nil, nil, automationHandler, nil, nil, nil, authMw)
 
 	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -1198,13 +1199,13 @@ func TestRouter_AgreementEndpoints(t *testing.T) {
 		campaigns: make(map[string]*domain.NotificationCampaign),
 	}
 	tplRepo := &routerMockTplRepo{}
-	agreementService := agreement.NewService(campaignRepo, tplRepo)
+	agreementService := agreement.NewService(campaignRepo, tplRepo, nil)
 	agreementHandler := handlers.NewAgreementHandler(agreementService, log)
 
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, nil, nil, nil, nil, nil, agreementHandler, nil, authMw)
+	router := NewRouter(nil, nil, nil, nil, nil, nil, nil, agreementHandler, nil, nil, authMw)
 
 	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -1292,13 +1293,13 @@ func TestRouter_SettingsEndpoints(t *testing.T) {
 			settings.KeyDefaultLocale:   {Key: settings.KeyDefaultLocale, Value: "ua", Category: settings.CategoryNotification},
 		},
 	}
-	settingsService := settings.NewService(settingsRepo)
+	settingsService := settings.NewService(settingsRepo, nil)
 	settingsHandler := handlers.NewSettingsHandler(settingsService, log)
 
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, nil, nil, nil, nil, nil, nil, settingsHandler, authMw)
+	router := NewRouter(nil, nil, nil, nil, nil, nil, nil, nil, settingsHandler, nil, authMw)
 
 	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -1401,5 +1402,199 @@ func TestRouter_SettingsEndpoints(t *testing.T) {
 
 	if recBadLocale.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 Bad Request for invalid locale, got %d", recBadLocale.Code)
+	}
+}
+
+type routerMockAuditRepo struct {
+	logs map[string]*domain.ActivityLog
+}
+
+func (m *routerMockAuditRepo) Create(ctx context.Context, log *domain.ActivityLog) error {
+	if m.logs == nil {
+		m.logs = make(map[string]*domain.ActivityLog)
+	}
+	m.logs[log.ID] = log
+	return nil
+}
+
+func (m *routerMockAuditRepo) GetByID(ctx context.Context, id string) (*domain.ActivityLog, error) {
+	if l, ok := m.logs[id]; ok {
+		return l, nil
+	}
+	return nil, domain.ErrNotFound
+}
+
+func (m *routerMockAuditRepo) List(ctx context.Context, filter domain.ActivityLogFilter) ([]*domain.ActivityLog, int, error) {
+	var result []*domain.ActivityLog
+	for _, l := range m.logs {
+		if filter.EventType != nil && l.EventType != *filter.EventType {
+			continue
+		}
+		result = append(result, l)
+	}
+	return result, len(result), nil
+}
+
+func TestRouter_ActivityEndpoints_OwnerSecurityMatrix(t *testing.T) {
+	log, _ := logger.NewLogger("info")
+	auditID := "11111111-1111-1111-1111-111111111111"
+	targetID := "22222222-2222-2222-2222-222222222222"
+	actorUserID := "user-owner"
+	targetName := "Test Template"
+
+	actorName := "Owner User"
+	actorRole := "owner"
+
+	auditRepo := &routerMockAuditRepo{
+		logs: map[string]*domain.ActivityLog{
+			auditID: {
+				ID:           auditID,
+				EventType:    "template.created",
+				ActorType:    domain.ActorTypeUser,
+				ActorUserID:  &actorUserID,
+				ActorName:    &actorName,
+				ActorRole:    &actorRole,
+				TargetType:   domain.TargetTypeTemplate,
+				TargetID:     targetID,
+				TargetName:   &targetName,
+				Status:       domain.ActivityStatusSuccess,
+				Summary:      "Created template",
+				Details:      json.RawMessage(`{"version":1}`),
+				ErrorMessage: nil,
+				CreatedAt:    time.Now().UTC(),
+			},
+		},
+	}
+	auditService := audit.NewService(auditRepo)
+	activityHandler := handlers.NewActivityHandler(auditService, log)
+
+	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
+	authMw := middleware.AdminAuth(verifier, log)
+
+	router := NewRouter(nil, nil, nil, nil, nil, nil, nil, nil, nil, activityHandler, authMw)
+
+	ownerToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-owner", "owner", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to generate owner token: %v", err)
+	}
+	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to generate admin token: %v", err)
+	}
+	userToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-regular", "user", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to generate user token: %v", err)
+	}
+	serviceToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "service-cron", "service", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to generate service token: %v", err)
+	}
+	expiredToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-owner", "owner", -15*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to generate expired token: %v", err)
+	}
+	wrongSigToken, err := auth.GenerateToken("d3Jvbmctc2VjcmV0LWtleS0zMi1jaGFycyE=", routerTestIssuer, routerTestAudience, "user-owner", "owner", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to generate wrong signature token: %v", err)
+	}
+
+	// 1. GET /api/v1/activity - Security Matrix
+	listCases := []struct {
+		name       string
+		token      string
+		authHeader bool
+		wantCode   int
+	}{
+		{name: "Unauthenticated", authHeader: false, wantCode: http.StatusUnauthorized},
+		{name: "Expired JWT", token: expiredToken, authHeader: true, wantCode: http.StatusUnauthorized},
+		{name: "Invalid Signature", token: wrongSigToken, authHeader: true, wantCode: http.StatusUnauthorized},
+		{name: "Regular User Role", token: userToken, authHeader: true, wantCode: http.StatusForbidden},
+		{name: "Admin Role", token: adminToken, authHeader: true, wantCode: http.StatusForbidden},
+		{name: "Service Account Role", token: serviceToken, authHeader: true, wantCode: http.StatusForbidden},
+		{name: "Owner Role", token: ownerToken, authHeader: true, wantCode: http.StatusOK},
+	}
+
+	for _, tc := range listCases {
+		t.Run("List_"+tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/activity", nil)
+			if tc.authHeader {
+				req.Header.Set("Authorization", "Bearer "+tc.token)
+			}
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantCode {
+				t.Errorf("List %s: expected status %d, got %d (body: %s)", tc.name, tc.wantCode, rec.Code, rec.Body.String())
+			}
+		})
+	}
+
+	// 2. GET /api/v1/activity/{id} - Security Matrix
+	detailCases := []struct {
+		name       string
+		token      string
+		authHeader bool
+		wantCode   int
+	}{
+		{name: "Unauthenticated", authHeader: false, wantCode: http.StatusUnauthorized},
+		{name: "Expired JWT", token: expiredToken, authHeader: true, wantCode: http.StatusUnauthorized},
+		{name: "Invalid Signature", token: wrongSigToken, authHeader: true, wantCode: http.StatusUnauthorized},
+		{name: "Regular User Role", token: userToken, authHeader: true, wantCode: http.StatusForbidden},
+		{name: "Admin Role", token: adminToken, authHeader: true, wantCode: http.StatusForbidden},
+		{name: "Service Account Role", token: serviceToken, authHeader: true, wantCode: http.StatusForbidden},
+		{name: "Owner Role", token: ownerToken, authHeader: true, wantCode: http.StatusOK},
+	}
+
+	for _, tc := range detailCases {
+		t.Run("Detail_"+tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/activity/"+auditID, nil)
+			if tc.authHeader {
+				req.Header.Set("Authorization", "Bearer "+tc.token)
+			}
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantCode {
+				t.Errorf("Detail %s: expected status %d, got %d (body: %s)", tc.name, tc.wantCode, rec.Code, rec.Body.String())
+			}
+		})
+	}
+
+	// 3. Owner Detail with invalid / non-existent UUIDs
+	t.Run("Owner_Detail_InvalidUUID", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/activity/not-a-uuid", nil)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("expected 400 for invalid UUID, got %d", rec.Code)
+		}
+	})
+
+	t.Run("Owner_Detail_NotFound", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/activity/33333333-3333-3333-3333-333333333333", nil)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("expected 404 for nonexistent UUID, got %d", rec.Code)
+		}
+	})
+
+	// 4. Verify no Activity mutation endpoints are exposed
+	mutationMethods := []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch}
+	for _, method := range mutationMethods {
+		t.Run("MutationNotExposed_"+method, func(t *testing.T) {
+			req := httptest.NewRequest(method, "/api/v1/activity", nil)
+			req.Header.Set("Authorization", "Bearer "+ownerToken)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
+				t.Errorf("expected 404/405 for %s /api/v1/activity, got %d", method, rec.Code)
+			}
+		})
 	}
 }

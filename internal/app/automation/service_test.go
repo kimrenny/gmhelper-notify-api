@@ -2,11 +2,15 @@ package automation
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/gmhelper/notify-api/internal/app/audit"
 	"github.com/gmhelper/notify-api/internal/domain"
+	"github.com/gmhelper/notify-api/internal/http/middleware"
 )
 
 func intPtr(i int) *int {
@@ -169,10 +173,14 @@ func (m *mockTemplateRepo) List(ctx context.Context) ([]*domain.EmailTemplate, e
 	return nil, nil
 }
 
+func boolPtr(b bool) *bool {
+	return &b
+}
+
 func TestService_List_Success(t *testing.T) {
 	autoRepo := newMockAutomationRepo()
 	tplRepo := newMockTemplateRepo()
-	svc := NewService(autoRepo, tplRepo)
+	svc := NewService(autoRepo, tplRepo, nil)
 
 	rule1 := &domain.AutomationRule{
 		ID:         "r1",
@@ -207,7 +215,7 @@ func TestService_List_Success(t *testing.T) {
 func TestService_GetByID(t *testing.T) {
 	autoRepo := newMockAutomationRepo()
 	tplRepo := newMockTemplateRepo()
-	svc := NewService(autoRepo, tplRepo)
+	svc := NewService(autoRepo, tplRepo, nil)
 
 	rule := &domain.AutomationRule{
 		ID:         "r-100",
@@ -250,7 +258,7 @@ func TestService_Create(t *testing.T) {
 		Name:         "Valid Template",
 		TemplateType: domain.TemplateTypeAutomation,
 	}
-	svc := NewService(autoRepo, tplRepo)
+	svc := NewService(autoRepo, tplRepo, nil)
 
 	// 1. Success
 	enabled := true
@@ -340,7 +348,7 @@ func TestService_Update(t *testing.T) {
 	tplRepo.templates["t-original"] = &domain.EmailTemplate{ID: "t-original", TemplateType: domain.TemplateTypeAutomation}
 	tplRepo.templates["t-new"] = &domain.EmailTemplate{ID: "t-new", TemplateType: domain.TemplateTypeAutomation}
 
-	svc := NewService(autoRepo, tplRepo)
+	svc := NewService(autoRepo, tplRepo, nil)
 
 	existingRule := &domain.AutomationRule{
 		ID:         "rule-to-edit",
@@ -428,7 +436,7 @@ func TestService_Update(t *testing.T) {
 func TestService_Delete(t *testing.T) {
 	autoRepo := newMockAutomationRepo()
 	tplRepo := newMockTemplateRepo()
-	svc := NewService(autoRepo, tplRepo)
+	svc := NewService(autoRepo, tplRepo, nil)
 
 	rule := &domain.AutomationRule{
 		ID:         "rule-del",
@@ -458,6 +466,7 @@ func TestService_Delete(t *testing.T) {
 	}
 
 	// 4. Repo Delete Error
+	_ = autoRepo.Create(context.Background(), rule)
 	autoRepo.deleteErr = errors.New("delete error")
 	if err := svc.Delete(context.Background(), "rule-del"); err == nil || errors.Is(err, domain.ErrNotFound) {
 		t.Errorf("expected delete error, got %v", err)
@@ -465,7 +474,7 @@ func TestService_Delete(t *testing.T) {
 }
 
 func TestService_NilRepo(t *testing.T) {
-	svc := NewService(nil, nil)
+	svc := NewService(nil, nil, nil)
 
 	if _, err := svc.List(context.Background()); err == nil {
 		t.Errorf("expected error with nil repo on List")
@@ -481,5 +490,698 @@ func TestService_NilRepo(t *testing.T) {
 	}
 	if err := svc.Delete(context.Background(), "1"); err == nil {
 		t.Errorf("expected error with nil repo on Delete")
+	}
+}
+
+// -------------------------------------------------------------
+// Audit Instrumentation Tests (Stage 3D)
+// -------------------------------------------------------------
+
+type mockActivityLogRepoForAutomation struct {
+	recordedLogs []*domain.ActivityLog
+	createErr    error
+}
+
+func (m *mockActivityLogRepoForAutomation) Create(ctx context.Context, log *domain.ActivityLog) error {
+	if m.createErr != nil {
+		return m.createErr
+	}
+	m.recordedLogs = append(m.recordedLogs, log)
+	return nil
+}
+
+func (m *mockActivityLogRepoForAutomation) GetByID(ctx context.Context, id string) (*domain.ActivityLog, error) {
+	return nil, domain.ErrNotFound
+}
+
+func (m *mockActivityLogRepoForAutomation) List(ctx context.Context, filter domain.ActivityLogFilter) ([]*domain.ActivityLog, int, error) {
+	return nil, 0, nil
+}
+
+func authContext(userID, role string) context.Context {
+	p := &domain.Principal{UserID: userID, Role: role}
+	return middleware.ContextWithPrincipal(context.Background(), p)
+}
+
+func TestService_Audit_Create_Success(t *testing.T) {
+	autoRepo := newMockAutomationRepo()
+	tplRepo := newMockTemplateRepo()
+	tplRepo.templates["tpl-aud-1"] = &domain.EmailTemplate{
+		ID:           "tpl-aud-1",
+		Name:         "Welcome Email Template",
+		TemplateType: domain.TemplateTypeAutomation,
+	}
+	auditRepo := &mockActivityLogRepoForAutomation{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(autoRepo, tplRepo, auditSvc)
+
+	ctx := authContext("usr-admin-1", "admin")
+	cfg := sampleConfig()
+	input := CreateInput{
+		Name:       "Welcome New Signups",
+		TemplateID: "tpl-aud-1",
+		Enabled:    boolPtr(true),
+		Config:     cfg,
+	}
+
+	created, err := svc.Create(ctx, input)
+	if err != nil {
+		t.Fatalf("expected create success, got %v", err)
+	}
+
+	if len(auditRepo.recordedLogs) != 1 {
+		t.Fatalf("expected 1 audit log recorded, got %d", len(auditRepo.recordedLogs))
+	}
+
+	log := auditRepo.recordedLogs[0]
+	if log.EventType != domain.EventAutomationCreated {
+		t.Errorf("expected EventType %s, got %s", domain.EventAutomationCreated, log.EventType)
+	}
+	if log.ActorType != domain.ActorTypeUser || log.ActorUserID == nil || *log.ActorUserID != "usr-admin-1" {
+		t.Errorf("unexpected actor: %+v", log)
+	}
+	if log.TargetType != domain.TargetTypeAutomationRule || log.TargetID != created.ID {
+		t.Errorf("expected TargetType %s and TargetID %s, got type=%s id=%s", domain.TargetTypeAutomationRule, created.ID, log.TargetType, log.TargetID)
+	}
+	if log.TargetName == nil || *log.TargetName != "Welcome New Signups" {
+		t.Errorf("expected target name 'Welcome New Signups', got %v", log.TargetName)
+	}
+	if log.Status != domain.ActivityStatusSuccess {
+		t.Errorf("expected status success, got %s", log.Status)
+	}
+	if log.Summary != `Created automation rule "Welcome New Signups"` {
+		t.Errorf("unexpected summary: %s", log.Summary)
+	}
+
+	var details map[string]any
+	if err := json.Unmarshal(log.Details, &details); err != nil {
+		t.Fatalf("failed to unmarshal details: %v", err)
+	}
+	if details["id"] != created.ID || details["name"] != "Welcome New Signups" || details["templateId"] != "tpl-aud-1" || details["enabled"] != true {
+		t.Errorf("unexpected snapshot details: %+v", details)
+	}
+}
+
+func TestService_Audit_Create_RepoError_NoAudit(t *testing.T) {
+	autoRepo := newMockAutomationRepo()
+	autoRepo.createErr = errors.New("db failure")
+	tplRepo := newMockTemplateRepo()
+	tplRepo.templates["tpl-aud-1"] = &domain.EmailTemplate{
+		ID:           "tpl-aud-1",
+		TemplateType: domain.TemplateTypeAutomation,
+	}
+	auditRepo := &mockActivityLogRepoForAutomation{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(autoRepo, tplRepo, auditSvc)
+
+	ctx := authContext("usr-admin-1", "admin")
+	_, err := svc.Create(ctx, CreateInput{
+		Name:       "Rule",
+		TemplateID: "tpl-aud-1",
+		Config:     sampleConfig(),
+	})
+	if err == nil {
+		t.Fatal("expected error on repo create failure, got nil")
+	}
+
+	if len(auditRepo.recordedLogs) != 0 {
+		t.Errorf("expected 0 audit logs on repo failure, got %d", len(auditRepo.recordedLogs))
+	}
+}
+
+func TestService_Audit_Create_MissingPrincipal_FailsFastNoMutation(t *testing.T) {
+	autoRepo := newMockAutomationRepo()
+	tplRepo := newMockTemplateRepo()
+	tplRepo.templates["tpl-aud-1"] = &domain.EmailTemplate{
+		ID:           "tpl-aud-1",
+		TemplateType: domain.TemplateTypeAutomation,
+	}
+	auditRepo := &mockActivityLogRepoForAutomation{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(autoRepo, tplRepo, auditSvc)
+
+	// Context without principal
+	_, err := svc.Create(context.Background(), CreateInput{
+		Name:       "Unauth Rule",
+		TemplateID: "tpl-aud-1",
+		Config:     sampleConfig(),
+	})
+	if !errors.Is(err, audit.ErrMissingPrincipal) {
+		t.Fatalf("expected ErrMissingPrincipal, got %v", err)
+	}
+
+	if len(autoRepo.rules) != 0 {
+		t.Errorf("expected no rules persisted in repo on missing principal, got %d", len(autoRepo.rules))
+	}
+	if len(auditRepo.recordedLogs) != 0 {
+		t.Errorf("expected 0 audit logs, got %d", len(auditRepo.recordedLogs))
+	}
+}
+
+func TestService_Audit_Create_AuditFailure_PropagatesError(t *testing.T) {
+	autoRepo := newMockAutomationRepo()
+	tplRepo := newMockTemplateRepo()
+	tplRepo.templates["tpl-aud-1"] = &domain.EmailTemplate{
+		ID:           "tpl-aud-1",
+		TemplateType: domain.TemplateTypeAutomation,
+	}
+	auditRepo := &mockActivityLogRepoForAutomation{
+		createErr: errors.New("audit log write error"),
+	}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(autoRepo, tplRepo, auditSvc)
+
+	ctx := authContext("usr-admin-1", "admin")
+	_, err := svc.Create(ctx, CreateInput{
+		Name:       "Rule",
+		TemplateID: "tpl-aud-1",
+		Config:     sampleConfig(),
+	})
+	if err == nil {
+		t.Fatal("expected audit failure error, got nil")
+	}
+	if !strings.Contains(err.Error(), "audit log write error") {
+		t.Errorf("expected audit error message, got %v", err)
+	}
+}
+
+func TestService_Audit_Update_ConfigurationChange_Success(t *testing.T) {
+	autoRepo := newMockAutomationRepo()
+	tplRepo := newMockTemplateRepo()
+	tplRepo.templates["tpl-1"] = &domain.EmailTemplate{ID: "tpl-1", TemplateType: domain.TemplateTypeAutomation}
+	tplRepo.templates["tpl-2"] = &domain.EmailTemplate{ID: "tpl-2", TemplateType: domain.TemplateTypeAutomation}
+
+	auditRepo := &mockActivityLogRepoForAutomation{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(autoRepo, tplRepo, auditSvc)
+
+	existing := &domain.AutomationRule{
+		ID:         "rule-upd-1",
+		Name:       "Old Rule Name",
+		TemplateID: "tpl-1",
+		Enabled:    true,
+		Config:     sampleConfig(),
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	_ = autoRepo.Create(context.Background(), existing)
+
+	ctx := authContext("usr-admin-1", "admin")
+	newName := "New Rule Name"
+	newTpl := "tpl-2"
+	newCfg := sampleConfig()
+	newCfg.Schedule.Type = domain.ScheduleTypeIntervalHours
+	newCfg.Schedule.HourUTC = nil
+	newCfg.Schedule.MinuteUTC = nil
+	newCfg.Schedule.IntervalHours = intPtr(24)
+
+	updated, err := svc.Update(ctx, "rule-upd-1", UpdateInput{
+		Name:       &newName,
+		TemplateID: &newTpl,
+		Config:     &newCfg,
+	})
+	if err != nil {
+		t.Fatalf("expected update success, got %v", err)
+	}
+	if updated.Name != "New Rule Name" || updated.TemplateID != "tpl-2" {
+		t.Errorf("unexpected updated entity: %+v", updated)
+	}
+
+	if len(auditRepo.recordedLogs) != 1 {
+		t.Fatalf("expected 1 audit log recorded, got %d", len(auditRepo.recordedLogs))
+	}
+
+	log := auditRepo.recordedLogs[0]
+	if log.EventType != domain.EventAutomationUpdated {
+		t.Errorf("expected EventType %s, got %s", domain.EventAutomationUpdated, log.EventType)
+	}
+	if log.ActorType != domain.ActorTypeUser || log.ActorUserID == nil || *log.ActorUserID != "usr-admin-1" {
+		t.Errorf("unexpected actor: %+v", log)
+	}
+	if log.TargetType != domain.TargetTypeAutomationRule || log.TargetID != "rule-upd-1" {
+		t.Errorf("expected TargetType %s and TargetID rule-upd-1, got type=%s id=%s", domain.TargetTypeAutomationRule, log.TargetType, log.TargetID)
+	}
+	if log.Summary != `Updated automation rule "New Rule Name"` {
+		t.Errorf("unexpected summary: %s", log.Summary)
+	}
+
+	var details struct {
+		Before map[string]any `json:"before"`
+		After  map[string]any `json:"after"`
+	}
+	if err := json.Unmarshal(log.Details, &details); err != nil {
+		t.Fatalf("failed to unmarshal details: %v", err)
+	}
+
+	if details.Before["name"] != "Old Rule Name" || details.Before["templateId"] != "tpl-1" {
+		t.Errorf("unexpected before snapshot: %+v", details.Before)
+	}
+	if details.After["name"] != "New Rule Name" || details.After["templateId"] != "tpl-2" {
+		t.Errorf("unexpected after snapshot: %+v", details.After)
+	}
+}
+
+func TestService_Audit_Update_NoOp_NoAudit(t *testing.T) {
+	autoRepo := newMockAutomationRepo()
+	tplRepo := newMockTemplateRepo()
+	tplRepo.templates["tpl-1"] = &domain.EmailTemplate{ID: "tpl-1", TemplateType: domain.TemplateTypeAutomation}
+
+	auditRepo := &mockActivityLogRepoForAutomation{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(autoRepo, tplRepo, auditSvc)
+
+	cfg := sampleConfig()
+	existing := &domain.AutomationRule{
+		ID:         "rule-noop-1",
+		Name:       "Same Name",
+		TemplateID: "tpl-1",
+		Enabled:    true,
+		Config:     cfg,
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	_ = autoRepo.Create(context.Background(), existing)
+
+	ctx := authContext("usr-admin-1", "admin")
+	sameName := "Same Name"
+	sameTpl := "tpl-1"
+	sameEnabled := true
+	sameCfg := sampleConfig()
+
+	res, err := svc.Update(ctx, "rule-noop-1", UpdateInput{
+		Name:       &sameName,
+		TemplateID: &sameTpl,
+		Enabled:    &sameEnabled,
+		Config:     &sameCfg,
+	})
+	if err != nil {
+		t.Fatalf("expected no-op update success, got %v", err)
+	}
+	if res.Name != "Same Name" {
+		t.Errorf("unexpected result: %+v", res)
+	}
+
+	if len(auditRepo.recordedLogs) != 0 {
+		t.Errorf("expected 0 audit logs on no-op update, got %d", len(auditRepo.recordedLogs))
+	}
+}
+
+func TestService_Audit_Update_MissingPrincipal_FailsFastNoMutation(t *testing.T) {
+	autoRepo := newMockAutomationRepo()
+	tplRepo := newMockTemplateRepo()
+	auditRepo := &mockActivityLogRepoForAutomation{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(autoRepo, tplRepo, auditSvc)
+
+	existing := &domain.AutomationRule{
+		ID:         "rule-upd-missing-auth",
+		Name:       "Original Name",
+		TemplateID: "tpl-1",
+		Enabled:    true,
+		Config:     sampleConfig(),
+	}
+	_ = autoRepo.Create(context.Background(), existing)
+
+	newName := "Hacked Name"
+	_, err := svc.Update(context.Background(), "rule-upd-missing-auth", UpdateInput{
+		Name: &newName,
+	})
+	if !errors.Is(err, audit.ErrMissingPrincipal) {
+		t.Fatalf("expected ErrMissingPrincipal, got %v", err)
+	}
+
+	saved, _ := autoRepo.GetByID(context.Background(), "rule-upd-missing-auth")
+	if saved.Name != "Original Name" {
+		t.Errorf("expected rule in repo to remain unmodified, got %s", saved.Name)
+	}
+	if len(auditRepo.recordedLogs) != 0 {
+		t.Errorf("expected 0 audit logs, got %d", len(auditRepo.recordedLogs))
+	}
+}
+
+func TestService_Audit_Update_AuditFailure_PropagatesError(t *testing.T) {
+	autoRepo := newMockAutomationRepo()
+	tplRepo := newMockTemplateRepo()
+	auditRepo := &mockActivityLogRepoForAutomation{
+		createErr: errors.New("audit log error"),
+	}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(autoRepo, tplRepo, auditSvc)
+
+	existing := &domain.AutomationRule{
+		ID:         "rule-upd-err",
+		Name:       "Original Name",
+		TemplateID: "tpl-1",
+		Enabled:    true,
+		Config:     sampleConfig(),
+	}
+	_ = autoRepo.Create(context.Background(), existing)
+
+	ctx := authContext("usr-admin-1", "admin")
+	newName := "New Name"
+	_, err := svc.Update(ctx, "rule-upd-err", UpdateInput{Name: &newName})
+	if err == nil {
+		t.Fatal("expected audit failure error, got nil")
+	}
+	if !strings.Contains(err.Error(), "audit log error") {
+		t.Errorf("expected audit error message, got %v", err)
+	}
+}
+
+func TestService_Audit_Enable_DisabledToEnabled(t *testing.T) {
+	autoRepo := newMockAutomationRepo()
+	tplRepo := newMockTemplateRepo()
+	auditRepo := &mockActivityLogRepoForAutomation{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(autoRepo, tplRepo, auditSvc)
+
+	existing := &domain.AutomationRule{
+		ID:         "rule-enable-1",
+		Name:       "Inactive Rule",
+		TemplateID: "tpl-1",
+		Enabled:    false,
+		Config:     sampleConfig(),
+	}
+	_ = autoRepo.Create(context.Background(), existing)
+
+	ctx := authContext("usr-admin-1", "admin")
+	updated, err := svc.Enable(ctx, "rule-enable-1")
+	if err != nil {
+		t.Fatalf("expected enable success, got %v", err)
+	}
+	if !updated.Enabled {
+		t.Errorf("expected rule to be enabled, got false")
+	}
+
+	if len(auditRepo.recordedLogs) != 1 {
+		t.Fatalf("expected exactly 1 audit log recorded, got %d", len(auditRepo.recordedLogs))
+	}
+
+	log := auditRepo.recordedLogs[0]
+	if log.EventType != domain.EventAutomationEnabled {
+		t.Errorf("expected EventType %s, got %s", domain.EventAutomationEnabled, log.EventType)
+	}
+	if log.Summary != `Enabled automation rule "Inactive Rule"` {
+		t.Errorf("unexpected summary: %s", log.Summary)
+	}
+
+	var details map[string]any
+	if err := json.Unmarshal(log.Details, &details); err != nil {
+		t.Fatalf("failed to unmarshal details: %v", err)
+	}
+	if details["previousEnabled"] != false || details["resultingEnabled"] != true || details["ruleId"] != "rule-enable-1" || details["ruleName"] != "Inactive Rule" {
+		t.Errorf("unexpected enable details: %+v", details)
+	}
+}
+
+func TestService_Audit_Enable_AlreadyEnabled_NoAudit(t *testing.T) {
+	autoRepo := newMockAutomationRepo()
+	tplRepo := newMockTemplateRepo()
+	auditRepo := &mockActivityLogRepoForAutomation{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(autoRepo, tplRepo, auditSvc)
+
+	existing := &domain.AutomationRule{
+		ID:         "rule-already-enabled",
+		Name:       "Active Rule",
+		TemplateID: "tpl-1",
+		Enabled:    true,
+		Config:     sampleConfig(),
+	}
+	_ = autoRepo.Create(context.Background(), existing)
+
+	ctx := authContext("usr-admin-1", "admin")
+	updated, err := svc.Enable(ctx, "rule-already-enabled")
+	if err != nil {
+		t.Fatalf("expected enable success, got %v", err)
+	}
+	if !updated.Enabled {
+		t.Errorf("expected rule to stay enabled, got false")
+	}
+
+	if len(auditRepo.recordedLogs) != 0 {
+		t.Errorf("expected 0 audit logs for already-enabled rule, got %d", len(auditRepo.recordedLogs))
+	}
+}
+
+func TestService_Audit_Disable_EnabledToDisabled(t *testing.T) {
+	autoRepo := newMockAutomationRepo()
+	tplRepo := newMockTemplateRepo()
+	auditRepo := &mockActivityLogRepoForAutomation{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(autoRepo, tplRepo, auditSvc)
+
+	existing := &domain.AutomationRule{
+		ID:         "rule-disable-1",
+		Name:       "Active Rule",
+		TemplateID: "tpl-1",
+		Enabled:    true,
+		Config:     sampleConfig(),
+	}
+	_ = autoRepo.Create(context.Background(), existing)
+
+	ctx := authContext("usr-admin-1", "admin")
+	updated, err := svc.Disable(ctx, "rule-disable-1")
+	if err != nil {
+		t.Fatalf("expected disable success, got %v", err)
+	}
+	if updated.Enabled {
+		t.Errorf("expected rule to be disabled, got true")
+	}
+
+	if len(auditRepo.recordedLogs) != 1 {
+		t.Fatalf("expected exactly 1 audit log recorded, got %d", len(auditRepo.recordedLogs))
+	}
+
+	log := auditRepo.recordedLogs[0]
+	if log.EventType != domain.EventAutomationDisabled {
+		t.Errorf("expected EventType %s, got %s", domain.EventAutomationDisabled, log.EventType)
+	}
+	if log.Summary != `Disabled automation rule "Active Rule"` {
+		t.Errorf("unexpected summary: %s", log.Summary)
+	}
+
+	var details map[string]any
+	if err := json.Unmarshal(log.Details, &details); err != nil {
+		t.Fatalf("failed to unmarshal details: %v", err)
+	}
+	if details["previousEnabled"] != true || details["resultingEnabled"] != false || details["ruleId"] != "rule-disable-1" || details["ruleName"] != "Active Rule" {
+		t.Errorf("unexpected disable details: %+v", details)
+	}
+}
+
+func TestService_Audit_Disable_AlreadyDisabled_NoAudit(t *testing.T) {
+	autoRepo := newMockAutomationRepo()
+	tplRepo := newMockTemplateRepo()
+	auditRepo := &mockActivityLogRepoForAutomation{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(autoRepo, tplRepo, auditSvc)
+
+	existing := &domain.AutomationRule{
+		ID:         "rule-already-disabled",
+		Name:       "Disabled Rule",
+		TemplateID: "tpl-1",
+		Enabled:    false,
+		Config:     sampleConfig(),
+	}
+	_ = autoRepo.Create(context.Background(), existing)
+
+	ctx := authContext("usr-admin-1", "admin")
+	updated, err := svc.Disable(ctx, "rule-already-disabled")
+	if err != nil {
+		t.Fatalf("expected disable success, got %v", err)
+	}
+	if updated.Enabled {
+		t.Errorf("expected rule to stay disabled, got true")
+	}
+
+	if len(auditRepo.recordedLogs) != 0 {
+		t.Errorf("expected 0 audit logs for already-disabled rule, got %d", len(auditRepo.recordedLogs))
+	}
+}
+
+func TestService_Audit_Delete_Success(t *testing.T) {
+	autoRepo := newMockAutomationRepo()
+	tplRepo := newMockTemplateRepo()
+	auditRepo := &mockActivityLogRepoForAutomation{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(autoRepo, tplRepo, auditSvc)
+
+	cfg := sampleConfig()
+	existing := &domain.AutomationRule{
+		ID:         "rule-del-aud-1",
+		Name:       "Rule To Delete",
+		TemplateID: "tpl-1",
+		Enabled:    true,
+		Config:     cfg,
+	}
+	_ = autoRepo.Create(context.Background(), existing)
+
+	ctx := authContext("usr-admin-1", "admin")
+	err := svc.Delete(ctx, "rule-del-aud-1")
+	if err != nil {
+		t.Fatalf("expected delete success, got %v", err)
+	}
+
+	if len(auditRepo.recordedLogs) != 1 {
+		t.Fatalf("expected 1 audit log recorded, got %d", len(auditRepo.recordedLogs))
+	}
+
+	log := auditRepo.recordedLogs[0]
+	if log.EventType != domain.EventAutomationDeleted {
+		t.Errorf("expected EventType %s, got %s", domain.EventAutomationDeleted, log.EventType)
+	}
+	if log.ActorType != domain.ActorTypeUser || log.ActorUserID == nil || *log.ActorUserID != "usr-admin-1" {
+		t.Errorf("unexpected actor: %+v", log)
+	}
+	if log.TargetType != domain.TargetTypeAutomationRule || log.TargetID != "rule-del-aud-1" {
+		t.Errorf("expected TargetType %s and TargetID rule-del-aud-1, got type=%s id=%s", domain.TargetTypeAutomationRule, log.TargetType, log.TargetID)
+	}
+	if log.Summary != `Deleted automation rule "Rule To Delete"` {
+		t.Errorf("unexpected summary: %s", log.Summary)
+	}
+
+	var details map[string]any
+	if err := json.Unmarshal(log.Details, &details); err != nil {
+		t.Fatalf("failed to unmarshal details: %v", err)
+	}
+	if details["id"] != "rule-del-aud-1" || details["name"] != "Rule To Delete" || details["templateId"] != "tpl-1" || details["enabled"] != true {
+		t.Errorf("unexpected deleted snapshot: %+v", details)
+	}
+}
+
+func TestService_Audit_Delete_NotFound_NoAudit(t *testing.T) {
+	autoRepo := newMockAutomationRepo()
+	tplRepo := newMockTemplateRepo()
+	auditRepo := &mockActivityLogRepoForAutomation{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(autoRepo, tplRepo, auditSvc)
+
+	ctx := authContext("usr-admin-1", "admin")
+	err := svc.Delete(ctx, "non-existent-rule-id")
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+
+	if len(auditRepo.recordedLogs) != 0 {
+		t.Errorf("expected 0 audit logs on delete not found, got %d", len(auditRepo.recordedLogs))
+	}
+}
+
+func TestService_Audit_Delete_MissingPrincipal_FailsFastNoDeletion(t *testing.T) {
+	autoRepo := newMockAutomationRepo()
+	tplRepo := newMockTemplateRepo()
+	auditRepo := &mockActivityLogRepoForAutomation{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(autoRepo, tplRepo, auditSvc)
+
+	existing := &domain.AutomationRule{
+		ID:         "rule-del-noauth",
+		Name:       "Rule",
+		TemplateID: "tpl-1",
+		Enabled:    true,
+		Config:     sampleConfig(),
+	}
+	_ = autoRepo.Create(context.Background(), existing)
+
+	err := svc.Delete(context.Background(), "rule-del-noauth")
+	if !errors.Is(err, audit.ErrMissingPrincipal) {
+		t.Fatalf("expected ErrMissingPrincipal, got %v", err)
+	}
+
+	if _, ok := autoRepo.rules["rule-del-noauth"]; !ok {
+		t.Errorf("rule was unexpectedly deleted from repository")
+	}
+	if len(auditRepo.recordedLogs) != 0 {
+		t.Errorf("expected 0 audit logs, got %d", len(auditRepo.recordedLogs))
+	}
+}
+
+func TestService_Audit_Delete_AuditFailure_PropagatesError(t *testing.T) {
+	autoRepo := newMockAutomationRepo()
+	tplRepo := newMockTemplateRepo()
+	auditRepo := &mockActivityLogRepoForAutomation{
+		createErr: errors.New("audit failure on delete"),
+	}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(autoRepo, tplRepo, auditSvc)
+
+	existing := &domain.AutomationRule{
+		ID:         "rule-del-err",
+		Name:       "Rule",
+		TemplateID: "tpl-1",
+		Enabled:    true,
+		Config:     sampleConfig(),
+	}
+	_ = autoRepo.Create(context.Background(), existing)
+
+	ctx := authContext("usr-admin-1", "admin")
+	err := svc.Delete(ctx, "rule-del-err")
+	if err == nil {
+		t.Fatal("expected audit failure error, got nil")
+	}
+	if !strings.Contains(err.Error(), "audit failure on delete") {
+		t.Errorf("expected audit error message, got %v", err)
+	}
+}
+
+func TestService_Audit_Privacy_NoSecretsInPayloads(t *testing.T) {
+	autoRepo := newMockAutomationRepo()
+	tplRepo := newMockTemplateRepo()
+	tplRepo.templates["tpl-sec-1"] = &domain.EmailTemplate{
+		ID:           "tpl-sec-1",
+		TemplateType: domain.TemplateTypeAutomation,
+	}
+	auditRepo := &mockActivityLogRepoForAutomation{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(autoRepo, tplRepo, auditSvc)
+
+	ctx := authContext("usr-admin-1", "admin")
+
+	// 1. Create
+	rule, err := svc.Create(ctx, CreateInput{
+		Name:       "Security Test Rule",
+		TemplateID: "tpl-sec-1",
+		Config:     sampleConfig(),
+	})
+	if err != nil {
+		t.Fatalf("failed create: %v", err)
+	}
+
+	// 2. Update
+	newName := "Security Test Rule Modified"
+	_, err = svc.Update(ctx, rule.ID, UpdateInput{
+		Name: &newName,
+	})
+	if err != nil {
+		t.Fatalf("failed update: %v", err)
+	}
+
+	// 3. Disable
+	_, err = svc.Disable(ctx, rule.ID)
+	if err != nil {
+		t.Fatalf("failed disable: %v", err)
+	}
+
+	// 4. Enable
+	_, err = svc.Enable(ctx, rule.ID)
+	if err != nil {
+		t.Fatalf("failed enable: %v", err)
+	}
+
+	// 5. Delete
+	err = svc.Delete(ctx, rule.ID)
+	if err != nil {
+		t.Fatalf("failed delete: %v", err)
+	}
+
+	forbiddenWords := []string{"password", "secret", "smtp", "token", "jwt", "database", "postgres", "credentials"}
+	for i, log := range auditRepo.recordedLogs {
+		detailsJSON := string(log.Details)
+		for _, word := range forbiddenWords {
+			if strings.Contains(strings.ToLower(detailsJSON), word) {
+				t.Errorf("log [%d] (%s) contained forbidden secret or keyword %q: %s", i, log.EventType, word, detailsJSON)
+			}
+		}
 	}
 }

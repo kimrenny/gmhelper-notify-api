@@ -120,7 +120,7 @@ func TestCampaignHandler_List(t *testing.T) {
 		},
 	}
 	log, _ := logger.NewLogger("error")
-	service := campaign.NewService(repo)
+	service := campaign.NewService(repo, nil, nil)
 	handler := NewCampaignHandler(service, log)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/campaigns", nil)
@@ -159,7 +159,7 @@ func TestCampaignHandler_GetByID(t *testing.T) {
 		},
 	}
 	log, _ := logger.NewLogger("error")
-	service := campaign.NewService(repo)
+	service := campaign.NewService(repo, nil, nil)
 	handler := NewCampaignHandler(service, log)
 
 	// 1. Found
@@ -196,7 +196,7 @@ func TestCampaignHandler_Create(t *testing.T) {
 		campaigns: make(map[string]*domain.NotificationCampaign),
 	}
 	log, _ := logger.NewLogger("error")
-	service := campaign.NewService(repo)
+	service := campaign.NewService(repo, nil, nil)
 	handler := NewCampaignHandler(service, log)
 
 	futureTime := time.Now().Add(48 * time.Hour).UTC()
@@ -254,7 +254,7 @@ func TestCampaignHandler_Update(t *testing.T) {
 		},
 	}
 	log, _ := logger.NewLogger("error")
-	service := campaign.NewService(repo)
+	service := campaign.NewService(repo, nil, nil)
 	handler := NewCampaignHandler(service, log)
 
 	updatedName := "Renamed Campaign"
@@ -306,7 +306,7 @@ func TestCampaignHandler_Delete(t *testing.T) {
 		},
 	}
 	log, _ := logger.NewLogger("error")
-	service := campaign.NewService(repo)
+	service := campaign.NewService(repo, nil, nil)
 	handler := NewCampaignHandler(service, log)
 
 	// 1. Successful delete -> 204 No Content
@@ -370,7 +370,7 @@ func TestCampaignHandler_Schedule(t *testing.T) {
 		},
 	}
 	log, _ := logger.NewLogger("error")
-	service := campaign.NewService(repo)
+	service := campaign.NewService(repo, nil, nil)
 	handler := NewCampaignHandler(service, log)
 
 	// 1. Successful schedule
@@ -470,7 +470,7 @@ func TestCampaignHandler_Cancel(t *testing.T) {
 		},
 	}
 	log, _ := logger.NewLogger("error")
-	service := campaign.NewService(repo)
+	service := campaign.NewService(repo, nil, nil)
 	handler := NewCampaignHandler(service, log)
 
 	// 1. Successful cancel

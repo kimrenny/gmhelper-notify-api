@@ -121,7 +121,7 @@ func TestAgreementHandler_CreateBroadcast_Success(t *testing.T) {
 		campaigns: make(map[string]*domain.NotificationCampaign),
 	}
 
-	service := agreement.NewService(campRepo, tplRepo)
+	service := agreement.NewService(campRepo, tplRepo, nil)
 	handler := NewAgreementHandler(service, log)
 
 	reqBody := `{"templateId":"tpl-active-1","name":"User Agreement Broadcast Q3"}`
@@ -170,7 +170,7 @@ func TestAgreementHandler_CreateBroadcast_ValidationErrors(t *testing.T) {
 		campaigns: make(map[string]*domain.NotificationCampaign),
 	}
 
-	service := agreement.NewService(campRepo, tplRepo)
+	service := agreement.NewService(campRepo, tplRepo, nil)
 	handler := NewAgreementHandler(service, log)
 
 	tests := []struct {
@@ -243,7 +243,7 @@ func TestAgreementHandler_CreateBroadcast_Conflict_Duplicate(t *testing.T) {
 		},
 	}
 
-	service := agreement.NewService(campRepo, tplRepo)
+	service := agreement.NewService(campRepo, tplRepo, nil)
 	handler := NewAgreementHandler(service, log)
 
 	reqBody := `{"templateId":"tpl-active-1"}`

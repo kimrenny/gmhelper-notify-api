@@ -18,6 +18,7 @@ func NewRouter(
 	automationHandler *handlers.AutomationHandler,
 	agreementHandler *handlers.AgreementHandler,
 	settingsHandler *handlers.SettingsHandler,
+	activityHandler *handlers.ActivityHandler,
 	authMiddleware middleware.Middleware,
 ) http.Handler {
 	mux := http.NewServeMux()
@@ -90,6 +91,13 @@ func NewRouter(
 	// User resolution & search endpoints
 	if userHandler != nil {
 		apiV1Mux.HandleFunc("GET /users/search", userHandler.Search)
+	}
+
+	// Activity History endpoints (Owner-only)
+	if activityHandler != nil {
+		ownerOnly := middleware.RequireOwnerRole()
+		apiV1Mux.Handle("GET /activity", ownerOnly(http.HandlerFunc(activityHandler.List)))
+		apiV1Mux.Handle("GET /activity/{id}", ownerOnly(http.HandlerFunc(activityHandler.GetByID)))
 	}
 
 	// Fallback for unhandled /api/v1/ routes

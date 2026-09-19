@@ -2,11 +2,15 @@ package template
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/gmhelper/notify-api/internal/app/audit"
 	"github.com/gmhelper/notify-api/internal/domain"
+	"github.com/gmhelper/notify-api/internal/http/middleware"
 )
 
 type mockTemplateRepo struct {
@@ -96,7 +100,7 @@ func (m *mockTemplateRepo) List(ctx context.Context) ([]*domain.EmailTemplate, e
 
 func TestService_CreateAndGet(t *testing.T) {
 	repo := newMockTemplateRepo()
-	svc := NewService(repo)
+	svc := NewService(repo, nil)
 
 	// Valid create
 	input := CreateInput{
@@ -142,7 +146,7 @@ func TestService_CreateAndGet(t *testing.T) {
 
 func TestService_Create_AllSupportedTypes(t *testing.T) {
 	repo := newMockTemplateRepo()
-	svc := NewService(repo)
+	svc := NewService(repo, nil)
 
 	types := []domain.TemplateType{
 		domain.TemplateTypeDirect,
@@ -183,7 +187,7 @@ func TestService_Create_AllSupportedTypes(t *testing.T) {
 
 func TestService_Create_InvalidType(t *testing.T) {
 	repo := newMockTemplateRepo()
-	svc := NewService(repo)
+	svc := NewService(repo, nil)
 
 	// Missing template type
 	_, err := svc.Create(context.Background(), CreateInput{
@@ -212,7 +216,7 @@ func TestService_Create_InvalidType(t *testing.T) {
 
 func TestService_Create_InvalidInput(t *testing.T) {
 	repo := newMockTemplateRepo()
-	svc := NewService(repo)
+	svc := NewService(repo, nil)
 
 	// Missing template key
 	_, err := svc.Create(context.Background(), CreateInput{
@@ -228,7 +232,7 @@ func TestService_Create_InvalidInput(t *testing.T) {
 
 func TestService_Update_SuccessAndNotFound(t *testing.T) {
 	repo := newMockTemplateRepo()
-	svc := NewService(repo)
+	svc := NewService(repo, nil)
 
 	t1 := &domain.EmailTemplate{
 		ID:           "tpl-1",
@@ -321,7 +325,7 @@ func TestService_Update_SuccessAndNotFound(t *testing.T) {
 
 func TestService_Delete_SuccessAndNotFound(t *testing.T) {
 	repo := newMockTemplateRepo()
-	svc := NewService(repo)
+	svc := NewService(repo, nil)
 
 	t1 := &domain.EmailTemplate{
 		ID:           "tpl-1",
@@ -347,7 +351,7 @@ func TestService_Delete_SuccessAndNotFound(t *testing.T) {
 
 func TestService_Preview_SuccessAndHTMLEscaping(t *testing.T) {
 	repo := newMockTemplateRepo()
-	svc := NewService(repo)
+	svc := NewService(repo, nil)
 
 	tpl := &domain.EmailTemplate{
 		ID:            "tpl-preview-1",
@@ -394,7 +398,7 @@ func TestService_Preview_SuccessAndHTMLEscaping(t *testing.T) {
 
 func TestService_Preview_UnsavedOverrides(t *testing.T) {
 	repo := newMockTemplateRepo()
-	svc := NewService(repo)
+	svc := NewService(repo, nil)
 
 	subject := "Unsaved Subject {{name}}"
 	htmlBody := "<div>Unsaved HTML {{name}}</div>"
@@ -422,7 +426,7 @@ func TestService_Preview_UnsavedOverrides(t *testing.T) {
 
 func TestService_Preview_ExistingTemplateIDWithOverrides(t *testing.T) {
 	repo := newMockTemplateRepo()
-	svc := NewService(repo)
+	svc := NewService(repo, nil)
 
 	tpl := &domain.EmailTemplate{
 		ID:            "tpl-existing-100",
@@ -481,7 +485,7 @@ func TestService_Preview_ExistingTemplateIDWithOverrides(t *testing.T) {
 
 func TestService_Preview_MissingVariablesAndNotFound(t *testing.T) {
 	repo := newMockTemplateRepo()
-	svc := NewService(repo)
+	svc := NewService(repo, nil)
 
 	tpl := &domain.EmailTemplate{
 		ID:           "tpl-preview-2",
@@ -512,5 +516,304 @@ func TestService_Preview_MissingVariablesAndNotFound(t *testing.T) {
 	_, err = svc.Preview(context.Background(), "", PreviewInput{Variables: map[string]any{"code": "123"}})
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("expected ErrInvalidInput, got %v", err)
+	}
+}
+
+type mockActivityLogRepoForTemplate struct {
+	recordedLogs []*domain.ActivityLog
+	createErr    error
+}
+
+func (m *mockActivityLogRepoForTemplate) Create(ctx context.Context, log *domain.ActivityLog) error {
+	if m.createErr != nil {
+		return m.createErr
+	}
+	m.recordedLogs = append(m.recordedLogs, log)
+	return nil
+}
+
+func (m *mockActivityLogRepoForTemplate) GetByID(ctx context.Context, id string) (*domain.ActivityLog, error) {
+	return nil, domain.ErrNotFound
+}
+
+func (m *mockActivityLogRepoForTemplate) List(ctx context.Context, filter domain.ActivityLogFilter) ([]*domain.ActivityLog, int, error) {
+	return nil, 0, nil
+}
+
+func authContext(userID, role string) context.Context {
+	p := &domain.Principal{UserID: userID, Role: role}
+	return middleware.ContextWithPrincipal(context.Background(), p)
+}
+
+func TestTemplateService_Audit_Create(t *testing.T) {
+	repo := newMockTemplateRepo()
+	auditRepo := &mockActivityLogRepoForTemplate{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(repo, auditSvc)
+
+	ctx := authContext("usr-admin-1", "Admin")
+	input := CreateInput{
+		TemplateKey:   "welcome_user",
+		Name:          "Welcome Email",
+		TemplateType:  "direct",
+		Subject:       "Welcome {{name}}",
+		HTMLBody:      "<h1>Hello</h1>",
+		PlainTextBody: "Hello",
+		Locale:        "en",
+		Status:        "active",
+		Version:       1,
+	}
+
+	created, err := svc.Create(ctx, input)
+	if err != nil {
+		t.Fatalf("expected create success, got: %v", err)
+	}
+
+	if len(auditRepo.recordedLogs) != 1 {
+		t.Fatalf("expected 1 audit log recorded, got %d", len(auditRepo.recordedLogs))
+	}
+
+	log := auditRepo.recordedLogs[0]
+	if log.EventType != domain.EventTemplateCreated {
+		t.Errorf("expected EventType %s, got %s", domain.EventTemplateCreated, log.EventType)
+	}
+	if log.ActorType != domain.ActorTypeUser || log.ActorUserID == nil || *log.ActorUserID != "usr-admin-1" {
+		t.Errorf("unexpected actor: %+v", log)
+	}
+	if log.TargetType != domain.TargetTypeTemplate || log.TargetID != created.ID {
+		t.Errorf("expected target template ID %s, got %s", created.ID, log.TargetID)
+	}
+	if log.TargetName == nil || *log.TargetName != "Welcome Email" {
+		t.Errorf("expected target name 'Welcome Email', got %v", log.TargetName)
+	}
+
+	var details map[string]any
+	if err := json.Unmarshal(log.Details, &details); err != nil {
+		t.Fatalf("failed to parse log details: %v", err)
+	}
+	if details["templateKey"] != "welcome_user" || details["subject"] != "Welcome {{name}}" || details["templateType"] != "direct" {
+		t.Errorf("unexpected details content: %+v", details)
+	}
+}
+
+func TestTemplateService_Audit_Update_ContentChanged(t *testing.T) {
+	repo := newMockTemplateRepo()
+	auditRepo := &mockActivityLogRepoForTemplate{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(repo, auditSvc)
+
+	existing := &domain.EmailTemplate{
+		ID:           "tpl-100",
+		TemplateKey:  "pwd_reset",
+		Name:         "Password Reset",
+		TemplateType: domain.TemplateTypeDirect,
+		Subject:      "Old Subject",
+		HTMLBody:     "<p>Old HTML</p>",
+		Locale:       "en",
+		Status:       domain.TemplateStatusActive,
+		Version:      1,
+	}
+	repo.templates[existing.ID] = existing
+
+	ctx := authContext("usr-owner-1", "Owner")
+	input := UpdateInput{
+		TemplateKey:  "pwd_reset",
+		Name:         "Password Reset Updated",
+		TemplateType: "direct",
+		Subject:      "New Subject",
+		HTMLBody:     "<p>New HTML</p>",
+		Locale:       "en",
+		Status:       "active",
+		Version:      2,
+	}
+
+	_, err := svc.Update(ctx, "tpl-100", input)
+	if err != nil {
+		t.Fatalf("expected update success, got: %v", err)
+	}
+
+	if len(auditRepo.recordedLogs) != 1 {
+		t.Fatalf("expected 1 audit log recorded, got %d", len(auditRepo.recordedLogs))
+	}
+
+	log := auditRepo.recordedLogs[0]
+	if log.EventType != domain.EventTemplateUpdated {
+		t.Errorf("expected EventType %s, got %s", domain.EventTemplateUpdated, log.EventType)
+	}
+
+	var details map[string]map[string]any
+	if err := json.Unmarshal(log.Details, &details); err != nil {
+		t.Fatalf("failed to parse log details: %v", err)
+	}
+	if details["before"]["subject"] != "Old Subject" || details["after"]["subject"] != "New Subject" {
+		t.Errorf("expected before/after subjects, got: %+v", details)
+	}
+	if details["before"]["version"] != float64(1) || details["after"]["version"] != float64(2) {
+		t.Errorf("expected before/after versions, got: %+v", details)
+	}
+}
+
+func TestTemplateService_Audit_Update_StatusChangedOnly(t *testing.T) {
+	repo := newMockTemplateRepo()
+	auditRepo := &mockActivityLogRepoForTemplate{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(repo, auditSvc)
+
+	existing := &domain.EmailTemplate{
+		ID:           "tpl-200",
+		TemplateKey:  "draft_tpl",
+		Name:         "Draft Template",
+		TemplateType: domain.TemplateTypeCampaign,
+		Subject:      "Same Subject",
+		HTMLBody:     "<p>Same Body</p>",
+		Locale:       "en",
+		Status:       domain.TemplateStatusDraft,
+		Version:      1,
+	}
+	repo.templates[existing.ID] = existing
+
+	ctx := authContext("usr-admin-2", "Admin")
+	input := UpdateInput{
+		TemplateKey:  "draft_tpl",
+		Name:         "Draft Template",
+		TemplateType: "campaign",
+		Subject:      "Same Subject",
+		HTMLBody:     "<p>Same Body</p>",
+		Locale:       "en",
+		Status:       "active",
+		Version:      1,
+	}
+
+	_, err := svc.Update(ctx, "tpl-200", input)
+	if err != nil {
+		t.Fatalf("expected update success, got: %v", err)
+	}
+
+	if len(auditRepo.recordedLogs) != 1 {
+		t.Fatalf("expected 1 audit log, got %d", len(auditRepo.recordedLogs))
+	}
+
+	log := auditRepo.recordedLogs[0]
+	if log.EventType != domain.EventTemplateStatusChanged {
+		t.Errorf("expected EventType %s, got %s", domain.EventTemplateStatusChanged, log.EventType)
+	}
+
+	var details map[string]map[string]any
+	if err := json.Unmarshal(log.Details, &details); err != nil {
+		t.Fatalf("failed to unmarshal details: %v", err)
+	}
+	if details["before"]["status"] != "draft" || details["after"]["status"] != "active" {
+		t.Errorf("expected before draft after active, got: %+v", details)
+	}
+}
+
+func TestTemplateService_Audit_Delete_Archived(t *testing.T) {
+	repo := newMockTemplateRepo()
+	auditRepo := &mockActivityLogRepoForTemplate{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(repo, auditSvc)
+
+	existing := &domain.EmailTemplate{
+		ID:           "tpl-300",
+		TemplateKey:  "delete_me",
+		Name:         "Obsolete Template",
+		TemplateType: domain.TemplateTypeAutomation,
+		Subject:      "Subject",
+		HTMLBody:     "<p>Body</p>",
+		Locale:       "en",
+		Status:       domain.TemplateStatusActive,
+		Version:      1,
+	}
+	repo.templates[existing.ID] = existing
+
+	ctx := authContext("usr-owner-3", "Owner")
+	if err := svc.Delete(ctx, "tpl-300"); err != nil {
+		t.Fatalf("expected delete success, got: %v", err)
+	}
+
+	if len(auditRepo.recordedLogs) != 1 {
+		t.Fatalf("expected 1 audit log, got %d", len(auditRepo.recordedLogs))
+	}
+
+	log := auditRepo.recordedLogs[0]
+	if log.EventType != domain.EventTemplateArchived {
+		t.Errorf("expected EventType %s, got %s", domain.EventTemplateArchived, log.EventType)
+	}
+
+	var details map[string]any
+	if err := json.Unmarshal(log.Details, &details); err != nil {
+		t.Fatalf("failed to unmarshal details: %v", err)
+	}
+	beforeMap := details["before"].(map[string]any)
+	afterMap := details["after"].(map[string]any)
+	if beforeMap["status"] != "active" || afterMap["status"] != "archived" {
+		t.Errorf("expected before active and after archived, got: %+v", details)
+	}
+}
+
+func TestTemplateService_Audit_FailedMutation_NoAudit(t *testing.T) {
+	repo := newMockTemplateRepo()
+	repo.err = errors.New("database connection failed")
+	auditRepo := &mockActivityLogRepoForTemplate{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(repo, auditSvc)
+
+	ctx := authContext("usr-admin-1", "Admin")
+	_, err := svc.Create(ctx, CreateInput{
+		TemplateKey:  "key",
+		Name:         "Name",
+		TemplateType: "direct",
+		Subject:      "Subject",
+		HTMLBody:     "<p>Body</p>",
+	})
+	if err == nil {
+		t.Fatal("expected error on failed create, got nil")
+	}
+
+	if len(auditRepo.recordedLogs) != 0 {
+		t.Errorf("expected 0 audit logs on failed mutation, got %d", len(auditRepo.recordedLogs))
+	}
+}
+
+func TestTemplateService_Audit_AuditFailure_PropagatesError(t *testing.T) {
+	repo := newMockTemplateRepo()
+	auditRepo := &mockActivityLogRepoForTemplate{
+		createErr: errors.New("audit log disk write failed"),
+	}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(repo, auditSvc)
+
+	ctx := authContext("usr-admin-1", "Admin")
+	_, err := svc.Create(ctx, CreateInput{
+		TemplateKey:  "key",
+		Name:         "Name",
+		TemplateType: "direct",
+		Subject:      "Subject",
+		HTMLBody:     "<p>Body</p>",
+	})
+	if err == nil {
+		t.Fatal("expected audit error to propagate, got nil")
+	}
+	if !strings.Contains(err.Error(), "audit log disk write failed") {
+		t.Errorf("expected audit error message, got: %v", err)
+	}
+}
+
+func TestTemplateService_Audit_MissingPrincipal_ReturnsError(t *testing.T) {
+	repo := newMockTemplateRepo()
+	auditRepo := &mockActivityLogRepoForTemplate{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(repo, auditSvc)
+
+	// Unauthenticated context
+	_, err := svc.Create(context.Background(), CreateInput{
+		TemplateKey:  "key",
+		Name:         "Name",
+		TemplateType: "direct",
+		Subject:      "Subject",
+		HTMLBody:     "<p>Body</p>",
+	})
+	if !errors.Is(err, audit.ErrMissingPrincipal) {
+		t.Fatalf("expected ErrMissingPrincipal for unauthenticated context, got: %v", err)
 	}
 }

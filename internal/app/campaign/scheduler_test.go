@@ -2,10 +2,12 @@ package campaign
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
+	"github.com/gmhelper/notify-api/internal/app/audit"
 	"github.com/gmhelper/notify-api/internal/domain"
 	"github.com/gmhelper/notify-api/internal/infra/logger"
 )
@@ -70,7 +72,7 @@ func TestScheduler_ProcessDue(t *testing.T) {
 	}
 
 	log, _ := logger.NewLogger("error")
-	scheduler := NewScheduler(repo, nil, 50*time.Millisecond, 10, log)
+	scheduler := NewScheduler(repo, nil, 50*time.Millisecond, 10, log, nil)
 	scheduler.nowFn = func() time.Time { return now }
 
 	claimed, err := scheduler.ProcessDue(context.Background())
@@ -107,7 +109,7 @@ func (m *errListDueRepo) ListDue(ctx context.Context, dueBefore time.Time, limit
 func TestScheduler_ProcessDue_ListError(t *testing.T) {
 	repo := &errListDueRepo{}
 	log, _ := logger.NewLogger("error")
-	scheduler := NewScheduler(repo, nil, 50*time.Millisecond, 10, log)
+	scheduler := NewScheduler(repo, nil, 50*time.Millisecond, 10, log, nil)
 
 	claimed, err := scheduler.ProcessDue(context.Background())
 	if err == nil {
@@ -136,7 +138,7 @@ func (m *raceClaimRepo) Claim(ctx context.Context, id string) (*domain.Notificat
 func TestScheduler_ProcessDue_RaceCondition(t *testing.T) {
 	repo := &raceClaimRepo{}
 	log, _ := logger.NewLogger("error")
-	scheduler := NewScheduler(repo, nil, 50*time.Millisecond, 10, log)
+	scheduler := NewScheduler(repo, nil, 50*time.Millisecond, 10, log, nil)
 
 	claimed, err := scheduler.ProcessDue(context.Background())
 	if err != nil {
@@ -176,7 +178,7 @@ func TestScheduler_ProcessDue_TriggersPopulateAudienceOnSuccessfulClaim(t *testi
 
 	pop := &mockPopulator{}
 	log, _ := logger.NewLogger("error")
-	scheduler := NewScheduler(repo, pop, 50*time.Millisecond, 10, log)
+	scheduler := NewScheduler(repo, pop, 50*time.Millisecond, 10, log, nil)
 	scheduler.nowFn = func() time.Time { return now }
 
 	claimed, err := scheduler.ProcessDue(context.Background())
@@ -197,7 +199,7 @@ func TestScheduler_ProcessDue_LosingRaceDoesNotTriggerPopulateAudience(t *testin
 	repo := &raceClaimRepo{}
 	pop := &mockPopulator{}
 	log, _ := logger.NewLogger("error")
-	scheduler := NewScheduler(repo, pop, 50*time.Millisecond, 10, log)
+	scheduler := NewScheduler(repo, pop, 50*time.Millisecond, 10, log, nil)
 
 	claimed, err := scheduler.ProcessDue(context.Background())
 	if err != nil {
@@ -232,7 +234,7 @@ func TestScheduler_ProcessDue_PopulatorErrorHandled(t *testing.T) {
 	}
 
 	log, _ := logger.NewLogger("error")
-	scheduler := NewScheduler(repo, pop, 50*time.Millisecond, 10, log)
+	scheduler := NewScheduler(repo, pop, 50*time.Millisecond, 10, log, nil)
 	scheduler.nowFn = func() time.Time { return now }
 
 	// ProcessDue should still report the claim and not panic/fail
@@ -260,7 +262,7 @@ func TestScheduler_StartAndCancel(t *testing.T) {
 	}
 
 	log, _ := logger.NewLogger("error")
-	scheduler := NewScheduler(repo, nil, 20*time.Millisecond, 10, log)
+	scheduler := NewScheduler(repo, nil, 20*time.Millisecond, 10, log, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -285,5 +287,119 @@ func TestScheduler_StartAndCancel(t *testing.T) {
 
 	if repo.campaigns["due-1"].Status != domain.CampaignStatusRunning {
 		t.Fatalf("expected campaign to be claimed during start loop, got %s", repo.campaigns["due-1"].Status)
+	}
+}
+
+func TestScheduler_Audit_CampaignStarted(t *testing.T) {
+	now := time.Now().UTC()
+	pastTime := now.Add(-5 * time.Minute)
+
+	repo := &mockRepo{
+		campaigns: map[string]*domain.NotificationCampaign{
+			"camp-started-1": {
+				ID:           "camp-started-1",
+				Name:         "Started Promo",
+				CampaignType: "broadcast",
+				TemplateID:   "tpl-promo",
+				Status:       domain.CampaignStatusScheduled,
+				ScheduledAt:  &pastTime,
+				CreatedAt:    now,
+				UpdatedAt:    now,
+			},
+		},
+	}
+
+	auditRepo := &mockActivityLogRepoForCampaign{}
+	auditSvc := audit.NewService(auditRepo)
+	log, _ := logger.NewLogger("error")
+
+	scheduler := NewScheduler(repo, nil, 50*time.Millisecond, 10, log, auditSvc)
+	scheduler.nowFn = func() time.Time { return now }
+
+	claimed, err := scheduler.ProcessDue(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if claimed != 1 {
+		t.Fatalf("expected 1 claimed, got %d", claimed)
+	}
+
+	if len(auditRepo.logs) != 1 {
+		t.Fatalf("expected 1 audit log, got %d", len(auditRepo.logs))
+	}
+
+	entry := auditRepo.logs[0]
+	if entry.EventType != domain.EventCampaignStarted {
+		t.Errorf("expected event %s, got %s", domain.EventCampaignStarted, entry.EventType)
+	}
+	if entry.ActorType != domain.ActorTypeSystem {
+		t.Errorf("expected actor type system, got %s", entry.ActorType)
+	}
+	if entry.ActorUserID != nil {
+		t.Errorf("expected nil actor user ID for system actor, got %v", entry.ActorUserID)
+	}
+	if entry.TargetType != domain.TargetTypeCampaign {
+		t.Errorf("expected target type campaign, got %s", entry.TargetType)
+	}
+	if entry.TargetID != "camp-started-1" {
+		t.Errorf("expected target ID camp-started-1, got %s", entry.TargetID)
+	}
+	if entry.TargetName == nil || *entry.TargetName != "Started Promo" {
+		t.Errorf("expected target name 'Started Promo', got %v", entry.TargetName)
+	}
+	if entry.Status != domain.ActivityStatusSuccess {
+		t.Errorf("expected status success, got %s", entry.Status)
+	}
+
+	var details map[string]interface{}
+	if err := json.Unmarshal(entry.Details, &details); err != nil {
+		t.Fatalf("failed to unmarshal details: %v", err)
+	}
+	if details["campaignId"] != "camp-started-1" {
+		t.Errorf("expected campaignId in details, got %v", details["campaignId"])
+	}
+	if details["previousStatus"] != "scheduled" {
+		t.Errorf("expected previousStatus scheduled, got %v", details["previousStatus"])
+	}
+	if details["resultingStatus"] != "running" {
+		t.Errorf("expected resultingStatus running, got %v", details["resultingStatus"])
+	}
+}
+
+func TestScheduler_Audit_CampaignStarted_AuditFailure_DoesNotFailClaim(t *testing.T) {
+	now := time.Now().UTC()
+	pastTime := now.Add(-5 * time.Minute)
+
+	repo := &mockRepo{
+		campaigns: map[string]*domain.NotificationCampaign{
+			"camp-started-err": {
+				ID:           "camp-started-err",
+				Name:         "Promo Audit Err",
+				CampaignType: "broadcast",
+				TemplateID:   "tpl-promo",
+				Status:       domain.CampaignStatusScheduled,
+				ScheduledAt:  &pastTime,
+				CreatedAt:    now,
+				UpdatedAt:    now,
+			},
+		},
+	}
+
+	auditRepo := &mockActivityLogRepoForCampaign{createErr: errors.New("audit disk failure")}
+	auditSvc := audit.NewService(auditRepo)
+	log, _ := logger.NewLogger("error")
+
+	scheduler := NewScheduler(repo, nil, 50*time.Millisecond, 10, log, auditSvc)
+	scheduler.nowFn = func() time.Time { return now }
+
+	claimed, err := scheduler.ProcessDue(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error claiming due campaign when audit fails: %v", err)
+	}
+	if claimed != 1 {
+		t.Fatalf("expected 1 claimed despite audit failure, got %d", claimed)
+	}
+	if repo.campaigns["camp-started-err"].Status != domain.CampaignStatusRunning {
+		t.Errorf("expected campaign to transition to running, got %s", repo.campaigns["camp-started-err"].Status)
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/gmhelper/notify-api/internal/api"
 	"github.com/gmhelper/notify-api/internal/api/handlers"
 	"github.com/gmhelper/notify-api/internal/app/agreement"
+	"github.com/gmhelper/notify-api/internal/app/audit"
 	"github.com/gmhelper/notify-api/internal/app/automation"
 	"github.com/gmhelper/notify-api/internal/app/campaign"
 	"github.com/gmhelper/notify-api/internal/app/dashboard"
@@ -70,12 +71,16 @@ func main() {
 	readinessService := health.NewReadinessService(db)
 	healthHandler := handlers.NewHealthHandler(readinessService, log)
 
+	activityRepo := postgres.NewActivityLogRepository(db.DB())
+	auditService := audit.NewService(activityRepo)
+	log.Info("activity audit service initialized")
+
 	templateRepo := postgres.NewEmailTemplateRepository(db.DB())
-	templateService := template.NewService(templateRepo)
+	templateService := template.NewService(templateRepo, auditService)
 	templateHandler := handlers.NewTemplateHandler(templateService, log)
 
 	campaignRepo := postgres.NewNotificationCampaignRepository(db.DB())
-	campaignService := campaign.NewService(campaignRepo)
+	campaignService := campaign.NewService(campaignRepo, templateRepo, auditService)
 	campaignHandler := handlers.NewCampaignHandler(campaignService, log)
 	recipientRepo := postgres.NewCampaignRecipientRepository(db.DB())
 
@@ -113,8 +118,8 @@ func main() {
 		log.Info("gmhelper-api base URL not configured; user resolution service is disabled")
 	}
 
-	directService := direct.NewService(templateRepo, directRepo, userService)
-	deliveryService := direct.NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, templateRepo, smtpSender, cfg.WorkerMaxAttempts)
+	directService := direct.NewService(templateRepo, directRepo, userService, auditService)
+	deliveryService := direct.NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, templateRepo, smtpSender, cfg.WorkerMaxAttempts, auditService)
 	directHandler := handlers.NewDirectNotificationHandler(directService, deliveryService, log)
 
 	var userHandler *handlers.UserHandler
@@ -123,15 +128,17 @@ func main() {
 	}
 
 	automationRepo := postgres.NewAutomationRuleRepository(db.DB())
-	automationService := automation.NewService(automationRepo, templateRepo)
+	automationService := automation.NewService(automationRepo, templateRepo, auditService)
 	automationHandler := handlers.NewAutomationHandler(automationService, log)
 
-	agreementService := agreement.NewService(campaignRepo, templateRepo)
+	agreementService := agreement.NewService(campaignRepo, templateRepo, auditService)
 	agreementHandler := handlers.NewAgreementHandler(agreementService, log)
 
 	settingsRepo := postgres.NewAppSettingRepository(db.DB())
-	settingsService := settings.NewService(settingsRepo)
+	settingsService := settings.NewService(settingsRepo, auditService)
 	settingsHandler := handlers.NewSettingsHandler(settingsService, log)
+
+	activityHandler := handlers.NewActivityHandler(auditService, log)
 
 	jwtVerifier, err := auth.NewJWTVerifier(cfg.AuthSecret, cfg.AuthIssuer, cfg.AuthAudience)
 	if err != nil {
@@ -139,7 +146,7 @@ func main() {
 	}
 	authMiddleware := middleware.AdminAuth(jwtVerifier, log)
 
-	router := api.NewRouter(healthHandler, templateHandler, campaignHandler, directHandler, userHandler, dashboardHandler, automationHandler, agreementHandler, settingsHandler, authMiddleware)
+	router := api.NewRouter(healthHandler, templateHandler, campaignHandler, directHandler, userHandler, dashboardHandler, automationHandler, agreementHandler, settingsHandler, activityHandler, authMiddleware)
 
 	handler := middleware.Chain(router,
 		middleware.RequestID(),
@@ -167,7 +174,7 @@ func main() {
 		if userHTTPClient != nil {
 			populator = campaign.NewAudiencePopulator(userHTTPClient, recipientRepo, campaignRepo, log)
 		}
-		scheduler := campaign.NewScheduler(campaignRepo, populator, cfg.SchedulerInterval, cfg.SchedulerBatchSize, log)
+		scheduler := campaign.NewScheduler(campaignRepo, populator, cfg.SchedulerInterval, cfg.SchedulerBatchSize, log, auditService)
 		workerWg.Add(1)
 		go func() {
 			defer workerWg.Done()
@@ -179,7 +186,7 @@ func main() {
 
 	// Campaign background delivery worker
 	if cfg.CampaignWorkerEnabled {
-		campaignDeliveryService := campaign.NewDeliveryServiceWithLogger(campaignRepo, recipientRepo, templateRepo, attemptRepo, smtpSender, userService, log)
+		campaignDeliveryService := campaign.NewDeliveryServiceWithLogger(campaignRepo, recipientRepo, templateRepo, attemptRepo, smtpSender, userService, log, auditService)
 		campaignWorker := campaign.NewWorker(recipientRepo, campaignRepo, campaignDeliveryService, cfg.CampaignWorkerInterval, cfg.CampaignWorkerStaleTimeout, cfg.CampaignWorkerBatchSize, log)
 		workerWg.Add(1)
 		go func() {

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gmhelper/notify-api/internal/api/handlers"
+	"github.com/gmhelper/notify-api/internal/app/audit"
 	"github.com/gmhelper/notify-api/internal/app/direct"
 	"github.com/gmhelper/notify-api/internal/app/health"
 	"github.com/gmhelper/notify-api/internal/app/template"
@@ -89,21 +90,23 @@ func setupIntegrationServer(
 	healthHandler := handlers.NewHealthHandler(readinessService, log)
 
 	templateRepo := postgres.NewEmailTemplateRepository(db)
-	templateService := template.NewService(templateRepo)
+	activityRepo := postgres.NewActivityLogRepository(db)
+	auditService := audit.NewService(activityRepo)
+	templateService := template.NewService(templateRepo, auditService)
 	templateHandler := handlers.NewTemplateHandler(templateService, log)
 
 	directRepo := postgres.NewDirectNotificationRepository(db)
 	attemptRepo := postgres.NewDeliveryAttemptRepository(db)
 	smtpClient := infrasmtp.NewClient(smtpServer.Host, smtpServer.Port, "", "", "no-reply@gmhelper.local")
 
-	directService := direct.NewService(templateRepo, directRepo, &testUserResolver{})
-	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, templateRepo, smtpClient)
+	directService := direct.NewService(templateRepo, directRepo, &testUserResolver{}, auditService)
+	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, templateRepo, smtpClient, auditService)
 	directHandler := handlers.NewDirectNotificationHandler(directService, deliveryService, log)
 
 	jwtVerifier := auth.MustNewJWTVerifier(intTestSecret, intTestIssuer, intTestAudience)
 	authMiddleware := middleware.AdminAuth(jwtVerifier, log)
 
-	router := NewRouter(healthHandler, templateHandler, nil, directHandler, nil, nil, nil, nil, nil, authMiddleware)
+	router := NewRouter(healthHandler, templateHandler, nil, directHandler, nil, nil, nil, nil, nil, nil, authMiddleware)
 
 	return router, templateRepo, directRepo, attemptRepo
 }
@@ -1011,7 +1014,7 @@ func TestIntegration_DirectNotification_BackgroundWorker_EndToEnd(t *testing.T) 
 	directRepo := postgres.NewDirectNotificationRepository(db)
 	attemptRepo := postgres.NewDeliveryAttemptRepository(db)
 	smtpClient := infrasmtp.NewClient(smtpServer.Host, smtpServer.Port, "", "", "no-reply@gmhelper.local")
-	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, templateRepo, smtpClient)
+	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, templateRepo, smtpClient, nil)
 
 	createdTplIDs := []string{}
 	createdNotifIDs := []string{}
@@ -1144,7 +1147,7 @@ func TestIntegration_DirectNotification_ConcurrentWorkers_AtomicClaiming(t *test
 	directRepo := postgres.NewDirectNotificationRepository(db)
 	attemptRepo := postgres.NewDeliveryAttemptRepository(db)
 	smtpClient := infrasmtp.NewClient(smtpServer.Host, smtpServer.Port, "", "", "no-reply@gmhelper.local")
-	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, templateRepo, smtpClient)
+	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, templateRepo, smtpClient, nil)
 
 	createdTplIDs := []string{}
 	createdNotifIDs := []string{}
@@ -1274,7 +1277,7 @@ func TestIntegration_DirectNotification_StaleRecovery_EndToEnd(t *testing.T) {
 	directRepo := postgres.NewDirectNotificationRepository(db)
 	attemptRepo := postgres.NewDeliveryAttemptRepository(db)
 	smtpClient := infrasmtp.NewClient(smtpServer.Host, smtpServer.Port, "", "", "no-reply@gmhelper.local")
-	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, templateRepo, smtpClient)
+	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, templateRepo, smtpClient, nil)
 
 	createdTplIDs := []string{}
 	createdNotifIDs := []string{}
@@ -1468,7 +1471,7 @@ func TestIntegration_DirectNotification_MaxAttempts_Exhaustion_EndToEnd(t *testi
 	smtpClient := infrasmtp.NewClient(smtpServer.Host, smtpServer.Port, "", "", "no-reply@gmhelper.local")
 
 	maxAttempts := 3
-	deliveryService := direct.NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, templateRepo, smtpClient, maxAttempts)
+	deliveryService := direct.NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, templateRepo, smtpClient, maxAttempts, nil)
 
 	createdTplIDs := []string{}
 	createdNotifIDs := []string{}

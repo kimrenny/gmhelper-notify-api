@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/gmhelper/notify-api/internal/app/audit"
 	"github.com/gmhelper/notify-api/internal/domain"
 )
 
@@ -58,14 +59,18 @@ type UpdateAppSettingsInput struct {
 	DefaultLocale   *string `json:"defaultLocale,omitempty"`
 }
 
-// Service manages retrieving and persisting application preferences.
+// Service manages retrieving and persisting application preferences with audit tracking.
 type Service struct {
-	repo domain.AppSettingRepository
+	repo  domain.AppSettingRepository
+	audit *audit.Service
 }
 
-// NewService constructs a new settings Service.
-func NewService(repo domain.AppSettingRepository) *Service {
-	return &Service{repo: repo}
+// NewService constructs a new settings Service with optional AuditService.
+func NewService(repo domain.AppSettingRepository, audit *audit.Service) *Service {
+	return &Service{
+		repo:  repo,
+		audit: audit,
+	}
 }
 
 // GetSettings retrieves the current safe application preferences with clean default fallbacks.
@@ -97,11 +102,17 @@ func (s *Service) GetSettings(ctx context.Context) (*AppSettingsDTO, error) {
 	return dto, nil
 }
 
-// UpdateSettings validates and updates the specified application preferences.
+// UpdateSettings validates and updates the specified application preferences, recording audit events on change.
 func (s *Service) UpdateSettings(ctx context.Context, input UpdateAppSettingsInput) (*AppSettingsDTO, error) {
-	current, err := s.GetSettings(ctx)
+	before, err := s.GetSettings(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	current := &AppSettingsDTO{
+		DefaultFromName: before.DefaultFromName,
+		ReplyToEmail:    before.ReplyToEmail,
+		DefaultLocale:   before.DefaultLocale,
 	}
 
 	if input.DefaultFromName != nil {
@@ -161,6 +172,44 @@ func (s *Service) UpdateSettings(ctx context.Context, input UpdateAppSettingsInp
 			Description: "Default fallback locale for notification templates and messaging",
 		}); err != nil {
 			return nil, fmt.Errorf("failed to save default locale setting: %w", err)
+		}
+	}
+
+	// Check if any setting actually changed (No-Op check)
+	isChanged := before.DefaultFromName != current.DefaultFromName ||
+		before.ReplyToEmail != current.ReplyToEmail ||
+		before.DefaultLocale != current.DefaultLocale
+
+	if isChanged && s.audit != nil {
+		actor, err := audit.ActorFromContext(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		targetName := "Notification Settings"
+		_, err = s.audit.Record(ctx, audit.RecordInput{
+			EventType:  domain.EventSettingsUpdated,
+			Actor:      actor,
+			TargetType: domain.TargetTypeSettings,
+			TargetID:   "notification",
+			TargetName: &targetName,
+			Status:     domain.ActivityStatusSuccess,
+			Summary:    "Updated notification settings",
+			Details: map[string]any{
+				"before": map[string]string{
+					"defaultFromName": before.DefaultFromName,
+					"replyToEmail":    before.ReplyToEmail,
+					"defaultLocale":   before.DefaultLocale,
+				},
+				"after": map[string]string{
+					"defaultFromName": current.DefaultFromName,
+					"replyToEmail":    current.ReplyToEmail,
+					"defaultLocale":   current.DefaultLocale,
+				},
+			},
+		})
+		if err != nil {
+			return nil, err
 		}
 	}
 

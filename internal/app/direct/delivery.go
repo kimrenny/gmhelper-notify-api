@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gmhelper/notify-api/internal/app/audit"
 	"github.com/gmhelper/notify-api/internal/app/email"
 	"github.com/gmhelper/notify-api/internal/domain"
 	"github.com/google/uuid"
@@ -21,11 +22,28 @@ var (
 
 const defaultMaxAttempts = 5
 
+type directDeliveredDetails struct {
+	NotificationID string    `json:"notificationId"`
+	RecipientEmail string    `json:"recipientEmail"`
+	Subject        string    `json:"subject"`
+	AttemptsCount  int       `json:"attemptsCount"`
+	SentAt         time.Time `json:"sentAt"`
+}
+
+type directFailedDetails struct {
+	NotificationID string `json:"notificationId"`
+	RecipientEmail string `json:"recipientEmail"`
+	AttemptsCount  int    `json:"attemptsCount"`
+	ErrorMessage   string `json:"errorMessage"`
+	DeliveryStatus string `json:"deliveryStatus"`
+}
+
 type DeliveryService struct {
 	directRepo   domain.DirectNotificationRepository
 	attemptRepo  domain.DeliveryAttemptRepository
 	templateRepo domain.EmailTemplateRepository
 	sender       email.Sender
+	audit        *audit.Service
 	maxAttempts  int
 }
 
@@ -34,8 +52,9 @@ func NewDeliveryService(
 	attemptRepo domain.DeliveryAttemptRepository,
 	templateRepo domain.EmailTemplateRepository,
 	sender email.Sender,
+	auditSvc *audit.Service,
 ) *DeliveryService {
-	return NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, templateRepo, sender, defaultMaxAttempts)
+	return NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, templateRepo, sender, defaultMaxAttempts, auditSvc)
 }
 
 func NewDeliveryServiceWithMaxAttempts(
@@ -44,6 +63,7 @@ func NewDeliveryServiceWithMaxAttempts(
 	templateRepo domain.EmailTemplateRepository,
 	sender email.Sender,
 	maxAttempts int,
+	auditSvc *audit.Service,
 ) *DeliveryService {
 	if maxAttempts <= 0 {
 		maxAttempts = defaultMaxAttempts
@@ -53,6 +73,7 @@ func NewDeliveryServiceWithMaxAttempts(
 		attemptRepo:  attemptRepo,
 		templateRepo: templateRepo,
 		sender:       sender,
+		audit:        auditSvc,
 		maxAttempts:  maxAttempts,
 	}
 }
@@ -175,6 +196,31 @@ func (s *DeliveryService) deliverClaimed(ctx context.Context, notification *doma
 		if err := s.attemptRepo.Update(ctx, targetAttempt); err != nil {
 			return fmt.Errorf("failed to update successful delivery attempt: %w", err)
 		}
+
+		if s.audit != nil {
+			actor := getDeliveryActor(ctx)
+			summary := fmt.Sprintf("Delivered direct message to %s", notification.RecipientEmail)
+			_, auditErr := s.audit.Record(ctx, audit.RecordInput{
+				EventType:  domain.EventDirectDelivered,
+				Actor:      actor,
+				TargetType: domain.TargetTypeDirectNotification,
+				TargetID:   notification.ID,
+				TargetName: &notification.RecipientEmail,
+				Status:     domain.ActivityStatusSuccess,
+				Summary:    summary,
+				Details: directDeliveredDetails{
+					NotificationID: notification.ID,
+					RecipientEmail: notification.RecipientEmail,
+					Subject:        rendered.Subject,
+					AttemptsCount:  attemptsCount,
+					SentAt:         sentAt,
+				},
+			})
+			if auditErr != nil {
+				return auditErr
+			}
+		}
+
 		return nil
 	}
 
@@ -199,7 +245,40 @@ func (s *DeliveryService) deliverClaimed(ctx context.Context, notification *doma
 		return fmt.Errorf("failed to update failed delivery attempt: %w (original error: %v)", err, sendErr)
 	}
 
+	if nextStatus == domain.DeliveryStatusFailed && s.audit != nil {
+		actor := getDeliveryActor(ctx)
+		summary := fmt.Sprintf("Failed to deliver direct message to %s", notification.RecipientEmail)
+		_, auditErr := s.audit.Record(ctx, audit.RecordInput{
+			EventType:    domain.EventDirectFailed,
+			Actor:        actor,
+			TargetType:   domain.TargetTypeDirectNotification,
+			TargetID:     notification.ID,
+			TargetName:   &notification.RecipientEmail,
+			Status:       domain.ActivityStatusFailure,
+			Summary:      summary,
+			ErrorMessage: &errMsg,
+			Details: directFailedDetails{
+				NotificationID: notification.ID,
+				RecipientEmail: notification.RecipientEmail,
+				AttemptsCount:  attemptsCount,
+				ErrorMessage:   errMsg,
+				DeliveryStatus: string(domain.DeliveryStatusFailed),
+			},
+		})
+		if auditErr != nil {
+			return fmt.Errorf("%w (audit error: %v)", sendErr, auditErr)
+		}
+	}
+
 	return sendErr
+}
+
+func getDeliveryActor(ctx context.Context) audit.Actor {
+	actor, err := audit.ActorFromContext(ctx, nil)
+	if err == nil && actor.Type != "" {
+		return actor
+	}
+	return audit.SystemActor()
 }
 
 func (s *DeliveryService) findOrInitAttempt(ctx context.Context, targetID string, attemptNumber int, now time.Time) (*domain.DeliveryAttempt, error) {
