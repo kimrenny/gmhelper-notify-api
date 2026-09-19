@@ -128,7 +128,18 @@ func main() {
 	}
 
 	automationRepo := postgres.NewAutomationRuleRepository(db.DB())
+	automationExecRepo := postgres.NewAutomationExecutionRepository(db.DB())
 	automationService := automation.NewService(automationRepo, templateRepo, auditService)
+	automationEngine := automation.NewEngine(
+		automationRepo,
+		templateRepo,
+		directRepo,
+		automationExecRepo,
+		userService,
+		auditService,
+		log,
+	)
+	_ = automationEngine
 	automationHandler := handlers.NewAutomationHandler(automationService, log)
 
 	agreementService := agreement.NewService(campaignRepo, templateRepo, auditService)

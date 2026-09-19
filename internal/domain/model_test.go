@@ -318,3 +318,30 @@ func TestDeliveryAttemptValidateInvalid(t *testing.T) {
 		t.Fatal("expected invalid delivery attempt error, got nil")
 	}
 }
+
+func TestNotificationTypeIsValid(t *testing.T) {
+	validTypes := []NotificationType{
+		NotificationTypeDirect,
+		NotificationTypeUserAgreement,
+		NotificationTypeAutomation,
+	}
+
+	for _, typ := range validTypes {
+		if !typ.IsValid() {
+			t.Errorf("expected notification type %q to be valid", typ)
+		}
+	}
+
+	invalidTypes := []NotificationType{
+		"",
+		"unknown",
+		"invalid",
+		"campaign",
+	}
+
+	for _, typ := range invalidTypes {
+		if typ.IsValid() {
+			t.Errorf("expected notification type %q to be invalid", typ)
+		}
+	}
+}

@@ -60,6 +60,8 @@ const (
 	EventAutomationEnabled  = "automation.enabled"
 	EventAutomationDisabled = "automation.disabled"
 	EventAutomationDeleted  = "automation.deleted"
+	EventAutomationExecuted = "automation.executed"
+	EventAutomationFailed   = "automation.failed"
 
 	// Settings Events
 	EventSettingsUpdated = "settings.updated"

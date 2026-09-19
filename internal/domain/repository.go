@@ -82,6 +82,21 @@ type AutomationRuleRepository interface {
 	ListEnabled(ctx context.Context) ([]*AutomationRule, error)
 }
 
+type AutomationExecutionRepository interface {
+	RecordExecution(ctx context.Context, exec *AutomationExecution) error
+	HasExecution(ctx context.Context, ruleID, eventID string) (bool, error)
+	GetLastSuccessfulExecution(ctx context.Context, ruleID, recipientEmail string, externalUserID *string) (*AutomationExecution, error)
+	ExecuteRuleAtomic(
+		ctx context.Context,
+		ruleID, eventID, recipientEmail string,
+		externalUserID *string,
+		cooldownDays *int,
+		eventTime time.Time,
+		notif *DirectNotification,
+		exec *AutomationExecution,
+	) (status string, err error)
+}
+
 type AppSettingRepository interface {
 	GetByKey(ctx context.Context, key string) (*AppSetting, error)
 	Save(ctx context.Context, setting *AppSetting) error
