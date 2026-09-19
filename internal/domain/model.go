@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+type TemplateType string
+
 type TemplateStatus string
 
 type CampaignStatus string
@@ -16,6 +18,13 @@ type DeliveryStatus string
 type NotificationType string
 
 type DeliveryTargetType string
+
+const (
+	TemplateTypeDirect        TemplateType = "direct"
+	TemplateTypeCampaign      TemplateType = "campaign"
+	TemplateTypeUserAgreement TemplateType = "user_agreement"
+	TemplateTypeAutomation    TemplateType = "automation"
+)
 
 const (
 	TemplateStatusDraft    TemplateStatus = "draft"
@@ -55,6 +64,15 @@ const (
 var (
 	ErrInvalidEntity = errors.New("invalid entity")
 )
+
+func (t TemplateType) IsValid() bool {
+	switch t {
+	case TemplateTypeDirect, TemplateTypeCampaign, TemplateTypeUserAgreement, TemplateTypeAutomation:
+		return true
+	default:
+		return false
+	}
+}
 
 func (s TemplateStatus) IsValid() bool {
 	switch s {
@@ -103,6 +121,9 @@ func (t DeliveryTargetType) IsValid() bool {
 
 func (t *EmailTemplate) Validate(ctx context.Context) error {
 	if t.ID == "" || t.TemplateKey == "" || t.Name == "" || t.Subject == "" || t.HTMLBody == "" || t.Locale == "" || t.Version <= 0 {
+		return ErrInvalidEntity
+	}
+	if !t.TemplateType.IsValid() {
 		return ErrInvalidEntity
 	}
 	if !t.Status.IsValid() {
@@ -165,6 +186,7 @@ type EmailTemplate struct {
 	ID            string         `json:"id" db:"id"`
 	TemplateKey   string         `json:"templateKey" db:"template_key"`
 	Name          string         `json:"name" db:"name"`
+	TemplateType  TemplateType   `json:"templateType" db:"template_type"`
 	Subject       string         `json:"subject" db:"subject"`
 	HTMLBody      string         `json:"htmlBody" db:"html_body"`
 	PlainTextBody string         `json:"plainTextBody,omitempty" db:"plain_text_body"`

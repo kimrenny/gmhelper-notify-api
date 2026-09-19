@@ -85,8 +85,28 @@ type AutomationRuleRepository interface {
 type AppSettingRepository interface {
 	GetByKey(ctx context.Context, key string) (*AppSetting, error)
 	Save(ctx context.Context, setting *AppSetting) error
+	ListByCategory(ctx context.Context, category string) ([]*AppSetting, error)
+	ListAll(ctx context.Context) ([]*AppSetting, error)
 }
 
 type DashboardRepository interface {
 	GetDashboardStats(ctx context.Context, recentLimit int) (*DashboardStats, error)
+}
+
+type ActivityLogFilter struct {
+	EventType   *string
+	ActorUserID *string
+	TargetType  *ActivityTargetType
+	TargetID    *string
+	Status      *ActivityStatus
+	FromDate    *time.Time
+	ToDate      *time.Time
+	Limit       int
+	Offset      int
+}
+
+type ActivityLogRepository interface {
+	Create(ctx context.Context, log *ActivityLog) error
+	GetByID(ctx context.Context, id string) (*ActivityLog, error)
+	List(ctx context.Context, filter ActivityLogFilter) ([]*ActivityLog, int, error)
 }

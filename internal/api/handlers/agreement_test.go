@@ -109,10 +109,11 @@ func TestAgreementHandler_CreateBroadcast_Success(t *testing.T) {
 	tplRepo := &agreementHandlerMockTemplateRepo{
 		templates: map[string]*domain.EmailTemplate{
 			"tpl-active-1": {
-				ID:          "tpl-active-1",
-				TemplateKey: "terms_update",
-				Name:        "Terms of Service Update",
-				Status:      domain.TemplateStatusActive,
+				ID:           "tpl-active-1",
+				TemplateKey:  "terms_update",
+				Name:         "Terms of Service Update",
+				TemplateType: domain.TemplateTypeUserAgreement,
+				Status:       domain.TemplateStatusActive,
 			},
 		},
 	}
@@ -120,7 +121,7 @@ func TestAgreementHandler_CreateBroadcast_Success(t *testing.T) {
 		campaigns: make(map[string]*domain.NotificationCampaign),
 	}
 
-	service := agreement.NewService(campRepo, tplRepo)
+	service := agreement.NewService(campRepo, tplRepo, nil)
 	handler := NewAgreementHandler(service, log)
 
 	reqBody := `{"templateId":"tpl-active-1","name":"User Agreement Broadcast Q3"}`
@@ -130,22 +131,19 @@ func TestAgreementHandler_CreateBroadcast_Success(t *testing.T) {
 	handler.CreateBroadcast(rec, req)
 
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("expected status 201 Created, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected status 201, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	var res AgreementBroadcastResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
+		t.Fatalf("failed to unmarshal response: %v", err)
 	}
 
-	if res.ID == "" {
-		t.Errorf("expected non-empty ID")
+	if res.TemplateID != "tpl-active-1" {
+		t.Errorf("expected templateId 'tpl-active-1', got '%s'", res.TemplateID)
 	}
 	if res.Name != "User Agreement Broadcast Q3" {
 		t.Errorf("expected name 'User Agreement Broadcast Q3', got '%s'", res.Name)
-	}
-	if res.TemplateID != "tpl-active-1" {
-		t.Errorf("expected templateId 'tpl-active-1', got '%s'", res.TemplateID)
 	}
 	if res.CampaignType != "user_agreement" {
 		t.Errorf("expected campaignType 'user_agreement', got '%s'", res.CampaignType)
@@ -160,10 +158,11 @@ func TestAgreementHandler_CreateBroadcast_ValidationErrors(t *testing.T) {
 	tplRepo := &agreementHandlerMockTemplateRepo{
 		templates: map[string]*domain.EmailTemplate{
 			"tpl-draft-1": {
-				ID:          "tpl-draft-1",
-				TemplateKey: "draft_terms",
-				Name:        "Draft Terms",
-				Status:      domain.TemplateStatusDraft,
+				ID:           "tpl-draft-1",
+				TemplateKey:  "draft_terms",
+				Name:         "Draft Terms",
+				TemplateType: domain.TemplateTypeUserAgreement,
+				Status:       domain.TemplateStatusDraft,
 			},
 		},
 	}
@@ -171,7 +170,7 @@ func TestAgreementHandler_CreateBroadcast_ValidationErrors(t *testing.T) {
 		campaigns: make(map[string]*domain.NotificationCampaign),
 	}
 
-	service := agreement.NewService(campRepo, tplRepo)
+	service := agreement.NewService(campRepo, tplRepo, nil)
 	handler := NewAgreementHandler(service, log)
 
 	tests := []struct {
@@ -225,10 +224,11 @@ func TestAgreementHandler_CreateBroadcast_Conflict_Duplicate(t *testing.T) {
 	tplRepo := &agreementHandlerMockTemplateRepo{
 		templates: map[string]*domain.EmailTemplate{
 			"tpl-active-1": {
-				ID:          "tpl-active-1",
-				TemplateKey: "terms_update",
-				Name:        "Terms of Service",
-				Status:      domain.TemplateStatusActive,
+				ID:           "tpl-active-1",
+				TemplateKey:  "terms_update",
+				Name:         "Terms of Service",
+				TemplateType: domain.TemplateTypeUserAgreement,
+				Status:       domain.TemplateStatusActive,
 			},
 		},
 	}
@@ -243,7 +243,7 @@ func TestAgreementHandler_CreateBroadcast_Conflict_Duplicate(t *testing.T) {
 		},
 	}
 
-	service := agreement.NewService(campRepo, tplRepo)
+	service := agreement.NewService(campRepo, tplRepo, nil)
 	handler := NewAgreementHandler(service, log)
 
 	reqBody := `{"templateId":"tpl-active-1"}`

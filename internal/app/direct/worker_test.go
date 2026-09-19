@@ -138,7 +138,7 @@ func setupWorkerTest() (*Worker, *workerMockRepo, *workerMockAttemptRepo, *worke
 	tplRepo := &workerMockTplRepo{templates: make(map[string]*domain.EmailTemplate)}
 	sender := &workerMockSender{failIDs: make(map[string]bool)}
 
-	deliveryService := NewDeliveryService(directRepo, attemptRepo, tplRepo, sender)
+	deliveryService := NewDeliveryService(directRepo, attemptRepo, tplRepo, sender, nil)
 	worker := NewWorker(directRepo, deliveryService, 50*time.Millisecond, 5*time.Minute, 5, log)
 
 	return worker, directRepo, attemptRepo, tplRepo, sender
@@ -361,7 +361,7 @@ func TestWorker_ConcurrentInstances_NoDuplicateDelivery(t *testing.T) {
 	tplRepo := &workerMockTplRepo{templates: make(map[string]*domain.EmailTemplate)}
 	sender := &workerMockSender{failIDs: make(map[string]bool)}
 
-	deliveryService := NewDeliveryService(directRepo, attemptRepo, tplRepo, sender)
+	deliveryService := NewDeliveryService(directRepo, attemptRepo, tplRepo, sender, nil)
 
 	worker1 := NewWorker(directRepo, deliveryService, 20*time.Millisecond, 5*time.Minute, 5, log)
 	worker2 := NewWorker(directRepo, deliveryService, 20*time.Millisecond, 5*time.Minute, 5, log)
@@ -532,7 +532,7 @@ func TestWorker_RepeatedFailures_EventuallyStopAtMaxAttempts(t *testing.T) {
 	sender := &workerMockSender{failIDs: map[string]bool{"failing@example.com": true}}
 
 	maxAttempts := 3
-	deliveryService := NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, tplRepo, sender, maxAttempts)
+	deliveryService := NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, tplRepo, sender, maxAttempts, nil)
 	worker := NewWorker(directRepo, deliveryService, 10*time.Millisecond, 5*time.Minute, maxAttempts, log)
 
 	tpl := &domain.EmailTemplate{
@@ -599,7 +599,7 @@ func TestWorker_StaleRecovery_AtLimit_MarksNotificationFailed(t *testing.T) {
 	sender := &workerMockSender{failIDs: make(map[string]bool)}
 
 	maxAttempts := 3
-	deliveryService := NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, tplRepo, sender, maxAttempts)
+	deliveryService := NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, tplRepo, sender, maxAttempts, nil)
 	worker := NewWorker(directRepo, deliveryService, 10*time.Millisecond, 5*time.Minute, maxAttempts, log)
 
 	tpl := &domain.EmailTemplate{

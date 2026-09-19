@@ -19,10 +19,10 @@ func NewEmailTemplateRepository(db *sql.DB) *EmailTemplateRepository {
 func (r *EmailTemplateRepository) GetByID(ctx context.Context, id string) (*domain.EmailTemplate, error) {
 	template := &domain.EmailTemplate{}
 	row := r.db.QueryRowContext(ctx, `
-SELECT id, template_key, name, subject, html_body, plain_text_body, locale, status, version, created_at, updated_at
+SELECT id, template_key, name, template_type, subject, html_body, plain_text_body, locale, status, version, created_at, updated_at
 FROM email_templates
 WHERE id = $1`, id)
-	if err := row.Scan(&template.ID, &template.TemplateKey, &template.Name, &template.Subject, &template.HTMLBody, &template.PlainTextBody, &template.Locale, &template.Status, &template.Version, &template.CreatedAt, &template.UpdatedAt); err != nil {
+	if err := row.Scan(&template.ID, &template.TemplateKey, &template.Name, &template.TemplateType, &template.Subject, &template.HTMLBody, &template.PlainTextBody, &template.Locale, &template.Status, &template.Version, &template.CreatedAt, &template.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, domain.ErrNotFound
 		}
@@ -34,12 +34,12 @@ WHERE id = $1`, id)
 func (r *EmailTemplateRepository) GetByKey(ctx context.Context, templateKey string) (*domain.EmailTemplate, error) {
 	template := &domain.EmailTemplate{}
 	row := r.db.QueryRowContext(ctx, `
-SELECT id, template_key, name, subject, html_body, plain_text_body, locale, status, version, created_at, updated_at
+SELECT id, template_key, name, template_type, subject, html_body, plain_text_body, locale, status, version, created_at, updated_at
 FROM email_templates
 WHERE template_key = $1
 ORDER BY locale, version DESC
 LIMIT 1`, templateKey)
-	if err := row.Scan(&template.ID, &template.TemplateKey, &template.Name, &template.Subject, &template.HTMLBody, &template.PlainTextBody, &template.Locale, &template.Status, &template.Version, &template.CreatedAt, &template.UpdatedAt); err != nil {
+	if err := row.Scan(&template.ID, &template.TemplateKey, &template.Name, &template.TemplateType, &template.Subject, &template.HTMLBody, &template.PlainTextBody, &template.Locale, &template.Status, &template.Version, &template.CreatedAt, &template.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, domain.ErrNotFound
 		}
@@ -53,8 +53,8 @@ func (r *EmailTemplateRepository) Create(ctx context.Context, template *domain.E
 		return err
 	}
 	_, err := r.db.ExecContext(ctx, `
-INSERT INTO email_templates (id, template_key, name, subject, html_body, plain_text_body, locale, status, version, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`, template.ID, template.TemplateKey, template.Name, template.Subject, template.HTMLBody, template.PlainTextBody, template.Locale, template.Status, template.Version, template.CreatedAt, template.UpdatedAt)
+INSERT INTO email_templates (id, template_key, name, template_type, subject, html_body, plain_text_body, locale, status, version, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`, template.ID, template.TemplateKey, template.Name, template.TemplateType, template.Subject, template.HTMLBody, template.PlainTextBody, template.Locale, template.Status, template.Version, template.CreatedAt, template.UpdatedAt)
 	if err != nil {
 		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
 			return domain.ErrConflict
@@ -70,8 +70,8 @@ func (r *EmailTemplateRepository) Update(ctx context.Context, template *domain.E
 	}
 	res, err := r.db.ExecContext(ctx, `
 UPDATE email_templates
-SET template_key = $1, name = $2, subject = $3, html_body = $4, plain_text_body = $5, locale = $6, status = $7, version = $8, updated_at = $9
-WHERE id = $10`, template.TemplateKey, template.Name, template.Subject, template.HTMLBody, template.PlainTextBody, template.Locale, template.Status, template.Version, template.UpdatedAt, template.ID)
+SET template_key = $1, name = $2, template_type = $3, subject = $4, html_body = $5, plain_text_body = $6, locale = $7, status = $8, version = $9, updated_at = $10
+WHERE id = $11`, template.TemplateKey, template.Name, template.TemplateType, template.Subject, template.HTMLBody, template.PlainTextBody, template.Locale, template.Status, template.Version, template.UpdatedAt, template.ID)
 	if err != nil {
 		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
 			return domain.ErrConflict
@@ -105,7 +105,7 @@ func (r *EmailTemplateRepository) Delete(ctx context.Context, id string) error {
 
 func (r *EmailTemplateRepository) List(ctx context.Context) ([]*domain.EmailTemplate, error) {
 	rows, err := r.db.QueryContext(ctx, `
-SELECT id, template_key, name, subject, html_body, plain_text_body, locale, status, version, created_at, updated_at
+SELECT id, template_key, name, template_type, subject, html_body, plain_text_body, locale, status, version, created_at, updated_at
 FROM email_templates
 ORDER BY template_key, locale, version`)
 	if err != nil {
@@ -116,7 +116,7 @@ ORDER BY template_key, locale, version`)
 	templates := []*domain.EmailTemplate{}
 	for rows.Next() {
 		template := &domain.EmailTemplate{}
-		if err := rows.Scan(&template.ID, &template.TemplateKey, &template.Name, &template.Subject, &template.HTMLBody, &template.PlainTextBody, &template.Locale, &template.Status, &template.Version, &template.CreatedAt, &template.UpdatedAt); err != nil {
+		if err := rows.Scan(&template.ID, &template.TemplateKey, &template.Name, &template.TemplateType, &template.Subject, &template.HTMLBody, &template.PlainTextBody, &template.Locale, &template.Status, &template.Version, &template.CreatedAt, &template.UpdatedAt); err != nil {
 			return nil, err
 		}
 		templates = append(templates, template)

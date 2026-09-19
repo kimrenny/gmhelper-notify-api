@@ -3,9 +3,11 @@ package campaign
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
+	"github.com/gmhelper/notify-api/internal/app/audit"
 	"github.com/gmhelper/notify-api/internal/domain"
 	"github.com/gmhelper/notify-api/internal/infra/logger"
 )
@@ -15,6 +17,15 @@ const (
 	defaultSchedulerBatchSize = 10
 )
 
+type campaignStartedDetails struct {
+	CampaignID      string                `json:"campaignId"`
+	CampaignName    string                `json:"campaignName"`
+	PreviousStatus  domain.CampaignStatus `json:"previousStatus"`
+	ResultingStatus domain.CampaignStatus `json:"resultingStatus"`
+	Status          domain.CampaignStatus `json:"status"`
+	StartedAt       time.Time             `json:"startedAt"`
+}
+
 // Scheduler periodically discovers due scheduled campaigns and atomically claims them into running state.
 type Scheduler struct {
 	repo      domain.NotificationCampaignRepository
@@ -22,6 +33,7 @@ type Scheduler struct {
 	interval  time.Duration
 	batchSize int
 	logger    logger.Logger
+	audit     *audit.Service
 	nowFn     func() time.Time
 	mu        sync.Mutex
 	running   bool
@@ -34,6 +46,7 @@ func NewScheduler(
 	interval time.Duration,
 	batchSize int,
 	logger logger.Logger,
+	auditSvc *audit.Service,
 ) *Scheduler {
 	if interval <= 0 {
 		interval = defaultSchedulerInterval
@@ -47,6 +60,7 @@ func NewScheduler(
 		interval:  interval,
 		batchSize: batchSize,
 		logger:    logger,
+		audit:     auditSvc,
 		nowFn:     func() time.Time { return time.Now().UTC() },
 	}
 }
@@ -149,6 +163,34 @@ func (s *Scheduler) ProcessDue(ctx context.Context) (int, error) {
 				logger.String("name", claimed.Name),
 				logger.String("status", string(claimed.Status)),
 			)
+		}
+
+		if s.audit != nil {
+			summary := fmt.Sprintf("Campaign %q started execution", claimed.Name)
+			if _, auditErr := s.audit.Record(ctx, audit.RecordInput{
+				EventType:  domain.EventCampaignStarted,
+				Actor:      audit.SystemActor(),
+				TargetType: domain.TargetTypeCampaign,
+				TargetID:   claimed.ID,
+				TargetName: &claimed.Name,
+				Status:     domain.ActivityStatusSuccess,
+				Summary:    summary,
+				Details: campaignStartedDetails{
+					CampaignID:      claimed.ID,
+					CampaignName:    claimed.Name,
+					PreviousStatus:  domain.CampaignStatusScheduled,
+					ResultingStatus: claimed.Status,
+					Status:          claimed.Status,
+					StartedAt:       now,
+				},
+			}); auditErr != nil {
+				if s.logger != nil {
+					s.logger.Error("failed to record campaign started audit log",
+						logger.String("campaignId", claimed.ID),
+						logger.Error(auditErr),
+					)
+				}
+			}
 		}
 
 		if s.populator != nil {

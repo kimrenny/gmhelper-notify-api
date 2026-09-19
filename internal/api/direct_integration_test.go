@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gmhelper/notify-api/internal/api/handlers"
+	"github.com/gmhelper/notify-api/internal/app/audit"
 	"github.com/gmhelper/notify-api/internal/app/direct"
 	"github.com/gmhelper/notify-api/internal/app/health"
 	"github.com/gmhelper/notify-api/internal/app/template"
@@ -89,21 +90,23 @@ func setupIntegrationServer(
 	healthHandler := handlers.NewHealthHandler(readinessService, log)
 
 	templateRepo := postgres.NewEmailTemplateRepository(db)
-	templateService := template.NewService(templateRepo)
+	activityRepo := postgres.NewActivityLogRepository(db)
+	auditService := audit.NewService(activityRepo)
+	templateService := template.NewService(templateRepo, auditService)
 	templateHandler := handlers.NewTemplateHandler(templateService, log)
 
 	directRepo := postgres.NewDirectNotificationRepository(db)
 	attemptRepo := postgres.NewDeliveryAttemptRepository(db)
 	smtpClient := infrasmtp.NewClient(smtpServer.Host, smtpServer.Port, "", "", "no-reply@gmhelper.local")
 
-	directService := direct.NewService(templateRepo, directRepo, &testUserResolver{})
-	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, templateRepo, smtpClient)
+	directService := direct.NewService(templateRepo, directRepo, &testUserResolver{}, auditService)
+	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, templateRepo, smtpClient, auditService)
 	directHandler := handlers.NewDirectNotificationHandler(directService, deliveryService, log)
 
 	jwtVerifier := auth.MustNewJWTVerifier(intTestSecret, intTestIssuer, intTestAudience)
 	authMiddleware := middleware.AdminAuth(jwtVerifier, log)
 
-	router := NewRouter(healthHandler, templateHandler, nil, directHandler, nil, nil, nil, nil, authMiddleware)
+	router := NewRouter(healthHandler, templateHandler, nil, directHandler, nil, nil, nil, nil, nil, nil, authMiddleware)
 
 	return router, templateRepo, directRepo, attemptRepo
 }
@@ -168,6 +171,7 @@ func TestIntegration_DirectNotification_FullLifecycle_Success(t *testing.T) {
 		ID:            uuid.NewString(),
 		TemplateKey:   "welcome_e2e_" + uuid.NewString()[:8],
 		Name:          "Welcome E2E",
+		TemplateType:  domain.TemplateTypeDirect,
 		Subject:       "Welcome to GMHelper, {{name}}!",
 		HTMLBody:      "<h1>Hello {{name}}</h1><p>Your activation code is {{code}}.</p>",
 		PlainTextBody: "Hello {{name}}, your activation code is {{code}}.",
@@ -370,16 +374,17 @@ func TestIntegration_DirectNotification_Authentication_Security(t *testing.T) {
 	}()
 
 	activeTpl := &domain.EmailTemplate{
-		ID:          uuid.NewString(),
-		TemplateKey: "auth_sec_" + uuid.NewString()[:8],
-		Name:        "Auth Security Tpl",
-		Subject:     "Hello",
-		HTMLBody:    "<p>Hello</p>",
-		Locale:      "en",
-		Status:      domain.TemplateStatusActive,
-		Version:     1,
-		CreatedAt:   time.Now().UTC(),
-		UpdatedAt:   time.Now().UTC(),
+		ID:           uuid.NewString(),
+		TemplateKey:  "auth_sec_" + uuid.NewString()[:8],
+		Name:         "Auth Security Tpl",
+		TemplateType: domain.TemplateTypeDirect,
+		Subject:      "Hello",
+		HTMLBody:     "<p>Hello</p>",
+		Locale:       "en",
+		Status:       domain.TemplateStatusActive,
+		Version:      1,
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
 	}
 	_ = templateRepo.Create(ctx, activeTpl)
 	createdTplIDs = append(createdTplIDs, activeTpl.ID)
@@ -564,6 +569,7 @@ func TestIntegration_DirectNotification_Create_InvalidScenarios(t *testing.T) {
 		ID:            uuid.NewString(),
 		TemplateKey:   "active_key_" + uuid.NewString()[:8],
 		Name:          "Active Tpl",
+		TemplateType:  domain.TemplateTypeDirect,
 		Subject:       "Hello {{userName}}",
 		HTMLBody:      "<p>Code: {{code}}</p>",
 		PlainTextBody: "Code: {{code}}",
@@ -579,16 +585,17 @@ func TestIntegration_DirectNotification_Create_InvalidScenarios(t *testing.T) {
 	createdTplIDs = append(createdTplIDs, activeTpl.ID)
 
 	draftTpl := &domain.EmailTemplate{
-		ID:          uuid.NewString(),
-		TemplateKey: "draft_key_" + uuid.NewString()[:8],
-		Name:        "Draft Tpl",
-		Subject:     "Draft",
-		HTMLBody:    "<p>Draft</p>",
-		Locale:      "en",
-		Status:      domain.TemplateStatusDraft,
-		Version:     1,
-		CreatedAt:   time.Now().UTC(),
-		UpdatedAt:   time.Now().UTC(),
+		ID:           uuid.NewString(),
+		TemplateKey:  "draft_key_" + uuid.NewString()[:8],
+		Name:         "Draft Tpl",
+		TemplateType: domain.TemplateTypeDirect,
+		Subject:      "Draft",
+		HTMLBody:     "<p>Draft</p>",
+		Locale:       "en",
+		Status:       domain.TemplateStatusDraft,
+		Version:      1,
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
 	}
 	if err := templateRepo.Create(ctx, draftTpl); err != nil {
 		t.Fatalf("failed to seed draft template: %v", err)
@@ -710,16 +717,17 @@ func TestIntegration_DirectNotification_ListPending(t *testing.T) {
 	}()
 
 	tpl := &domain.EmailTemplate{
-		ID:          uuid.NewString(),
-		TemplateKey: "tpl_pending_" + uuid.NewString()[:8],
-		Name:        "Tpl Pending",
-		Subject:     "Pending {{x}}",
-		HTMLBody:    "<p>{{x}}</p>",
-		Locale:      "en",
-		Status:      domain.TemplateStatusActive,
-		Version:     1,
-		CreatedAt:   time.Now().UTC(),
-		UpdatedAt:   time.Now().UTC(),
+		ID:           uuid.NewString(),
+		TemplateKey:  "tpl_pending_" + uuid.NewString()[:8],
+		Name:         "Tpl Pending",
+		TemplateType: domain.TemplateTypeDirect,
+		Subject:      "Pending {{x}}",
+		HTMLBody:     "<p>{{x}}</p>",
+		Locale:       "en",
+		Status:       domain.TemplateStatusActive,
+		Version:      1,
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
 	}
 	if err := templateRepo.Create(ctx, tpl); err != nil {
 		t.Fatalf("failed to seed template: %v", err)
@@ -810,6 +818,7 @@ func TestIntegration_DirectNotification_Delivery_SMTPFailure(t *testing.T) {
 		ID:            uuid.NewString(),
 		TemplateKey:   "tpl_fail_" + uuid.NewString()[:8],
 		Name:          "Tpl Fail",
+		TemplateType:  domain.TemplateTypeDirect,
 		Subject:       "Fail {{user}}",
 		HTMLBody:      "<p>Fail</p>",
 		PlainTextBody: "Fail",
@@ -922,16 +931,17 @@ func TestIntegration_DirectNotification_Delivery_InvalidStates(t *testing.T) {
 	}()
 
 	tpl := &domain.EmailTemplate{
-		ID:          uuid.NewString(),
-		TemplateKey: "tpl_states_" + uuid.NewString()[:8],
-		Name:        "Tpl States",
-		Subject:     "States",
-		HTMLBody:    "<p>States</p>",
-		Locale:      "en",
-		Status:      domain.TemplateStatusActive,
-		Version:     1,
-		CreatedAt:   time.Now().UTC(),
-		UpdatedAt:   time.Now().UTC(),
+		ID:           uuid.NewString(),
+		TemplateKey:  "tpl_states_" + uuid.NewString()[:8],
+		Name:         "Tpl States",
+		TemplateType: domain.TemplateTypeDirect,
+		Subject:      "States",
+		HTMLBody:     "<p>States</p>",
+		Locale:       "en",
+		Status:       domain.TemplateStatusActive,
+		Version:      1,
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
 	}
 	if err := templateRepo.Create(ctx, tpl); err != nil {
 		t.Fatalf("failed to seed template: %v", err)
@@ -1004,7 +1014,7 @@ func TestIntegration_DirectNotification_BackgroundWorker_EndToEnd(t *testing.T) 
 	directRepo := postgres.NewDirectNotificationRepository(db)
 	attemptRepo := postgres.NewDeliveryAttemptRepository(db)
 	smtpClient := infrasmtp.NewClient(smtpServer.Host, smtpServer.Port, "", "", "no-reply@gmhelper.local")
-	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, templateRepo, smtpClient)
+	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, templateRepo, smtpClient, nil)
 
 	createdTplIDs := []string{}
 	createdNotifIDs := []string{}
@@ -1017,6 +1027,7 @@ func TestIntegration_DirectNotification_BackgroundWorker_EndToEnd(t *testing.T) 
 		ID:            uuid.NewString(),
 		TemplateKey:   "worker_e2e_" + uuid.NewString()[:8],
 		Name:          "Worker E2E",
+		TemplateType:  domain.TemplateTypeDirect,
 		Subject:       "Worker Alert: {{subject}}",
 		HTMLBody:      "<p>Worker body: {{body}}</p>",
 		PlainTextBody: "Worker body: {{body}}",
@@ -1136,7 +1147,7 @@ func TestIntegration_DirectNotification_ConcurrentWorkers_AtomicClaiming(t *test
 	directRepo := postgres.NewDirectNotificationRepository(db)
 	attemptRepo := postgres.NewDeliveryAttemptRepository(db)
 	smtpClient := infrasmtp.NewClient(smtpServer.Host, smtpServer.Port, "", "", "no-reply@gmhelper.local")
-	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, templateRepo, smtpClient)
+	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, templateRepo, smtpClient, nil)
 
 	createdTplIDs := []string{}
 	createdNotifIDs := []string{}
@@ -1149,6 +1160,7 @@ func TestIntegration_DirectNotification_ConcurrentWorkers_AtomicClaiming(t *test
 		ID:            uuid.NewString(),
 		TemplateKey:   "atomic_claim_" + uuid.NewString()[:8],
 		Name:          "Atomic Claim Tpl",
+		TemplateType:  domain.TemplateTypeDirect,
 		Subject:       "Hello {{idx}}",
 		HTMLBody:      "<p>Index: {{idx}}</p>",
 		PlainTextBody: "Index: {{idx}}",
@@ -1265,7 +1277,7 @@ func TestIntegration_DirectNotification_StaleRecovery_EndToEnd(t *testing.T) {
 	directRepo := postgres.NewDirectNotificationRepository(db)
 	attemptRepo := postgres.NewDeliveryAttemptRepository(db)
 	smtpClient := infrasmtp.NewClient(smtpServer.Host, smtpServer.Port, "", "", "no-reply@gmhelper.local")
-	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, templateRepo, smtpClient)
+	deliveryService := direct.NewDeliveryService(directRepo, attemptRepo, templateRepo, smtpClient, nil)
 
 	createdTplIDs := []string{}
 	createdNotifIDs := []string{}
@@ -1278,6 +1290,7 @@ func TestIntegration_DirectNotification_StaleRecovery_EndToEnd(t *testing.T) {
 		ID:            uuid.NewString(),
 		TemplateKey:   "stale_rec_" + uuid.NewString()[:8],
 		Name:          "Stale Recovery Tpl",
+		TemplateType:  domain.TemplateTypeDirect,
 		Subject:       "Stale Notice: {{status}}",
 		HTMLBody:      "<p>Status: {{status}}</p>",
 		PlainTextBody: "Status: {{status}}",
@@ -1458,7 +1471,7 @@ func TestIntegration_DirectNotification_MaxAttempts_Exhaustion_EndToEnd(t *testi
 	smtpClient := infrasmtp.NewClient(smtpServer.Host, smtpServer.Port, "", "", "no-reply@gmhelper.local")
 
 	maxAttempts := 3
-	deliveryService := direct.NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, templateRepo, smtpClient, maxAttempts)
+	deliveryService := direct.NewDeliveryServiceWithMaxAttempts(directRepo, attemptRepo, templateRepo, smtpClient, maxAttempts, nil)
 
 	createdTplIDs := []string{}
 	createdNotifIDs := []string{}
@@ -1471,6 +1484,7 @@ func TestIntegration_DirectNotification_MaxAttempts_Exhaustion_EndToEnd(t *testi
 		ID:            uuid.NewString(),
 		TemplateKey:   "max_att_" + uuid.NewString()[:8],
 		Name:          "Max Attempts Template",
+		TemplateType:  domain.TemplateTypeDirect,
 		Subject:       "Max Attempts Subject",
 		HTMLBody:      "<p>Body</p>",
 		PlainTextBody: "Body",

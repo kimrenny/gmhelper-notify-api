@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gmhelper/notify-api/internal/app/audit"
 	"github.com/gmhelper/notify-api/internal/domain"
 	"github.com/gmhelper/notify-api/internal/infra/userclient"
 	"github.com/google/uuid"
@@ -42,17 +43,33 @@ type CreateResult struct {
 	ResolvedUser *userclient.User
 }
 
+type directMessageDetails struct {
+	ID               string                  `json:"id"`
+	TemplateID       string                  `json:"templateId"`
+	TemplateKey      string                  `json:"templateKey,omitempty"`
+	TemplateName     string                  `json:"templateName,omitempty"`
+	ExternalUserID   string                  `json:"externalUserId,omitempty"`
+	RecipientEmail   string                  `json:"recipientEmail"`
+	RecipientName    string                  `json:"recipientName,omitempty"`
+	NotificationType domain.NotificationType `json:"notificationType"`
+	Subject          string                  `json:"subject"`
+	BodyHTML         string                  `json:"bodyHtml"`
+	BodyPlain        string                  `json:"bodyPlain"`
+}
+
 type Service struct {
 	templateRepo domain.EmailTemplateRepository
 	directRepo   domain.DirectNotificationRepository
 	userResolver UserResolver
+	audit        *audit.Service
 }
 
-func NewService(templateRepo domain.EmailTemplateRepository, directRepo domain.DirectNotificationRepository, userResolver UserResolver) *Service {
+func NewService(templateRepo domain.EmailTemplateRepository, directRepo domain.DirectNotificationRepository, userResolver UserResolver, auditSvc *audit.Service) *Service {
 	return &Service{
 		templateRepo: templateRepo,
 		directRepo:   directRepo,
 		userResolver: userResolver,
+		audit:        auditSvc,
 	}
 }
 
@@ -164,6 +181,40 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*CreateResult,
 	// 5. Atomically persist notification and initial attempt
 	if err := s.directRepo.CreateWithInitialAttempt(ctx, notification, attempt); err != nil {
 		return nil, err
+	}
+
+	if s.audit != nil {
+		actor, err := audit.ActorFromContext(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		summary := fmt.Sprintf("Created direct message to %s", notification.RecipientEmail)
+		_, auditErr := s.audit.Record(ctx, audit.RecordInput{
+			EventType:  domain.EventDirectCreated,
+			Actor:      actor,
+			TargetType: domain.TargetTypeDirectNotification,
+			TargetID:   notification.ID,
+			TargetName: &notification.RecipientEmail,
+			Status:     domain.ActivityStatusSuccess,
+			Summary:    summary,
+			Details: directMessageDetails{
+				ID:               notification.ID,
+				TemplateID:       tpl.ID,
+				TemplateKey:      tpl.TemplateKey,
+				TemplateName:     tpl.Name,
+				ExternalUserID:   externalUserID,
+				RecipientEmail:   recipientEmail,
+				RecipientName:    recipientName,
+				NotificationType: notificationType,
+				Subject:          rendered.Subject,
+				BodyHTML:         rendered.HTMLBody,
+				BodyPlain:        rendered.PlainTextBody,
+			},
+		})
+		if auditErr != nil {
+			return nil, auditErr
+		}
 	}
 
 	return &CreateResult{

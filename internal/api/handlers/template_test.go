@@ -83,7 +83,7 @@ func (m *mockRepo) List(ctx context.Context) ([]*domain.EmailTemplate, error) {
 
 func setupTestRouter(repo domain.EmailTemplateRepository) http.Handler {
 	log, _ := logger.NewLogger("info")
-	svc := template.NewService(repo)
+	svc := template.NewService(repo, nil)
 	handler := NewTemplateHandler(svc, log)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/templates", handler.List)
@@ -98,16 +98,17 @@ func setupTestRouter(repo domain.EmailTemplateRepository) http.Handler {
 func TestTemplateHandler_List(t *testing.T) {
 	repo := newMockRepo()
 	t1 := &domain.EmailTemplate{
-		ID:          "1",
-		TemplateKey: "welcome",
-		Name:        "Welcome",
-		Subject:     "Hello",
-		HTMLBody:    "<p>Hello</p>",
-		Locale:      "en",
-		Status:      domain.TemplateStatusActive,
-		Version:     1,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		ID:           "1",
+		TemplateKey:  "welcome",
+		Name:         "Welcome",
+		TemplateType: domain.TemplateTypeDirect,
+		Subject:      "Hello",
+		HTMLBody:     "<p>Hello</p>",
+		Locale:       "en",
+		Status:       domain.TemplateStatusActive,
+		Version:      1,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
 	}
 	repo.templates[t1.ID] = t1
 
@@ -128,21 +129,25 @@ func TestTemplateHandler_List(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("expected 1 template, got %d", len(list))
 	}
+	if list[0].TemplateType != "direct" {
+		t.Errorf("expected templateType 'direct', got %s", list[0].TemplateType)
+	}
 }
 
 func TestTemplateHandler_GetByID_SuccessAndNotFound(t *testing.T) {
 	repo := newMockRepo()
 	t1 := &domain.EmailTemplate{
-		ID:          "tpl-100",
-		TemplateKey: "verify_email",
-		Name:        "Verify Email",
-		Subject:     "Verify your email",
-		HTMLBody:    "<p>Click here</p>",
-		Locale:      "en",
-		Status:      domain.TemplateStatusActive,
-		Version:     1,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		ID:           "tpl-100",
+		TemplateKey:  "verify_email",
+		Name:         "Verify Email",
+		TemplateType: domain.TemplateTypeCampaign,
+		Subject:      "Verify your email",
+		HTMLBody:     "<p>Click here</p>",
+		Locale:       "en",
+		Status:       domain.TemplateStatusActive,
+		Version:      1,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
 	}
 	repo.templates[t1.ID] = t1
 
@@ -163,6 +168,9 @@ func TestTemplateHandler_GetByID_SuccessAndNotFound(t *testing.T) {
 	}
 	if resp.ID != "tpl-100" {
 		t.Errorf("expected ID tpl-100, got %s", resp.ID)
+	}
+	if resp.TemplateType != "campaign" {
+		t.Errorf("expected templateType 'campaign', got %s", resp.TemplateType)
 	}
 
 	// Not found
@@ -190,6 +198,7 @@ func TestTemplateHandler_Create_Success(t *testing.T) {
 	payload := CreateTemplateRequest{
 		TemplateKey:   "password_reset",
 		Name:          "Password Reset",
+		TemplateType:  "user_agreement",
 		Subject:       "Reset Password",
 		HTMLBody:      "<p>Reset link</p>",
 		PlainTextBody: "Reset link text",
@@ -214,6 +223,9 @@ func TestTemplateHandler_Create_Success(t *testing.T) {
 	}
 	if resp.TemplateKey != "password_reset" {
 		t.Errorf("expected template key password_reset, got %s", resp.TemplateKey)
+	}
+	if resp.TemplateType != "user_agreement" {
+		t.Errorf("expected template type 'user_agreement', got %s", resp.TemplateType)
 	}
 }
 
@@ -242,14 +254,32 @@ func TestTemplateHandler_Create_InvalidAndDuplicate(t *testing.T) {
 		t.Errorf("expected BAD_REQUEST code, got %s", errResp.Error.Code)
 	}
 
-	// 2. Duplicate create -> 409 Conflict
-	validPayload := CreateTemplateRequest{
-		TemplateKey: "duplicate_key",
+	// 2. Missing templateType
+	missingTypePayload := CreateTemplateRequest{
+		TemplateKey: "no_type",
 		Name:        "Name",
 		Subject:     "Subject",
 		HTMLBody:    "<p>body</p>",
 		Locale:      "en",
 		Version:     1,
+	}
+	missingTypeBody, _ := json.Marshal(missingTypePayload)
+	reqMissingType := httptest.NewRequest(http.MethodPost, "/api/v1/templates", bytes.NewReader(missingTypeBody))
+	recMissingType := httptest.NewRecorder()
+	router.ServeHTTP(recMissingType, reqMissingType)
+	if recMissingType.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for missing templateType, got %d", recMissingType.Code)
+	}
+
+	// 3. Duplicate create -> 409 Conflict
+	validPayload := CreateTemplateRequest{
+		TemplateKey:  "duplicate_key",
+		Name:         "Name",
+		TemplateType: "automation",
+		Subject:      "Subject",
+		HTMLBody:     "<p>body</p>",
+		Locale:       "en",
+		Version:      1,
 	}
 	validBody, _ := json.Marshal(validPayload)
 
@@ -289,28 +319,30 @@ func TestTemplateHandler_Create_MalformedJSON(t *testing.T) {
 func TestTemplateHandler_Update_SuccessNotFoundAndConflict(t *testing.T) {
 	repo := newMockRepo()
 	t1 := &domain.EmailTemplate{
-		ID:          "tpl-1",
-		TemplateKey: "key_1",
-		Name:        "Name 1",
-		Subject:     "Subject 1",
-		HTMLBody:    "<p>1</p>",
-		Locale:      "en",
-		Status:      domain.TemplateStatusActive,
-		Version:     1,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		ID:           "tpl-1",
+		TemplateKey:  "key_1",
+		Name:         "Name 1",
+		TemplateType: domain.TemplateTypeCampaign,
+		Subject:      "Subject 1",
+		HTMLBody:     "<p>1</p>",
+		Locale:       "en",
+		Status:       domain.TemplateStatusActive,
+		Version:      1,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
 	}
 	t2 := &domain.EmailTemplate{
-		ID:          "tpl-2",
-		TemplateKey: "key_2",
-		Name:        "Name 2",
-		Subject:     "Subject 2",
-		HTMLBody:    "<p>2</p>",
-		Locale:      "en",
-		Status:      domain.TemplateStatusActive,
-		Version:     1,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		ID:           "tpl-2",
+		TemplateKey:  "key_2",
+		Name:         "Name 2",
+		TemplateType: domain.TemplateTypeCampaign,
+		Subject:      "Subject 2",
+		HTMLBody:     "<p>2</p>",
+		Locale:       "en",
+		Status:       domain.TemplateStatusActive,
+		Version:      1,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
 	}
 	repo.templates[t1.ID] = t1
 	repo.templates[t2.ID] = t2
@@ -319,13 +351,14 @@ func TestTemplateHandler_Update_SuccessNotFoundAndConflict(t *testing.T) {
 
 	// 1. Success update
 	updatePayload := UpdateTemplateRequest{
-		TemplateKey: "key_1_mod",
-		Name:        "Name 1 Modified",
-		Subject:     "Subject 1 Modified",
-		HTMLBody:    "<p>modified</p>",
-		Locale:      "en",
-		Status:      "draft",
-		Version:     1,
+		TemplateKey:  "key_1_mod",
+		Name:         "Name 1 Modified",
+		TemplateType: "campaign",
+		Subject:      "Subject 1 Modified",
+		HTMLBody:     "<p>modified</p>",
+		Locale:       "en",
+		Status:       "draft",
+		Version:      1,
 	}
 	updateBody, _ := json.Marshal(updatePayload)
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/templates/tpl-1", bytes.NewReader(updateBody))
@@ -334,6 +367,14 @@ func TestTemplateHandler_Update_SuccessNotFoundAndConflict(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	var updatedResp TemplateResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &updatedResp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if updatedResp.TemplateType != "campaign" {
+		t.Errorf("expected templateType 'campaign', got %s", updatedResp.TemplateType)
 	}
 
 	// 2. Not found update
@@ -347,12 +388,13 @@ func TestTemplateHandler_Update_SuccessNotFoundAndConflict(t *testing.T) {
 
 	// 3. Conflict update (trying to update tpl-1 to key_2/en/v1 which is used by tpl-2)
 	conflictPayload := UpdateTemplateRequest{
-		TemplateKey: "key_2",
-		Name:        "Name 1",
-		Subject:     "Subject 1",
-		HTMLBody:    "<p>body</p>",
-		Locale:      "en",
-		Version:     1,
+		TemplateKey:  "key_2",
+		Name:         "Name 1",
+		TemplateType: "campaign",
+		Subject:      "Subject 1",
+		HTMLBody:     "<p>body</p>",
+		Locale:       "en",
+		Version:      1,
 	}
 	conflictBody, _ := json.Marshal(conflictPayload)
 	reqConflict := httptest.NewRequest(http.MethodPut, "/api/v1/templates/tpl-1", bytes.NewReader(conflictBody))
@@ -367,14 +409,15 @@ func TestTemplateHandler_Update_SuccessNotFoundAndConflict(t *testing.T) {
 func TestTemplateHandler_Delete_SuccessAndNotFound(t *testing.T) {
 	repo := newMockRepo()
 	t1 := &domain.EmailTemplate{
-		ID:          "tpl-1",
-		TemplateKey: "key_1",
-		Name:        "Name 1",
-		Subject:     "Subject 1",
-		HTMLBody:    "<p>1</p>",
-		Locale:      "en",
-		Status:      domain.TemplateStatusActive,
-		Version:     1,
+		ID:           "tpl-1",
+		TemplateKey:  "key_1",
+		Name:         "Name 1",
+		TemplateType: domain.TemplateTypeDirect,
+		Subject:      "Subject 1",
+		HTMLBody:     "<p>1</p>",
+		Locale:       "en",
+		Status:       domain.TemplateStatusActive,
+		Version:      1,
 	}
 	repo.templates[t1.ID] = t1
 
@@ -405,6 +448,7 @@ func TestTemplateHandler_Preview_SuccessAndHTMLEscaping(t *testing.T) {
 		ID:            "tpl-preview-1",
 		TemplateKey:   "welcome_user",
 		Name:          "Welcome Template",
+		TemplateType:  domain.TemplateTypeDirect,
 		Subject:       "Welcome, {{username}}!",
 		HTMLBody:      "<h1>Hello, {{username}}!</h1><p>Email: {{email}}</p>",
 		PlainTextBody: "Hello, {{username}}!\nEmail: {{email}}",
@@ -489,16 +533,17 @@ func TestTemplateHandler_Preview_NotFound(t *testing.T) {
 func TestTemplateHandler_Preview_MissingVariable(t *testing.T) {
 	repo := newMockRepo()
 	tpl := &domain.EmailTemplate{
-		ID:          "tpl-preview-2",
-		TemplateKey: "req_var_tpl",
-		Name:        "Req Var Template",
-		Subject:     "Subject {{code}}",
-		HTMLBody:    "<p>Your code is: {{code}}</p>",
-		Locale:      "en",
-		Status:      domain.TemplateStatusActive,
-		Version:     1,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		ID:           "tpl-preview-2",
+		TemplateKey:  "req_var_tpl",
+		Name:         "Req Var Template",
+		TemplateType: domain.TemplateTypeDirect,
+		Subject:      "Subject {{code}}",
+		HTMLBody:     "<p>Your code is: {{code}}</p>",
+		Locale:       "en",
+		Status:       domain.TemplateStatusActive,
+		Version:      1,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
 	}
 	repo.templates[tpl.ID] = tpl
 
@@ -596,6 +641,7 @@ func TestTemplateHandler_Preview_ExistingTemplateIDWithOverrides(t *testing.T) {
 		ID:            "tpl-persisted-1",
 		TemplateKey:   "persisted_key",
 		Name:          "Persisted Name",
+		TemplateType:  domain.TemplateTypeDirect,
 		Subject:       "Persisted DB Subject",
 		HTMLBody:      "<p>Persisted DB HTML</p>",
 		PlainTextBody: "Persisted DB Plain",

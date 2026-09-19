@@ -49,7 +49,7 @@ func TestWorker_ProcessPending_SuccessAndFinalization(t *testing.T) {
 	sender := &mockSender{}
 	log, _ := logger.NewLogger("error")
 
-	deliverySvc := NewDeliveryService(cRepo, rRepo, tRepo, aRepo, sender, nil)
+	deliverySvc := NewDeliveryService(cRepo, rRepo, tRepo, aRepo, sender, nil, nil)
 	worker := NewWorker(rRepo, cRepo, deliverySvc, 100*time.Millisecond, 5*time.Minute, 10, log)
 
 	worker.ProcessPending(ctx)
@@ -115,7 +115,7 @@ func TestWorker_ProcessPending_ErrorIsolation(t *testing.T) {
 			}
 			return nil
 		},
-	}, nil)
+	}, nil, nil)
 	log, _ := logger.NewLogger("error")
 	worker := NewWorker(rRepo, cRepo, deliverySvc, 100*time.Millisecond, 5*time.Minute, 10, log)
 
@@ -167,7 +167,7 @@ func TestWorker_ProcessPending_StaleRecovery(t *testing.T) {
 	sender := &mockSender{}
 	log, _ := logger.NewLogger("error")
 
-	deliverySvc := NewDeliveryService(cRepo, rRepo, tRepo, aRepo, sender, nil)
+	deliverySvc := NewDeliveryService(cRepo, rRepo, tRepo, aRepo, sender, nil, nil)
 	worker := NewWorker(rRepo, cRepo, deliverySvc, 100*time.Millisecond, 5*time.Minute, 10, log)
 
 	worker.ProcessPending(ctx)
@@ -186,7 +186,7 @@ func TestWorker_StartAndCancel(t *testing.T) {
 	sender := &mockSender{}
 	log, _ := logger.NewLogger("error")
 
-	deliverySvc := NewDeliveryService(cRepo, rRepo, tRepo, aRepo, sender, nil)
+	deliverySvc := NewDeliveryService(cRepo, rRepo, tRepo, aRepo, sender, nil, nil)
 	worker := NewWorker(rRepo, cRepo, deliverySvc, 10*time.Millisecond, 5*time.Minute, 10, log)
 
 	ctx, cancel := context.WithCancel(context.Background())

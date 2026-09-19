@@ -319,3 +319,113 @@ func TestAdminAuth_EndToEndMatrix(t *testing.T) {
 		})
 	}
 }
+
+func TestOwnerAuth_Matrix(t *testing.T) {
+	log, _ := logger.NewLogger("info")
+	verifier := auth.MustNewJWTVerifier(mwSecret, mwIssuer, mwAudience)
+	ownerMw := OwnerAuth(verifier, log)
+
+	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"authorized_owner"}`))
+	})
+
+	tests := []struct {
+		name       string
+		tokenGen   func() string
+		authHeader string
+		wantStatus int
+		wantCode   string
+	}{
+		{
+			name:       "Missing header -> 401 Unauthorized",
+			authHeader: "",
+			wantStatus: http.StatusUnauthorized,
+			wantCode:   "UNAUTHORIZED",
+		},
+		{
+			name: "Expired token -> 401 Unauthorized",
+			tokenGen: func() string {
+				tok, _ := auth.GenerateToken(mwSecret, mwIssuer, mwAudience, "u-owner", "owner", -5*time.Minute)
+				return "Bearer " + tok
+			},
+			wantStatus: http.StatusUnauthorized,
+			wantCode:   "UNAUTHORIZED",
+		},
+		{
+			name: "Invalid signature -> 401 Unauthorized",
+			tokenGen: func() string {
+				tok, _ := auth.GenerateToken("wrong-secret-key-32-chars-long!", mwIssuer, mwAudience, "u-owner", "owner", 15*time.Minute)
+				return "Bearer " + tok
+			},
+			wantStatus: http.StatusUnauthorized,
+			wantCode:   "UNAUTHORIZED",
+		},
+		{
+			name: "User role token -> 403 Forbidden",
+			tokenGen: func() string {
+				tok, _ := auth.GenerateToken(mwSecret, mwIssuer, mwAudience, "u-user", "user", 15*time.Minute)
+				return "Bearer " + tok
+			},
+			wantStatus: http.StatusForbidden,
+			wantCode:   "FORBIDDEN",
+		},
+		{
+			name: "Admin role token -> 403 Forbidden",
+			tokenGen: func() string {
+				tok, _ := auth.GenerateToken(mwSecret, mwIssuer, mwAudience, "u-admin", "admin", 15*time.Minute)
+				return "Bearer " + tok
+			},
+			wantStatus: http.StatusForbidden,
+			wantCode:   "FORBIDDEN",
+		},
+		{
+			name: "Service role token -> 403 Forbidden",
+			tokenGen: func() string {
+				tok, _ := auth.GenerateToken(mwSecret, mwIssuer, mwAudience, "u-service", "service", 15*time.Minute)
+				return "Bearer " + tok
+			},
+			wantStatus: http.StatusForbidden,
+			wantCode:   "FORBIDDEN",
+		},
+		{
+			name: "Owner role token -> 200 OK",
+			tokenGen: func() string {
+				tok, _ := auth.GenerateToken(mwSecret, mwIssuer, mwAudience, "u-owner", "owner", 15*time.Minute)
+				return "Bearer " + tok
+			},
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			header := tt.authHeader
+			if tt.tokenGen != nil {
+				header = tt.tokenGen()
+			}
+
+			req := httptest.NewRequest(http.MethodGet, "/activity", nil)
+			if header != "" {
+				req.Header.Set("Authorization", header)
+			}
+			rec := httptest.NewRecorder()
+
+			ownerMw(nextHandler).ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("expected status %d, got %d (body: %s)", tt.wantStatus, rec.Code, rec.Body.String())
+			}
+
+			if tt.wantCode != "" {
+				var errResp response.ErrorResponse
+				if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+					t.Fatalf("failed to decode error response: %v", err)
+				}
+				if errResp.Error.Code != tt.wantCode {
+					t.Errorf("expected error code %s, got %s", tt.wantCode, errResp.Error.Code)
+				}
+			}
+		})
+	}
+}
