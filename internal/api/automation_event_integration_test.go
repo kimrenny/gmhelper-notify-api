@@ -90,6 +90,7 @@ func TestIntegration_AutomationEventEndpoint_PostgreSQL(t *testing.T) {
 		Enabled:    true,
 		Config: domain.AutomationRuleConfig{
 			Version: 1,
+			Trigger: domain.TriggerUserRegistered,
 			Schedule: domain.ScheduleConfig{
 				Type:      domain.ScheduleTypeDaily,
 				HourUTC:   intPtr(3),

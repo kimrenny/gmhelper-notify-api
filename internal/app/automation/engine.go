@@ -106,8 +106,14 @@ func (e *Engine) HandleEvent(ctx context.Context, event Event) (*EventExecutionR
 		return result, fmt.Errorf("failed to list enabled automation rules: %w", err)
 	}
 
-	// 4. Evaluate each rule independently (Failure Isolation)
+	// 4. Evaluate each matching rule independently (Failure Isolation)
 	for _, rule := range rules {
+		if rule == nil {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(rule.Config.Trigger), strings.TrimSpace(event.Type)) {
+			continue
+		}
 		ruleRes := e.executeRule(ctx, rule, event, user, contextData)
 		result.Results = append(result.Results, ruleRes)
 	}
@@ -150,12 +156,21 @@ func (e *Engine) EvaluateInactivity(ctx context.Context, userLister UserLister, 
 	if err != nil {
 		return nil, fmt.Errorf("failed to list enabled automation rules: %w", err)
 	}
-	if len(rules) == 0 {
+
+	dueRules := make([]*domain.AutomationRule, 0, len(rules))
+	for _, rule := range rules {
+		if rule != nil && strings.EqualFold(strings.TrimSpace(rule.Config.Trigger), domain.TriggerUserInactive) {
+			if IsDue(rule, now) {
+				dueRules = append(dueRules, rule)
+			}
+		}
+	}
+	if len(dueRules) == 0 {
 		return &InactivityEvaluationSummary{}, nil
 	}
 
 	summary := &InactivityEvaluationSummary{
-		TotalRulesEvaluated: len(rules),
+		TotalRulesEvaluated: len(dueRules),
 	}
 
 	page := 1
@@ -181,7 +196,7 @@ func (e *Engine) EvaluateInactivity(ctx context.Context, userLister UserLister, 
 			summary.TotalUsersEvaluated++
 			userCopy := user
 
-			for _, rule := range rules {
+			for _, rule := range dueRules {
 				var eventID string
 				if rule.Config.Action.CooldownDays != nil && *rule.Config.Action.CooldownDays > 0 {
 					eventID = uuid.NewString()
@@ -221,6 +236,18 @@ func (e *Engine) EvaluateInactivity(ctx context.Context, userLister UserLister, 
 		page++
 	}
 
+	for _, rule := range dueRules {
+		nextEval := NextEvaluationTime(rule.Config.Schedule, &now, rule.CreatedAt, now)
+		rule.LastEvaluatedAt = &now
+		rule.NextEvaluationAt = nextEval
+		if err := e.ruleRepo.UpdateEvaluationTimes(ctx, rule.ID, &now, nextEval); err != nil {
+			e.logger.Warn("failed to update evaluation timestamps for rule",
+				logger.String("ruleId", rule.ID),
+				logger.Error(err),
+			)
+		}
+	}
+
 	return summary, nil
 }
 
@@ -241,8 +268,15 @@ func (e *Engine) EvaluateUserInactivity(ctx context.Context, user *userclient.Us
 		return nil, fmt.Errorf("failed to list enabled automation rules: %w", err)
 	}
 
-	results := make([]RuleExecutionResult, 0, len(rules))
+	inactivityRules := make([]*domain.AutomationRule, 0, len(rules))
 	for _, rule := range rules {
+		if rule != nil && strings.EqualFold(strings.TrimSpace(rule.Config.Trigger), domain.TriggerUserInactive) {
+			inactivityRules = append(inactivityRules, rule)
+		}
+	}
+
+	results := make([]RuleExecutionResult, 0, len(inactivityRules))
+	for _, rule := range inactivityRules {
 		var eventID string
 		if rule.Config.Action.CooldownDays != nil && *rule.Config.Action.CooldownDays > 0 {
 			eventID = uuid.NewString()

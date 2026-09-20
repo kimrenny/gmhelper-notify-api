@@ -257,6 +257,7 @@ func TestAutomationRuleValidate(t *testing.T) {
 		Enabled:    true,
 		Config: AutomationRuleConfig{
 			Version: 1,
+			Trigger: TriggerUserRegistered,
 			Schedule: ScheduleConfig{
 				Type:      ScheduleTypeDaily,
 				HourUTC:   intPtr(3),

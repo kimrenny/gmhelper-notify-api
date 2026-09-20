@@ -77,6 +77,7 @@ type AutomationRuleRepository interface {
 	GetByID(ctx context.Context, id string) (*AutomationRule, error)
 	Create(ctx context.Context, rule *AutomationRule) error
 	Update(ctx context.Context, rule *AutomationRule) error
+	UpdateEvaluationTimes(ctx context.Context, id string, lastEvaluatedAt, nextEvaluationAt *time.Time) error
 	Delete(ctx context.Context, id string) error
 	List(ctx context.Context) ([]*AutomationRule, error)
 	ListEnabled(ctx context.Context) ([]*AutomationRule, error)
@@ -86,6 +87,7 @@ type AutomationExecutionRepository interface {
 	RecordExecution(ctx context.Context, exec *AutomationExecution) error
 	HasExecution(ctx context.Context, ruleID, eventID string) (bool, error)
 	GetLastSuccessfulExecution(ctx context.Context, ruleID, recipientEmail string, externalUserID *string) (*AutomationExecution, error)
+	ListByRuleID(ctx context.Context, ruleID string, limit, offset int) ([]*AutomationExecution, int, error)
 	ExecuteRuleAtomic(
 		ctx context.Context,
 		ruleID, eventID, recipientEmail string,

@@ -25,6 +25,7 @@ func sampleValidRule(id, name, tplID string, enabled bool) *domain.AutomationRul
 		Enabled:    enabled,
 		Config: domain.AutomationRuleConfig{
 			Version: 1,
+			Trigger: domain.TriggerUserRegistered,
 			Schedule: domain.ScheduleConfig{
 				Type:      domain.ScheduleTypeDaily,
 				HourUTC:   intPtr(3),
@@ -353,6 +354,46 @@ ORDER BY created_at DESC, id DESC`)).
 
 	if _, err := repo.ListEnabled(context.Background()); err == nil {
 		t.Fatalf("expected error on DB failure, got nil")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unfulfilled expectations: %v", err)
+	}
+}
+
+func TestAutomationRuleRepository_UpdateEvaluationTimes(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to open sqlmock database: %v", err)
+	}
+	defer db.Close()
+
+	repo := NewAutomationRuleRepository(db)
+	lastEval := time.Date(2026, 9, 20, 9, 0, 0, 0, time.UTC)
+	nextEval := time.Date(2026, 9, 21, 9, 0, 0, 0, time.UTC)
+
+	// 1. Success
+	mock.ExpectExec(regexp.QuoteMeta(`
+UPDATE automation_rules
+SET last_evaluated_at = $1, next_evaluation_at = $2, updated_at = now()
+WHERE id = $3`)).
+		WithArgs(&lastEval, &nextEval, "rule-1").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	if err := repo.UpdateEvaluationTimes(context.Background(), "rule-1", &lastEval, &nextEval); err != nil {
+		t.Fatalf("unexpected error on UpdateEvaluationTimes: %v", err)
+	}
+
+	// 2. Not found
+	mock.ExpectExec(regexp.QuoteMeta(`
+UPDATE automation_rules
+SET last_evaluated_at = $1, next_evaluation_at = $2, updated_at = now()
+WHERE id = $3`)).
+		WithArgs(&lastEval, &nextEval, "rule-nonexistent").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	if err := repo.UpdateEvaluationTimes(context.Background(), "rule-nonexistent", &lastEval, &nextEval); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {

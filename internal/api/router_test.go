@@ -442,7 +442,7 @@ func TestRouter_AdministrativeRoutes_SecurityMatrix(t *testing.T) {
 	dashboardHandler := handlers.NewDashboardHandler(dashboardService, log)
 
 	autoRepo := &routerMockAutomationRepo{rules: make(map[string]*domain.AutomationRule)}
-	automationService := automation.NewService(autoRepo, tplRepo, nil)
+	automationService := automation.NewService(autoRepo, tplRepo, nil, nil)
 	automationHandler := handlers.NewAutomationHandler(automationService, log)
 
 	settingsRepo := &routerMockSettingsRepo{settings: make(map[string]*domain.AppSetting)}
@@ -488,6 +488,7 @@ func TestRouter_AdministrativeRoutes_SecurityMatrix(t *testing.T) {
 		{method: http.MethodGet, path: "/api/v1/automation/rules"},
 		{method: http.MethodPost, path: "/api/v1/automation/rules"},
 		{method: http.MethodGet, path: "/api/v1/automation/rules/rule-123"},
+		{method: http.MethodGet, path: "/api/v1/automation/rules/rule-123/executions"},
 		{method: http.MethodPut, path: "/api/v1/automation/rules/rule-123"},
 		{method: http.MethodDelete, path: "/api/v1/automation/rules/rule-123"},
 		{method: http.MethodPost, path: "/api/v1/agreements/broadcast"},
@@ -599,6 +600,15 @@ func (m *routerMockAutomationRepo) Create(ctx context.Context, rule *domain.Auto
 func (m *routerMockAutomationRepo) Update(ctx context.Context, rule *domain.AutomationRule) error {
 	if _, ok := m.rules[rule.ID]; ok {
 		m.rules[rule.ID] = rule
+		return nil
+	}
+	return domain.ErrNotFound
+}
+
+func (m *routerMockAutomationRepo) UpdateEvaluationTimes(ctx context.Context, id string, lastEvaluatedAt, nextEvaluationAt *time.Time) error {
+	if r, ok := m.rules[id]; ok {
+		r.LastEvaluatedAt = lastEvaluatedAt
+		r.NextEvaluationAt = nextEvaluationAt
 		return nil
 	}
 	return domain.ErrNotFound
@@ -1021,6 +1031,7 @@ func TestRouter_AutomationEndpoints(t *testing.T) {
 				Enabled:    true,
 				Config: domain.AutomationRuleConfig{
 					Version: 1,
+					Trigger: domain.TriggerUserRegistered,
 					Schedule: domain.ScheduleConfig{
 						Type:      domain.ScheduleTypeDaily,
 						HourUTC:   intPtr(3),
@@ -1048,7 +1059,7 @@ func TestRouter_AutomationEndpoints(t *testing.T) {
 		},
 	}
 	tplRepo := &routerMockTplRepo{}
-	automationService := automation.NewService(autoRepo, tplRepo, nil)
+	automationService := automation.NewService(autoRepo, tplRepo, nil, nil)
 	automationHandler := handlers.NewAutomationHandler(automationService, log)
 
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
@@ -1095,6 +1106,7 @@ func TestRouter_AutomationEndpoints(t *testing.T) {
 		Enabled:    &boolTrue,
 		Config: domain.AutomationRuleConfig{
 			Version: 1,
+			Trigger: domain.TriggerPasswordChanged,
 			Schedule: domain.ScheduleConfig{
 				Type:      domain.ScheduleTypeDaily,
 				HourUTC:   intPtr(3),
