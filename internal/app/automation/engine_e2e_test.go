@@ -258,7 +258,7 @@ func TestEngine_E2E_InactivityFlow(t *testing.T) {
 
 	// 2. Inactivity Rule (older_than 30 days, cooldown 7 days)
 	cooldownDays := 7
-	rule := createTestRule("rule-inactivity-e2e", "Inactive Users Notice", "tpl-inactivity-e2e", true, domain.ConditionGroup{
+	rule := createTestInactivityRule("rule-inactivity-e2e", "Inactive Users Notice", "tpl-inactivity-e2e", true, domain.ConditionGroup{
 		Operator: domain.GroupOperatorAll,
 		Conditions: []domain.ConditionNode{
 			{
@@ -317,11 +317,26 @@ func TestEngine_E2E_InactivityFlow(t *testing.T) {
 	}
 
 	// -------------------------------------------------------------
-	// STEP 2: Second Evaluation Pass (Immediate / Inside 7-day cooldown)
+	// STEP 2A: Same-day Evaluation Pass (1 hour later) -> Rule NOT due
 	// -------------------------------------------------------------
-	summary2, err := engine.EvaluateInactivity(ctx, userLister, refTime.Add(time.Hour), 50)
+	summarySameDay, err := engine.EvaluateInactivity(ctx, userLister, refTime.Add(time.Hour), 50)
+	if err != nil {
+		t.Fatalf("unexpected error on same-day pass: %v", err)
+	}
+	if summarySameDay.TotalRulesEvaluated != 0 {
+		t.Errorf("expected 0 rules evaluated on same-day tick, got %d", summarySameDay.TotalRulesEvaluated)
+	}
+
+	// -------------------------------------------------------------
+	// STEP 2B: Next Day Evaluation Pass (Inside 7-day cooldown) -> Rule IS due, user skipped on cooldown
+	// -------------------------------------------------------------
+	nextDayTime := refTime.Add(21 * time.Hour).Add(5 * time.Minute) // 2026-09-21 09:05:00 UTC
+	summary2, err := engine.EvaluateInactivity(ctx, userLister, nextDayTime, 50)
 	if err != nil {
 		t.Fatalf("unexpected error on second pass: %v", err)
+	}
+	if summary2.TotalRulesEvaluated != 1 {
+		t.Errorf("expected 1 rule evaluated on next day pass, got %d", summary2.TotalRulesEvaluated)
 	}
 	if summary2.ExecutedCount != 0 {
 		t.Errorf("expected 0 executed on second pass inside cooldown, got %d", summary2.ExecutedCount)

@@ -116,6 +116,75 @@ LIMIT 1`, ruleID, recipientEmail, uid)
 	return exec, nil
 }
 
+func (r *AutomationExecutionRepository) ListByRuleID(
+	ctx context.Context,
+	ruleID string,
+	limit, offset int,
+) ([]*domain.AutomationExecution, int, error) {
+	ruleID = strings.TrimSpace(ruleID)
+	if ruleID == "" {
+		return []*domain.AutomationExecution{}, 0, nil
+	}
+
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var total int
+	err := r.db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM automation_executions
+WHERE rule_id = $1`, ruleID).Scan(&total)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to count automation executions: %w", err)
+	}
+
+	if total == 0 {
+		return []*domain.AutomationExecution{}, 0, nil
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+SELECT id, rule_id, event_id, recipient_email, external_user_id, notification_id, status, executed_at, created_at
+FROM automation_executions
+WHERE rule_id = $1
+ORDER BY executed_at DESC, id DESC
+LIMIT $2 OFFSET $3`, ruleID, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list automation executions: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]*domain.AutomationExecution, 0)
+	for rows.Next() {
+		exec := &domain.AutomationExecution{}
+		if err := rows.Scan(
+			&exec.ID,
+			&exec.RuleID,
+			&exec.EventID,
+			&exec.RecipientEmail,
+			&exec.ExternalUserID,
+			&exec.NotificationID,
+			&exec.Status,
+			&exec.ExecutedAt,
+			&exec.CreatedAt,
+		); err != nil {
+			return nil, 0, fmt.Errorf("failed to scan automation execution: %w", err)
+		}
+		items = append(items, exec)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("failed iterating automation executions: %w", err)
+	}
+
+	return items, total, nil
+}
+
 // ExecuteRuleAtomic enforces idempotency, cooldown checks, direct notification creation, and execution recording
 // atomically inside a PostgreSQL transaction protected by a transaction-level advisory lock.
 func (r *AutomationExecutionRepository) ExecuteRuleAtomic(

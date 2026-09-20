@@ -54,6 +54,7 @@ func NewRouter(
 	if automationHandler != nil {
 		apiV1Mux.HandleFunc("GET /automation/rules", automationHandler.List)
 		apiV1Mux.HandleFunc("GET /automation/rules/{id}", automationHandler.GetByID)
+		apiV1Mux.HandleFunc("GET /automation/rules/{id}/executions", automationHandler.ListExecutions)
 		apiV1Mux.HandleFunc("POST /automation/rules", automationHandler.Create)
 		apiV1Mux.HandleFunc("PUT /automation/rules/{id}", automationHandler.Update)
 		apiV1Mux.HandleFunc("DELETE /automation/rules/{id}", automationHandler.Delete)

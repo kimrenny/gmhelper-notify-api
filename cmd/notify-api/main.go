@@ -129,7 +129,7 @@ func main() {
 
 	automationRepo := postgres.NewAutomationRuleRepository(db.DB())
 	automationExecRepo := postgres.NewAutomationExecutionRepository(db.DB())
-	automationService := automation.NewService(automationRepo, templateRepo, auditService)
+	automationService := automation.NewService(automationRepo, templateRepo, automationExecRepo, auditService)
 	automationEngine := automation.NewEngine(
 		automationRepo,
 		templateRepo,

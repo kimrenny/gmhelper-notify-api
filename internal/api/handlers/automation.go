@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/gmhelper/notify-api/internal/domain"
 	"github.com/gmhelper/notify-api/internal/http/response"
 	"github.com/gmhelper/notify-api/internal/infra/logger"
+	"github.com/google/uuid"
 )
 
 type CreateAutomationRuleRequest struct {
@@ -39,6 +41,25 @@ type AutomationRuleResponse struct {
 	UpdatedAt        time.Time                   `json:"updatedAt"`
 }
 
+type AutomationExecutionListItemResponse struct {
+	ID             string    `json:"id"`
+	RuleID         string    `json:"ruleId"`
+	EventID        string    `json:"eventId"`
+	RecipientEmail string    `json:"recipientEmail"`
+	ExternalUserID *string   `json:"externalUserId,omitempty"`
+	NotificationID *string   `json:"notificationId,omitempty"`
+	Status         string    `json:"status"`
+	ExecutedAt     time.Time `json:"executedAt"`
+	CreatedAt      time.Time `json:"createdAt"`
+}
+
+type AutomationExecutionListResponse struct {
+	Items  []AutomationExecutionListItemResponse `json:"items"`
+	Total  int                                   `json:"total"`
+	Limit  int                                   `json:"limit"`
+	Offset int                                   `json:"offset"`
+}
+
 func toAutomationRuleResponse(r *domain.AutomationRule) AutomationRuleResponse {
 	return AutomationRuleResponse{
 		ID:               r.ID,
@@ -50,6 +71,20 @@ func toAutomationRuleResponse(r *domain.AutomationRule) AutomationRuleResponse {
 		NextEvaluationAt: r.NextEvaluationAt,
 		CreatedAt:        r.CreatedAt,
 		UpdatedAt:        r.UpdatedAt,
+	}
+}
+
+func toAutomationExecutionListItemResponse(e *domain.AutomationExecution) AutomationExecutionListItemResponse {
+	return AutomationExecutionListItemResponse{
+		ID:             e.ID,
+		RuleID:         e.RuleID,
+		EventID:        e.EventID,
+		RecipientEmail: e.RecipientEmail,
+		ExternalUserID: e.ExternalUserID,
+		NotificationID: e.NotificationID,
+		Status:         e.Status,
+		ExecutedAt:     e.ExecutedAt,
+		CreatedAt:      e.CreatedAt,
 	}
 }
 
@@ -202,4 +237,64 @@ func (h *AutomationHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *AutomationHandler) ListExecutions(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "automation rule id is required")
+		return
+	}
+	if _, err := uuid.Parse(id); err != nil {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid automation rule id")
+		return
+	}
+
+	q := r.URL.Query()
+	limit := 20
+	if limitStr := strings.TrimSpace(q.Get("limit")); limitStr != "" {
+		l, err := strconv.Atoi(limitStr)
+		if err != nil || l <= 0 || l > 100 {
+			response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "limit must be a positive integer between 1 and 100")
+			return
+		}
+		limit = l
+	}
+
+	offset := 0
+	if offsetStr := strings.TrimSpace(q.Get("offset")); offsetStr != "" {
+		o, err := strconv.Atoi(offsetStr)
+		if err != nil || o < 0 {
+			response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "offset must be a non-negative integer")
+			return
+		}
+		offset = o
+	}
+
+	execs, total, err := h.service.ListExecutions(r.Context(), id, limit, offset)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			response.Error(w, http.StatusNotFound, "NOT_FOUND", "automation rule not found")
+			return
+		}
+		if errors.Is(err, automation.ErrInvalidInput) {
+			response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid automation rule id")
+			return
+		}
+		h.logger.Error("failed to list automation executions", logger.String("ruleId", id), logger.Error(err))
+		response.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to list automation executions")
+		return
+	}
+
+	items := make([]AutomationExecutionListItemResponse, 0, len(execs))
+	for _, exec := range execs {
+		items = append(items, toAutomationExecutionListItemResponse(exec))
+	}
+
+	response.JSON(w, http.StatusOK, AutomationExecutionListResponse{
+		Items:  items,
+		Total:  total,
+		Limit:  limit,
+		Offset: offset,
+	})
 }

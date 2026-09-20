@@ -26,9 +26,32 @@ func (m *mockRuleRepo) GetByID(ctx context.Context, id string) (*domain.Automati
 	}
 	return nil, domain.ErrNotFound
 }
-func (m *mockRuleRepo) Create(ctx context.Context, rule *domain.AutomationRule) error { return nil }
-func (m *mockRuleRepo) Update(ctx context.Context, rule *domain.AutomationRule) error { return nil }
-func (m *mockRuleRepo) Delete(ctx context.Context, id string) error                   { return nil }
+func (m *mockRuleRepo) Create(ctx context.Context, rule *domain.AutomationRule) error {
+	cp := *rule
+	m.rules = append(m.rules, &cp)
+	return nil
+}
+func (m *mockRuleRepo) Update(ctx context.Context, rule *domain.AutomationRule) error {
+	for i, r := range m.rules {
+		if r.ID == rule.ID {
+			cp := *rule
+			m.rules[i] = &cp
+			return nil
+		}
+	}
+	return domain.ErrNotFound
+}
+func (m *mockRuleRepo) UpdateEvaluationTimes(ctx context.Context, id string, lastEvaluatedAt, nextEvaluationAt *time.Time) error {
+	for _, r := range m.rules {
+		if r.ID == id {
+			r.LastEvaluatedAt = lastEvaluatedAt
+			r.NextEvaluationAt = nextEvaluationAt
+			return nil
+		}
+	}
+	return nil
+}
+func (m *mockRuleRepo) Delete(ctx context.Context, id string) error { return nil }
 func (m *mockRuleRepo) List(ctx context.Context) ([]*domain.AutomationRule, error) {
 	return m.rules, m.err
 }
@@ -138,6 +161,26 @@ func (m *mockExecRepo) GetLastSuccessfulExecution(ctx context.Context, ruleID, r
 	return nil, nil
 }
 
+func (m *mockExecRepo) ListByRuleID(ctx context.Context, ruleID string, limit, offset int) ([]*domain.AutomationExecution, int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var filtered []*domain.AutomationExecution
+	for _, e := range m.executions {
+		if e.RuleID == ruleID {
+			filtered = append(filtered, e)
+		}
+	}
+	total := len(filtered)
+	if offset >= total {
+		return []*domain.AutomationExecution{}, total, nil
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return filtered[offset:end], total, nil
+}
+
 func (m *mockExecRepo) ExecuteRuleAtomic(
 	ctx context.Context,
 	ruleID, eventID, recipientEmail string,
@@ -232,6 +275,7 @@ func createTestRule(id, name, templateID string, enabled bool, conditions domain
 		Enabled:    enabled,
 		Config: domain.AutomationRuleConfig{
 			Version: 1,
+			Trigger: domain.TriggerUserRegistered,
 			Schedule: domain.ScheduleConfig{
 				Type:      domain.ScheduleTypeDaily,
 				HourUTC:   intPtr(9),
@@ -243,9 +287,15 @@ func createTestRule(id, name, templateID string, enabled bool, conditions domain
 				CooldownDays: cooldownDays,
 			},
 		},
-		CreatedAt: time.Now().UTC(),
-		UpdatedAt: time.Now().UTC(),
+		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
+}
+
+func createTestInactivityRule(id, name, templateID string, enabled bool, conditions domain.ConditionGroup, cooldownDays *int) *domain.AutomationRule {
+	r := createTestRule(id, name, templateID, enabled, conditions, cooldownDays)
+	r.Config.Trigger = domain.TriggerUserInactive
+	return r
 }
 
 func TestEngine_SingleMatchingRule(t *testing.T) {
@@ -1056,7 +1106,7 @@ func TestEngine_EvaluateInactivity_SuccessAndCooldown(t *testing.T) {
 	inactiveTime := refTime.AddDate(0, 0, -45)
 	activeTime := refTime.AddDate(0, 0, -5)
 
-	rule := createTestRule("rule-inactivity", "Inactive User Rule", "tpl-1", true, domain.ConditionGroup{
+	rule := createTestInactivityRule("rule-inactivity", "Inactive User Rule", "tpl-1", true, domain.ConditionGroup{
 		Operator: domain.GroupOperatorAll,
 		Conditions: []domain.ConditionNode{
 			{
@@ -1122,12 +1172,24 @@ func TestEngine_EvaluateInactivity_SuccessAndCooldown(t *testing.T) {
 		t.Errorf("expected notification for inactive@example.com, got %s", directRepo.created[0].RecipientEmail)
 	}
 
-	// Second evaluation pass (within cooldown)
-	summary2, err := engine.EvaluateInactivity(context.Background(), userLister, refTime.Add(time.Hour), 10)
+	// Same-day evaluation pass (1 hour later) -> Rule is NOT due
+	summarySameDay, err := engine.EvaluateInactivity(context.Background(), userLister, refTime.Add(time.Hour), 10)
+	if err != nil {
+		t.Fatalf("unexpected error on same day pass: %v", err)
+	}
+	if summarySameDay.TotalRulesEvaluated != 0 {
+		t.Errorf("expected 0 rules evaluated on same day tick, got %d", summarySameDay.TotalRulesEvaluated)
+	}
+
+	// Next day evaluation pass (within 30-day cooldown) -> Rule IS due, user skipped on cooldown
+	nextDayTime := refTime.Add(21 * time.Hour).Add(5 * time.Minute) // 2026-09-21 09:05:00 UTC
+	summary2, err := engine.EvaluateInactivity(context.Background(), userLister, nextDayTime, 10)
 	if err != nil {
 		t.Fatalf("unexpected error on second pass: %v", err)
 	}
-
+	if summary2.TotalRulesEvaluated != 1 {
+		t.Errorf("expected 1 rule evaluated on next day pass, got %d", summary2.TotalRulesEvaluated)
+	}
 	if summary2.ExecutedCount != 0 {
 		t.Errorf("expected 0 executed on second pass inside cooldown, got %d", summary2.ExecutedCount)
 	}
@@ -1144,7 +1206,7 @@ func TestEngine_EvaluateInactivity_DuplicateWithoutCooldown(t *testing.T) {
 	inactiveTime := refTime.AddDate(0, 0, -45)
 
 	// Cooldown is nil / 0
-	rule := createTestRule("rule-inactivity-no-cd", "Inactive User Rule", "tpl-1", true, domain.ConditionGroup{
+	rule := createTestInactivityRule("rule-inactivity-no-cd", "Inactive User Rule", "tpl-1", true, domain.ConditionGroup{
 		Operator: domain.GroupOperatorAll,
 		Conditions: []domain.ConditionNode{
 			{
@@ -1192,10 +1254,14 @@ func TestEngine_EvaluateInactivity_DuplicateWithoutCooldown(t *testing.T) {
 		t.Fatalf("expected 1 executed, got %d", summary1.ExecutedCount)
 	}
 
-	// Pass 2 (immediate or next tick) -> deterministic event ID deduplication skips it
-	summary2, err := engine.EvaluateInactivity(context.Background(), userLister, refTime.Add(time.Hour), 10)
+	// Pass 2: Next day -> Rule IS due, but deterministic event ID deduplication skips it
+	nextDayTime := refTime.Add(21 * time.Hour).Add(5 * time.Minute)
+	summary2, err := engine.EvaluateInactivity(context.Background(), userLister, nextDayTime, 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if summary2.TotalRulesEvaluated != 1 {
+		t.Errorf("expected 1 rule evaluated next day, got %d", summary2.TotalRulesEvaluated)
 	}
 	if summary2.ExecutedCount != 0 {
 		t.Errorf("expected 0 executed on second pass, got %d", summary2.ExecutedCount)
@@ -1213,7 +1279,7 @@ func TestEngine_EvaluateInactivity_ErrorDoesNotStopBatch(t *testing.T) {
 	inactiveTime := refTime.AddDate(0, 0, -45)
 
 	// Rule references non-existent template
-	rule := createTestRule("rule-inactivity-bad-tpl", "Inactive Rule", "tpl-missing", true, domain.ConditionGroup{
+	rule := createTestInactivityRule("rule-inactivity-bad-tpl", "Inactive Rule", "tpl-missing", true, domain.ConditionGroup{
 		Operator: domain.GroupOperatorAll,
 		Conditions: []domain.ConditionNode{
 			{
@@ -1256,5 +1322,399 @@ func TestEngine_EvaluateInactivity_ErrorDoesNotStopBatch(t *testing.T) {
 	}
 	if summary.ExecutedCount != 0 {
 		t.Errorf("expected 0 executed, got %d", summary.ExecutedCount)
+	}
+}
+
+func TestEngine_TriggerMatching_EventTypes(t *testing.T) {
+	ruleRepo := &mockRuleRepo{}
+	templateRepo := &engineMockTemplateRepo{
+		templates: map[string]*domain.EmailTemplate{
+			"tpl-reg":      {ID: "tpl-reg", Status: domain.TemplateStatusActive, TemplateType: domain.TemplateTypeAutomation, Subject: "Reg", HTMLBody: "<p>Reg</p>"},
+			"tpl-email":    {ID: "tpl-email", Status: domain.TemplateStatusActive, TemplateType: domain.TemplateTypeAutomation, Subject: "Email", HTMLBody: "<p>Email</p>"},
+			"tpl-pwd":      {ID: "tpl-pwd", Status: domain.TemplateStatusActive, TemplateType: domain.TemplateTypeAutomation, Subject: "Pwd", HTMLBody: "<p>Pwd</p>"},
+			"tpl-blocked":  {ID: "tpl-blocked", Status: domain.TemplateStatusActive, TemplateType: domain.TemplateTypeAutomation, Subject: "Blocked", HTMLBody: "<p>Blocked</p>"},
+			"tpl-unblock":  {ID: "tpl-unblock", Status: domain.TemplateStatusActive, TemplateType: domain.TemplateTypeAutomation, Subject: "Unblock", HTMLBody: "<p>Unblock</p>"},
+			"tpl-lang":     {ID: "tpl-lang", Status: domain.TemplateStatusActive, TemplateType: domain.TemplateTypeAutomation, Subject: "Lang", HTMLBody: "<p>Lang</p>"},
+			"tpl-inactive": {ID: "tpl-inactive", Status: domain.TemplateStatusActive, TemplateType: domain.TemplateTypeAutomation, Subject: "Inactive", HTMLBody: "<p>Inactive</p>"},
+		},
+	}
+	directRepo := &mockDirectRepo{}
+	execRepo := &mockExecRepo{directRepo: directRepo}
+
+	allTrueConditions := domain.ConditionGroup{
+		Operator: domain.GroupOperatorAll,
+		Conditions: []domain.ConditionNode{
+			{Item: &domain.ConditionItem{Field: domain.FieldIsActive, Operator: domain.OperatorEquals, Value: true}},
+		},
+	}
+
+	makeRuleWithTrigger := func(id, trigger, tplID string) *domain.AutomationRule {
+		r := createTestRule(id, "Rule "+trigger, tplID, true, allTrueConditions, nil)
+		r.Config.Trigger = trigger
+		return r
+	}
+
+	ruleRepo.rules = []*domain.AutomationRule{
+		makeRuleWithTrigger("r-reg", domain.TriggerUserRegistered, "tpl-reg"),
+		makeRuleWithTrigger("r-email", domain.TriggerEmailConfirmed, "tpl-email"),
+		makeRuleWithTrigger("r-pwd", domain.TriggerPasswordChanged, "tpl-pwd"),
+		makeRuleWithTrigger("r-blocked", domain.TriggerUserBlocked, "tpl-blocked"),
+		makeRuleWithTrigger("r-unblock", domain.TriggerUserUnblocked, "tpl-unblock"),
+		makeRuleWithTrigger("r-lang", domain.TriggerUserLanguageChanged, "tpl-lang"),
+		makeRuleWithTrigger("r-inactive", domain.TriggerUserInactive, "tpl-inactive"),
+	}
+
+	engine := NewEngine(ruleRepo, templateRepo, directRepo, execRepo, nil, nil, logger.NewNop())
+
+	testCases := []struct {
+		eventType      string
+		expectedRuleID string
+		expectedTplID  string
+	}{
+		{domain.TriggerUserRegistered, "r-reg", "tpl-reg"},
+		{domain.TriggerEmailConfirmed, "r-email", "tpl-email"},
+		{domain.TriggerPasswordChanged, "r-pwd", "tpl-pwd"},
+		{domain.TriggerUserBlocked, "r-blocked", "tpl-blocked"},
+		{domain.TriggerUserUnblocked, "r-unblock", "tpl-unblock"},
+		{domain.TriggerUserLanguageChanged, "r-lang", "tpl-lang"},
+	}
+
+	for _, tc := range testCases {
+		t.Run("event_"+tc.eventType, func(t *testing.T) {
+			directRepo.created = nil
+			evt := Event{
+				ID:         "evt-" + tc.eventType,
+				Type:       tc.eventType,
+				UserID:     "user-1",
+				User:       &userclient.User{ID: "user-1", Email: "test@example.com", Username: "test", IsActive: true},
+				OccurredAt: time.Now().UTC(),
+			}
+
+			res, err := engine.HandleEvent(context.Background(), evt)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if len(res.Results) != 1 {
+				t.Fatalf("expected exactly 1 evaluated rule result for %s, got %d", tc.eventType, len(res.Results))
+			}
+			if res.Results[0].RuleID != tc.expectedRuleID {
+				t.Errorf("expected rule ID %s, got %s", tc.expectedRuleID, res.Results[0].RuleID)
+			}
+			if res.Results[0].Status != StatusExecuted {
+				t.Errorf("expected StatusExecuted, got %s", res.Results[0].Status)
+			}
+			if len(directRepo.created) != 1 {
+				t.Fatalf("expected 1 notification created, got %d", len(directRepo.created))
+			}
+			if directRepo.created[0].TemplateID != tc.expectedTplID {
+				t.Errorf("expected template %s, got %s", tc.expectedTplID, directRepo.created[0].TemplateID)
+			}
+		})
+	}
+
+	// Test unrelated / unhandled event type
+	t.Run("unrelated_event_triggers_nothing", func(t *testing.T) {
+		directRepo.created = nil
+		evt := Event{
+			ID:         "evt-custom",
+			Type:       "custom.unknown.event",
+			UserID:     "user-1",
+			User:       &userclient.User{ID: "user-1", Email: "test@example.com", Username: "test", IsActive: true},
+			OccurredAt: time.Now().UTC(),
+		}
+
+		res, err := engine.HandleEvent(context.Background(), evt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(res.Results) != 0 {
+			t.Errorf("expected 0 results for unrelated event, got %d", len(res.Results))
+		}
+		if len(directRepo.created) != 0 {
+			t.Errorf("expected 0 notifications created, got %d", len(directRepo.created))
+		}
+	})
+}
+
+func TestEngine_TriggerMatching_ConditionEvaluation(t *testing.T) {
+	ruleRepo := &mockRuleRepo{}
+	templateRepo := &engineMockTemplateRepo{
+		templates: map[string]*domain.EmailTemplate{
+			"tpl-en": {ID: "tpl-en", Status: domain.TemplateStatusActive, TemplateType: domain.TemplateTypeAutomation, Subject: "English", HTMLBody: "<p>EN</p>"},
+		},
+	}
+	directRepo := &mockDirectRepo{}
+	execRepo := &mockExecRepo{directRepo: directRepo}
+
+	enCondition := domain.ConditionGroup{
+		Operator: domain.GroupOperatorAll,
+		Conditions: []domain.ConditionNode{
+			{Item: &domain.ConditionItem{Field: domain.FieldLanguage, Operator: domain.OperatorEquals, Value: "en"}},
+		},
+	}
+
+	rule := createTestRule("rule-en-reg", "English Reg", "tpl-en", true, enCondition, nil)
+	rule.Config.Trigger = domain.TriggerUserRegistered
+	ruleRepo.rules = []*domain.AutomationRule{rule}
+
+	engine := NewEngine(ruleRepo, templateRepo, directRepo, execRepo, nil, nil, logger.NewNop())
+
+	// 1. Matching trigger + Matching conditions -> Executed
+	t.Run("matching_trigger_and_matching_conditions", func(t *testing.T) {
+		directRepo.created = nil
+		evt := Event{
+			ID:         "evt-1",
+			Type:       domain.TriggerUserRegistered,
+			UserID:     "user-en",
+			User:       &userclient.User{ID: "user-en", Email: "en@example.com", Username: "en_user", Language: "en", IsActive: true},
+			OccurredAt: time.Now().UTC(),
+		}
+		res, err := engine.HandleEvent(context.Background(), evt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(res.Results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(res.Results))
+		}
+		if res.Results[0].Status != StatusExecuted {
+			t.Errorf("expected StatusExecuted, got %s", res.Results[0].Status)
+		}
+		if len(directRepo.created) != 1 {
+			t.Errorf("expected 1 notification, got %d", len(directRepo.created))
+		}
+	})
+
+	// 2. Matching trigger + Non-matching conditions -> Skipped
+	t.Run("matching_trigger_and_non_matching_conditions", func(t *testing.T) {
+		directRepo.created = nil
+		evt := Event{
+			ID:         "evt-2",
+			Type:       domain.TriggerUserRegistered,
+			UserID:     "user-pl",
+			User:       &userclient.User{ID: "user-pl", Email: "pl@example.com", Username: "pl_user", Language: "pl", IsActive: true},
+			OccurredAt: time.Now().UTC(),
+		}
+		res, err := engine.HandleEvent(context.Background(), evt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(res.Results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(res.Results))
+		}
+		if res.Results[0].Status != StatusSkippedNotMatched {
+			t.Errorf("expected StatusSkippedNotMatched, got %s", res.Results[0].Status)
+		}
+		if len(directRepo.created) != 0 {
+			t.Errorf("expected 0 notifications, got %d", len(directRepo.created))
+		}
+	})
+
+	// 3. Unrelated trigger (even if condition matches) -> Ignored before evaluation
+	t.Run("unrelated_trigger_with_matching_condition_is_ignored", func(t *testing.T) {
+		directRepo.created = nil
+		evt := Event{
+			ID:         "evt-3",
+			Type:       domain.TriggerEmailConfirmed,
+			UserID:     "user-en",
+			User:       &userclient.User{ID: "user-en", Email: "en@example.com", Username: "en_user", Language: "en", IsActive: true},
+			OccurredAt: time.Now().UTC(),
+		}
+		res, err := engine.HandleEvent(context.Background(), evt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(res.Results) != 0 {
+			t.Errorf("expected 0 results because trigger does not match, got %d", len(res.Results))
+		}
+		if len(directRepo.created) != 0 {
+			t.Errorf("expected 0 notifications, got %d", len(directRepo.created))
+		}
+	})
+}
+
+func TestEngine_Inactivity_DoesNotEvaluateEventRules(t *testing.T) {
+	refTime := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	inactiveTime := refTime.AddDate(0, 0, -45)
+
+	eventRule := createTestRule("rule-event", "Event Rule", "tpl-1", true, domain.ConditionGroup{
+		Operator: domain.GroupOperatorAll,
+		Conditions: []domain.ConditionNode{
+			{Item: &domain.ConditionItem{Field: domain.FieldIsActive, Operator: domain.OperatorEquals, Value: true}},
+		},
+	}, nil)
+	eventRule.Config.Trigger = domain.TriggerUserRegistered
+
+	inactivityRule := createTestInactivityRule("rule-inact", "Inactivity Rule", "tpl-1", true, domain.ConditionGroup{
+		Operator: domain.GroupOperatorAll,
+		Conditions: []domain.ConditionNode{
+			{Item: &domain.ConditionItem{Field: domain.FieldLastActivityAt, Operator: domain.OperatorOlderThan, Value: 30, Unit: domain.UnitDays}},
+		},
+	}, nil)
+
+	ruleRepo := &mockRuleRepo{rules: []*domain.AutomationRule{eventRule, inactivityRule}}
+	templateRepo := &engineMockTemplateRepo{
+		templates: map[string]*domain.EmailTemplate{
+			"tpl-1": {ID: "tpl-1", Status: domain.TemplateStatusActive, TemplateType: domain.TemplateTypeAutomation, Subject: "Sub", HTMLBody: "<p>Body</p>"},
+		},
+	}
+	directRepo := &mockDirectRepo{}
+	execRepo := &mockExecRepo{directRepo: directRepo}
+
+	userLister := &mockUserLister{
+		pages: [][]*userclient.User{
+			{
+				{ID: "user-1", Email: "inactive@example.com", Username: "User1", LastActivityAt: &inactiveTime, IsActive: true},
+			},
+		},
+	}
+
+	engine := NewEngine(ruleRepo, templateRepo, directRepo, execRepo, nil, nil, logger.NewNop())
+
+	// 1. Inactivity evaluation must only evaluate the inactivity rule
+	summary, err := engine.EvaluateInactivity(context.Background(), userLister, refTime, 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if summary.TotalRulesEvaluated != 1 {
+		t.Errorf("expected 1 rule evaluated during inactivity evaluation, got %d", summary.TotalRulesEvaluated)
+	}
+	if summary.ExecutedCount != 1 {
+		t.Errorf("expected 1 executed, got %d", summary.ExecutedCount)
+	}
+
+	// 2. HandleEvent must only evaluate the event rule and ignore inactivity rule
+	directRepo.created = nil
+	evt := Event{
+		ID:         "evt-10",
+		Type:       domain.TriggerUserRegistered,
+		UserID:     "user-1",
+		User:       &userclient.User{ID: "user-1", Email: "inactive@example.com", Username: "User1", IsActive: true},
+		OccurredAt: refTime,
+	}
+	res, err := engine.HandleEvent(context.Background(), evt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Results) != 1 {
+		t.Fatalf("expected 1 result from HandleEvent, got %d", len(res.Results))
+	}
+	if res.Results[0].RuleID != "rule-event" {
+		t.Errorf("expected rule-event to execute, got %s", res.Results[0].RuleID)
+	}
+}
+
+func TestEngine_MissingAndInvalidTriggersNeverExecute(t *testing.T) {
+	refTime := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	inactiveTime := refTime.Add(-40 * 24 * time.Hour)
+
+	// Rule 1: Missing trigger (empty string)
+	missingTriggerRule := createTestRule("rule-missing-trigger", "Missing Trigger", "tpl-1", true, domain.ConditionGroup{
+		Operator: domain.GroupOperatorAll,
+		Conditions: []domain.ConditionNode{
+			{Item: &domain.ConditionItem{Field: domain.FieldIsActive, Operator: domain.OperatorEquals, Value: true}},
+		},
+	}, nil)
+	missingTriggerRule.Config.Trigger = ""
+
+	// Rule 2: Unknown trigger
+	unknownTriggerRule := createTestRule("rule-unknown-trigger", "Unknown Trigger", "tpl-1", true, domain.ConditionGroup{
+		Operator: domain.GroupOperatorAll,
+		Conditions: []domain.ConditionNode{
+			{Item: &domain.ConditionItem{Field: domain.FieldIsActive, Operator: domain.OperatorEquals, Value: true}},
+		},
+	}, nil)
+	unknownTriggerRule.Config.Trigger = "unknown.custom_trigger"
+
+	// Rule 3: Legitimate password.changed trigger
+	passwordChangedRule := createTestRule("rule-password-changed", "Password Changed", "tpl-1", true, domain.ConditionGroup{
+		Operator: domain.GroupOperatorAll,
+		Conditions: []domain.ConditionNode{
+			{Item: &domain.ConditionItem{Field: domain.FieldIsActive, Operator: domain.OperatorEquals, Value: true}},
+		},
+	}, nil)
+	passwordChangedRule.Config.Trigger = domain.TriggerPasswordChanged
+
+	// Rule 4: Legitimate user.inactive trigger
+	inactivityRule := createTestInactivityRule("rule-inactivity", "Inactivity", "tpl-1", true, domain.ConditionGroup{
+		Operator: domain.GroupOperatorAll,
+		Conditions: []domain.ConditionNode{
+			{Item: &domain.ConditionItem{Field: domain.FieldLastActivityAt, Operator: domain.OperatorOlderThan, Value: 30, Unit: domain.UnitDays}},
+		},
+	}, nil)
+
+	ruleRepo := &mockRuleRepo{rules: []*domain.AutomationRule{
+		missingTriggerRule,
+		unknownTriggerRule,
+		passwordChangedRule,
+		inactivityRule,
+	}}
+
+	templateRepo := &engineMockTemplateRepo{
+		templates: map[string]*domain.EmailTemplate{
+			"tpl-1": {ID: "tpl-1", Status: domain.TemplateStatusActive, TemplateType: domain.TemplateTypeAutomation, Subject: "Sub", HTMLBody: "<p>Body</p>"},
+		},
+	}
+	directRepo := &mockDirectRepo{}
+	execRepo := &mockExecRepo{directRepo: directRepo}
+
+	userLister := &mockUserLister{
+		pages: [][]*userclient.User{
+			{
+				{ID: "user-1", Email: "test@example.com", Username: "User1", LastActivityAt: &inactiveTime, IsActive: true},
+			},
+		},
+	}
+
+	engine := NewEngine(ruleRepo, templateRepo, directRepo, execRepo, nil, nil, logger.NewNop())
+
+	// 1. Send user.registered event:
+	// Missing trigger, unknown trigger, password.changed, and inactivity rules must NOT execute.
+	evtReg := Event{
+		ID:         "evt-reg-1",
+		Type:       domain.TriggerUserRegistered,
+		UserID:     "user-1",
+		User:       &userclient.User{ID: "user-1", Email: "test@example.com", Username: "User1", IsActive: true},
+		OccurredAt: refTime,
+	}
+	resReg, err := engine.HandleEvent(context.Background(), evtReg)
+	if err != nil {
+		t.Fatalf("unexpected error on HandleEvent user.registered: %v", err)
+	}
+	if len(resReg.Results) != 0 {
+		t.Fatalf("expected 0 executed rules for user.registered event, got %d", len(resReg.Results))
+	}
+
+	// 2. Send password.changed event:
+	// Only passwordChangedRule should execute. Missing and unknown triggers must NOT execute.
+	evtPass := Event{
+		ID:         "evt-pass-1",
+		Type:       domain.TriggerPasswordChanged,
+		UserID:     "user-1",
+		User:       &userclient.User{ID: "user-1", Email: "test@example.com", Username: "User1", IsActive: true},
+		OccurredAt: refTime,
+	}
+	resPass, err := engine.HandleEvent(context.Background(), evtPass)
+	if err != nil {
+		t.Fatalf("unexpected error on HandleEvent password.changed: %v", err)
+	}
+	if len(resPass.Results) != 1 {
+		t.Fatalf("expected exactly 1 result for password.changed event, got %d", len(resPass.Results))
+	}
+	if resPass.Results[0].RuleID != "rule-password-changed" {
+		t.Errorf("expected rule-password-changed, got %s", resPass.Results[0].RuleID)
+	}
+
+	// 3. EvaluateInactivity:
+	// Only inactivityRule should be evaluated and executed. Missing and unknown triggers must NOT be evaluated.
+	summary, err := engine.EvaluateInactivity(context.Background(), userLister, refTime, 10)
+	if err != nil {
+		t.Fatalf("unexpected error on EvaluateInactivity: %v", err)
+	}
+	if summary.TotalRulesEvaluated != 1 {
+		t.Errorf("expected exactly 1 rule evaluated in inactivity scheduler, got %d", summary.TotalRulesEvaluated)
+	}
+	if summary.ExecutedCount != 1 {
+		t.Errorf("expected exactly 1 execution in inactivity scheduler, got %d", summary.ExecutedCount)
 	}
 }

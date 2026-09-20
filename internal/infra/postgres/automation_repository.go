@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"time"
 
 	"github.com/gmhelper/notify-api/internal/domain"
 )
@@ -48,6 +49,24 @@ func (r *AutomationRuleRepository) Update(ctx context.Context, rule *domain.Auto
 UPDATE automation_rules
 SET name = $1, template_id = $2, enabled = $3, config = $4, last_evaluated_at = $5, next_evaluation_at = $6, updated_at = now()
 WHERE id = $7`, rule.Name, rule.TemplateID, rule.Enabled, rule.Config, rule.LastEvaluatedAt, rule.NextEvaluationAt, rule.ID)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+func (r *AutomationRuleRepository) UpdateEvaluationTimes(ctx context.Context, id string, lastEvaluatedAt, nextEvaluationAt *time.Time) error {
+	res, err := r.db.ExecContext(ctx, `
+UPDATE automation_rules
+SET last_evaluated_at = $1, next_evaluation_at = $2, updated_at = now()
+WHERE id = $3`, lastEvaluatedAt, nextEvaluationAt, id)
 	if err != nil {
 		return err
 	}

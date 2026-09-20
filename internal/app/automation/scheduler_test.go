@@ -15,7 +15,7 @@ func TestScheduler_EvaluateDue(t *testing.T) {
 	refTime := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
 	inactiveTime := refTime.AddDate(0, 0, -45)
 
-	rule := createTestRule("rule-sched-1", "Scheduler Test Rule", "tpl-1", true, domain.ConditionGroup{
+	rule := createTestInactivityRule("rule-sched-1", "Scheduler Test Rule", "tpl-1", true, domain.ConditionGroup{
 		Operator: domain.GroupOperatorAll,
 		Conditions: []domain.ConditionNode{
 			{
@@ -54,7 +54,9 @@ func TestScheduler_EvaluateDue(t *testing.T) {
 
 	engine := NewEngine(ruleRepo, templateRepo, directRepo, execRepo, nil, nil, logger.NewNop())
 	sched := NewScheduler(engine, userLister, time.Hour, 50, logger.NewNop())
+	sched.SetNowFunc(func() time.Time { return refTime })
 
+	// Pass 1: Rule is due at 12:00 (daily 09:00 schedule) -> evaluates and executes
 	summary, err := sched.EvaluateDue(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error during EvaluateDue: %v", err)
@@ -68,6 +70,50 @@ func TestScheduler_EvaluateDue(t *testing.T) {
 	}
 	if len(directRepo.created) != 1 {
 		t.Errorf("expected 1 notification created, got %d", len(directRepo.created))
+	}
+	if rule.LastEvaluatedAt == nil {
+		t.Errorf("expected LastEvaluatedAt to be set after execution")
+	}
+	if rule.NextEvaluationAt == nil {
+		t.Errorf("expected NextEvaluationAt to be set after execution")
+	}
+
+	// Pass 2: Scheduler ticks 10 minutes later (12:10) -> Rule is NOT due -> 0 rules and 0 users evaluated
+	sched.SetNowFunc(func() time.Time { return refTime.Add(10 * time.Minute) })
+	summary2, err := sched.EvaluateDue(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error during second EvaluateDue: %v", err)
+	}
+	if summary2.TotalRulesEvaluated != 0 {
+		t.Errorf("expected 0 rules evaluated on second tick, got %d", summary2.TotalRulesEvaluated)
+	}
+	if summary2.TotalUsersEvaluated != 0 {
+		t.Errorf("expected 0 users evaluated on second tick, got %d", summary2.TotalUsersEvaluated)
+	}
+	if summary2.ExecutedCount != 0 {
+		t.Errorf("expected 0 executed on second tick, got %d", summary2.ExecutedCount)
+	}
+
+	// Pass 3: Next day at 09:05 -> Rule IS due -> evaluates, and skips duplicate without cooldown
+	sched.SetNowFunc(func() time.Time { return refTime.Add(21 * time.Hour).Add(5 * time.Minute) }) // 2026-09-21 09:05:00
+	summary3, err := sched.EvaluateDue(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error during next day EvaluateDue: %v", err)
+	}
+	if summary3.TotalRulesEvaluated != 1 {
+		t.Errorf("expected 1 rule evaluated next day, got %d", summary3.TotalRulesEvaluated)
+	}
+	if summary3.TotalUsersEvaluated != 1 {
+		t.Errorf("expected 1 user evaluated next day, got %d", summary3.TotalUsersEvaluated)
+	}
+	if summary3.ExecutedCount != 0 {
+		t.Errorf("expected 0 executed next day due to duplicate, got %d", summary3.ExecutedCount)
+	}
+	if summary3.SkippedDuplicateCount != 1 {
+		t.Errorf("expected 1 skipped duplicate next day, got %d", summary3.SkippedDuplicateCount)
+	}
+	if len(directRepo.created) != 1 {
+		t.Errorf("expected still 1 notification created, got %d", len(directRepo.created))
 	}
 }
 

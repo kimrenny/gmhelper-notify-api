@@ -20,6 +20,7 @@ func intPtr(i int) *int {
 func sampleConfig() domain.AutomationRuleConfig {
 	return domain.AutomationRuleConfig{
 		Version: 1,
+		Trigger: domain.TriggerUserRegistered,
 		Schedule: domain.ScheduleConfig{
 			Type:      domain.ScheduleTypeDaily,
 			HourUTC:   intPtr(3),
@@ -90,6 +91,19 @@ func (m *mockAutomationRepo) Update(ctx context.Context, rule *domain.Automation
 	}
 	cp := *rule
 	m.rules[rule.ID] = &cp
+	return nil
+}
+
+func (m *mockAutomationRepo) UpdateEvaluationTimes(ctx context.Context, id string, lastEvaluatedAt, nextEvaluationAt *time.Time) error {
+	if m.updateErr != nil {
+		return m.updateErr
+	}
+	r, ok := m.rules[id]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	r.LastEvaluatedAt = lastEvaluatedAt
+	r.NextEvaluationAt = nextEvaluationAt
 	return nil
 }
 
@@ -173,6 +187,59 @@ func (m *mockTemplateRepo) List(ctx context.Context) ([]*domain.EmailTemplate, e
 	return nil, nil
 }
 
+type mockAutomationExecutionRepo struct {
+	execs      map[string][]*domain.AutomationExecution
+	listErr    error
+	recordErr  error
+	hasExecErr error
+}
+
+func newMockAutomationExecutionRepo() *mockAutomationExecutionRepo {
+	return &mockAutomationExecutionRepo{
+		execs: make(map[string][]*domain.AutomationExecution),
+	}
+}
+
+func (m *mockAutomationExecutionRepo) RecordExecution(ctx context.Context, exec *domain.AutomationExecution) error {
+	return m.recordErr
+}
+
+func (m *mockAutomationExecutionRepo) HasExecution(ctx context.Context, ruleID, eventID string) (bool, error) {
+	return false, m.hasExecErr
+}
+
+func (m *mockAutomationExecutionRepo) GetLastSuccessfulExecution(ctx context.Context, ruleID, recipientEmail string, externalUserID *string) (*domain.AutomationExecution, error) {
+	return nil, nil
+}
+
+func (m *mockAutomationExecutionRepo) ListByRuleID(ctx context.Context, ruleID string, limit, offset int) ([]*domain.AutomationExecution, int, error) {
+	if m.listErr != nil {
+		return nil, 0, m.listErr
+	}
+	all := m.execs[ruleID]
+	total := len(all)
+	if offset >= total {
+		return []*domain.AutomationExecution{}, total, nil
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return all[offset:end], total, nil
+}
+
+func (m *mockAutomationExecutionRepo) ExecuteRuleAtomic(
+	ctx context.Context,
+	ruleID, eventID, recipientEmail string,
+	externalUserID *string,
+	cooldownDays *int,
+	eventTime time.Time,
+	notif *domain.DirectNotification,
+	exec *domain.AutomationExecution,
+) (string, error) {
+	return "success", nil
+}
+
 func boolPtr(b bool) *bool {
 	return &b
 }
@@ -180,7 +247,8 @@ func boolPtr(b bool) *bool {
 func TestService_List_Success(t *testing.T) {
 	autoRepo := newMockAutomationRepo()
 	tplRepo := newMockTemplateRepo()
-	svc := NewService(autoRepo, tplRepo, nil)
+	execRepo := newMockAutomationExecutionRepo()
+	svc := NewService(autoRepo, tplRepo, execRepo, nil)
 
 	rule1 := &domain.AutomationRule{
 		ID:         "r1",
@@ -215,10 +283,11 @@ func TestService_List_Success(t *testing.T) {
 func TestService_GetByID(t *testing.T) {
 	autoRepo := newMockAutomationRepo()
 	tplRepo := newMockTemplateRepo()
-	svc := NewService(autoRepo, tplRepo, nil)
+	execRepo := newMockAutomationExecutionRepo()
+	svc := NewService(autoRepo, tplRepo, execRepo, nil)
 
 	rule := &domain.AutomationRule{
-		ID:         "r-100",
+		ID:         "00000000-0000-0000-0000-000000000100",
 		Name:       "Welcome Rule",
 		TemplateID: "t-100",
 		Enabled:    true,
@@ -229,7 +298,7 @@ func TestService_GetByID(t *testing.T) {
 	_ = autoRepo.Create(context.Background(), rule)
 
 	// 1. Success
-	fetched, err := svc.GetByID(context.Background(), "r-100")
+	fetched, err := svc.GetByID(context.Background(), "00000000-0000-0000-0000-000000000100")
 	if err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
@@ -243,22 +312,116 @@ func TestService_GetByID(t *testing.T) {
 		t.Errorf("expected ErrInvalidInput, got %v", err)
 	}
 
-	// 3. Not Found -> ErrNotFound
-	_, err = svc.GetByID(context.Background(), "non-existent")
+	// 3. Invalid UUID -> ErrInvalidInput
+	_, err = svc.GetByID(context.Background(), "not-a-uuid")
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput for non-uuid, got %v", err)
+	}
+
+	// 4. Not Found -> ErrNotFound
+	_, err = svc.GetByID(context.Background(), "00000000-0000-0000-0000-000000000999")
 	if !errors.Is(err, domain.ErrNotFound) {
 		t.Errorf("expected domain.ErrNotFound, got %v", err)
+	}
+}
+
+func TestService_ListExecutions(t *testing.T) {
+	autoRepo := newMockAutomationRepo()
+	tplRepo := newMockTemplateRepo()
+	execRepo := newMockAutomationExecutionRepo()
+	svc := NewService(autoRepo, tplRepo, execRepo, nil)
+
+	ruleID := "00000000-0000-0000-0000-000000000001"
+	rule := &domain.AutomationRule{
+		ID:         ruleID,
+		Name:       "Rule with Executions",
+		TemplateID: "tpl-1",
+		Enabled:    true,
+		Config:     sampleConfig(),
+	}
+	_ = autoRepo.Create(context.Background(), rule)
+
+	now := time.Now().UTC()
+	execRepo.execs[ruleID] = []*domain.AutomationExecution{
+		{ID: "e1", RuleID: ruleID, EventID: "evt1", RecipientEmail: "u1@example.com", Status: "success", ExecutedAt: now},
+		{ID: "e2", RuleID: ruleID, EventID: "evt2", RecipientEmail: "u2@example.com", Status: "skipped_cooldown", ExecutedAt: now.Add(-time.Minute)},
+		{ID: "e3", RuleID: ruleID, EventID: "evt3", RecipientEmail: "u3@example.com", Status: "failed", ExecutedAt: now.Add(-2 * time.Minute)},
+	}
+
+	// 1. Success with pagination
+	items, total, err := svc.ListExecutions(context.Background(), ruleID, 2, 0)
+	if err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	if total != 3 || len(items) != 2 {
+		t.Fatalf("expected total=3, len=2, got total=%d, len=%d", total, len(items))
+	}
+	if items[0].ID != "e1" || items[1].ID != "e2" {
+		t.Errorf("unexpected items: %+v", items)
+	}
+
+	// 2. Second page
+	items2, total2, err := svc.ListExecutions(context.Background(), ruleID, 2, 2)
+	if err != nil {
+		t.Fatalf("expected success on page 2, got %v", err)
+	}
+	if total2 != 3 || len(items2) != 1 || items2[0].ID != "e3" {
+		t.Errorf("unexpected page 2: total=%d, items=%+v", total2, items2)
+	}
+
+	// 3. Rule exists but no executions -> empty list, total 0, no error
+	emptyRuleID := "00000000-0000-0000-0000-000000000002"
+	_ = autoRepo.Create(context.Background(), &domain.AutomationRule{
+		ID:         emptyRuleID,
+		Name:       "Empty Rule",
+		TemplateID: "tpl-1",
+		Enabled:    true,
+		Config:     sampleConfig(),
+	})
+	emptyItems, emptyTotal, err := svc.ListExecutions(context.Background(), emptyRuleID, 20, 0)
+	if err != nil {
+		t.Fatalf("expected no error for empty history, got %v", err)
+	}
+	if emptyTotal != 0 || len(emptyItems) != 0 {
+		t.Errorf("expected 0 total and 0 items, got total=%d, len=%d", emptyTotal, len(emptyItems))
+	}
+
+	// 4. Blank rule ID -> ErrInvalidInput
+	_, _, err = svc.ListExecutions(context.Background(), "   ", 20, 0)
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput for blank rule ID, got %v", err)
+	}
+
+	// 5. Invalid UUID -> ErrInvalidInput
+	_, _, err = svc.ListExecutions(context.Background(), "invalid-uuid", 20, 0)
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput for invalid UUID, got %v", err)
+	}
+
+	// 6. Non-existent rule -> ErrNotFound
+	_, _, err = svc.ListExecutions(context.Background(), "00000000-0000-0000-0000-000000000999", 20, 0)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("expected domain.ErrNotFound for non-existent rule, got %v", err)
+	}
+
+	// 7. Execution repo error propagates
+	execRepo.listErr = errors.New("exec db error")
+	_, _, err = svc.ListExecutions(context.Background(), ruleID, 20, 0)
+	if err == nil || !strings.Contains(err.Error(), "exec db error") {
+		t.Errorf("expected exec db error, got %v", err)
 	}
 }
 
 func TestService_Create(t *testing.T) {
 	autoRepo := newMockAutomationRepo()
 	tplRepo := newMockTemplateRepo()
+	execRepo := newMockAutomationExecutionRepo()
 	tplRepo.templates["t-valid"] = &domain.EmailTemplate{
 		ID:           "t-valid",
 		Name:         "Valid Template",
 		TemplateType: domain.TemplateTypeAutomation,
 	}
-	svc := NewService(autoRepo, tplRepo, nil)
+	svc := NewService(autoRepo, tplRepo, execRepo, nil)
 
 	// 1. Success
 	enabled := true
@@ -347,8 +510,9 @@ func TestService_Update(t *testing.T) {
 	tplRepo := newMockTemplateRepo()
 	tplRepo.templates["t-original"] = &domain.EmailTemplate{ID: "t-original", TemplateType: domain.TemplateTypeAutomation}
 	tplRepo.templates["t-new"] = &domain.EmailTemplate{ID: "t-new", TemplateType: domain.TemplateTypeAutomation}
+	execRepo := newMockAutomationExecutionRepo()
 
-	svc := NewService(autoRepo, tplRepo, nil)
+	svc := NewService(autoRepo, tplRepo, execRepo, nil)
 
 	existingRule := &domain.AutomationRule{
 		ID:         "rule-to-edit",
@@ -436,7 +600,8 @@ func TestService_Update(t *testing.T) {
 func TestService_Delete(t *testing.T) {
 	autoRepo := newMockAutomationRepo()
 	tplRepo := newMockTemplateRepo()
-	svc := NewService(autoRepo, tplRepo, nil)
+	execRepo := newMockAutomationExecutionRepo()
+	svc := NewService(autoRepo, tplRepo, execRepo, nil)
 
 	rule := &domain.AutomationRule{
 		ID:         "rule-del",
@@ -474,13 +639,16 @@ func TestService_Delete(t *testing.T) {
 }
 
 func TestService_NilRepo(t *testing.T) {
-	svc := NewService(nil, nil, nil)
+	svc := NewService(nil, nil, nil, nil)
 
 	if _, err := svc.List(context.Background()); err == nil {
 		t.Errorf("expected error with nil repo on List")
 	}
-	if _, err := svc.GetByID(context.Background(), "1"); err == nil {
+	if _, err := svc.GetByID(context.Background(), "00000000-0000-0000-0000-000000000001"); err == nil {
 		t.Errorf("expected error with nil repo on GetByID")
+	}
+	if _, _, err := svc.ListExecutions(context.Background(), "00000000-0000-0000-0000-000000000001", 20, 0); err == nil {
+		t.Errorf("expected error with nil repo on ListExecutions")
 	}
 	if _, err := svc.Create(context.Background(), CreateInput{}); err == nil {
 		t.Errorf("expected error with nil repo on Create")
@@ -533,7 +701,7 @@ func TestService_Audit_Create_Success(t *testing.T) {
 	}
 	auditRepo := &mockActivityLogRepoForAutomation{}
 	auditSvc := audit.NewService(auditRepo)
-	svc := NewService(autoRepo, tplRepo, auditSvc)
+	svc := NewService(autoRepo, tplRepo, nil, auditSvc)
 
 	ctx := authContext("usr-admin-1", "admin")
 	cfg := sampleConfig()
@@ -592,7 +760,7 @@ func TestService_Audit_Create_RepoError_NoAudit(t *testing.T) {
 	}
 	auditRepo := &mockActivityLogRepoForAutomation{}
 	auditSvc := audit.NewService(auditRepo)
-	svc := NewService(autoRepo, tplRepo, auditSvc)
+	svc := NewService(autoRepo, tplRepo, nil, auditSvc)
 
 	ctx := authContext("usr-admin-1", "admin")
 	_, err := svc.Create(ctx, CreateInput{
@@ -618,7 +786,7 @@ func TestService_Audit_Create_MissingPrincipal_FailsFastNoMutation(t *testing.T)
 	}
 	auditRepo := &mockActivityLogRepoForAutomation{}
 	auditSvc := audit.NewService(auditRepo)
-	svc := NewService(autoRepo, tplRepo, auditSvc)
+	svc := NewService(autoRepo, tplRepo, nil, auditSvc)
 
 	// Context without principal
 	_, err := svc.Create(context.Background(), CreateInput{
@@ -649,7 +817,7 @@ func TestService_Audit_Create_AuditFailure_PropagatesError(t *testing.T) {
 		createErr: errors.New("audit log write error"),
 	}
 	auditSvc := audit.NewService(auditRepo)
-	svc := NewService(autoRepo, tplRepo, auditSvc)
+	svc := NewService(autoRepo, tplRepo, nil, auditSvc)
 
 	ctx := authContext("usr-admin-1", "admin")
 	_, err := svc.Create(ctx, CreateInput{
@@ -673,7 +841,7 @@ func TestService_Audit_Update_ConfigurationChange_Success(t *testing.T) {
 
 	auditRepo := &mockActivityLogRepoForAutomation{}
 	auditSvc := audit.NewService(auditRepo)
-	svc := NewService(autoRepo, tplRepo, auditSvc)
+	svc := NewService(autoRepo, tplRepo, nil, auditSvc)
 
 	existing := &domain.AutomationRule{
 		ID:         "rule-upd-1",
@@ -748,7 +916,7 @@ func TestService_Audit_Update_NoOp_NoAudit(t *testing.T) {
 
 	auditRepo := &mockActivityLogRepoForAutomation{}
 	auditSvc := audit.NewService(auditRepo)
-	svc := NewService(autoRepo, tplRepo, auditSvc)
+	svc := NewService(autoRepo, tplRepo, nil, auditSvc)
 
 	cfg := sampleConfig()
 	existing := &domain.AutomationRule{
@@ -791,7 +959,7 @@ func TestService_Audit_Update_MissingPrincipal_FailsFastNoMutation(t *testing.T)
 	tplRepo := newMockTemplateRepo()
 	auditRepo := &mockActivityLogRepoForAutomation{}
 	auditSvc := audit.NewService(auditRepo)
-	svc := NewService(autoRepo, tplRepo, auditSvc)
+	svc := NewService(autoRepo, tplRepo, nil, auditSvc)
 
 	existing := &domain.AutomationRule{
 		ID:         "rule-upd-missing-auth",
@@ -826,7 +994,7 @@ func TestService_Audit_Update_AuditFailure_PropagatesError(t *testing.T) {
 		createErr: errors.New("audit log error"),
 	}
 	auditSvc := audit.NewService(auditRepo)
-	svc := NewService(autoRepo, tplRepo, auditSvc)
+	svc := NewService(autoRepo, tplRepo, nil, auditSvc)
 
 	existing := &domain.AutomationRule{
 		ID:         "rule-upd-err",
@@ -853,7 +1021,7 @@ func TestService_Audit_Enable_DisabledToEnabled(t *testing.T) {
 	tplRepo := newMockTemplateRepo()
 	auditRepo := &mockActivityLogRepoForAutomation{}
 	auditSvc := audit.NewService(auditRepo)
-	svc := NewService(autoRepo, tplRepo, auditSvc)
+	svc := NewService(autoRepo, tplRepo, nil, auditSvc)
 
 	existing := &domain.AutomationRule{
 		ID:         "rule-enable-1",
@@ -899,7 +1067,7 @@ func TestService_Audit_Enable_AlreadyEnabled_NoAudit(t *testing.T) {
 	tplRepo := newMockTemplateRepo()
 	auditRepo := &mockActivityLogRepoForAutomation{}
 	auditSvc := audit.NewService(auditRepo)
-	svc := NewService(autoRepo, tplRepo, auditSvc)
+	svc := NewService(autoRepo, tplRepo, nil, auditSvc)
 
 	existing := &domain.AutomationRule{
 		ID:         "rule-already-enabled",
@@ -929,7 +1097,7 @@ func TestService_Audit_Disable_EnabledToDisabled(t *testing.T) {
 	tplRepo := newMockTemplateRepo()
 	auditRepo := &mockActivityLogRepoForAutomation{}
 	auditSvc := audit.NewService(auditRepo)
-	svc := NewService(autoRepo, tplRepo, auditSvc)
+	svc := NewService(autoRepo, tplRepo, nil, auditSvc)
 
 	existing := &domain.AutomationRule{
 		ID:         "rule-disable-1",
@@ -975,7 +1143,7 @@ func TestService_Audit_Disable_AlreadyDisabled_NoAudit(t *testing.T) {
 	tplRepo := newMockTemplateRepo()
 	auditRepo := &mockActivityLogRepoForAutomation{}
 	auditSvc := audit.NewService(auditRepo)
-	svc := NewService(autoRepo, tplRepo, auditSvc)
+	svc := NewService(autoRepo, tplRepo, nil, auditSvc)
 
 	existing := &domain.AutomationRule{
 		ID:         "rule-already-disabled",
@@ -1005,7 +1173,7 @@ func TestService_Audit_Delete_Success(t *testing.T) {
 	tplRepo := newMockTemplateRepo()
 	auditRepo := &mockActivityLogRepoForAutomation{}
 	auditSvc := audit.NewService(auditRepo)
-	svc := NewService(autoRepo, tplRepo, auditSvc)
+	svc := NewService(autoRepo, tplRepo, nil, auditSvc)
 
 	cfg := sampleConfig()
 	existing := &domain.AutomationRule{
@@ -1055,7 +1223,7 @@ func TestService_Audit_Delete_NotFound_NoAudit(t *testing.T) {
 	tplRepo := newMockTemplateRepo()
 	auditRepo := &mockActivityLogRepoForAutomation{}
 	auditSvc := audit.NewService(auditRepo)
-	svc := NewService(autoRepo, tplRepo, auditSvc)
+	svc := NewService(autoRepo, tplRepo, nil, auditSvc)
 
 	ctx := authContext("usr-admin-1", "admin")
 	err := svc.Delete(ctx, "non-existent-rule-id")
@@ -1073,7 +1241,7 @@ func TestService_Audit_Delete_MissingPrincipal_FailsFastNoDeletion(t *testing.T)
 	tplRepo := newMockTemplateRepo()
 	auditRepo := &mockActivityLogRepoForAutomation{}
 	auditSvc := audit.NewService(auditRepo)
-	svc := NewService(autoRepo, tplRepo, auditSvc)
+	svc := NewService(autoRepo, tplRepo, nil, auditSvc)
 
 	existing := &domain.AutomationRule{
 		ID:         "rule-del-noauth",
@@ -1104,7 +1272,7 @@ func TestService_Audit_Delete_AuditFailure_PropagatesError(t *testing.T) {
 		createErr: errors.New("audit failure on delete"),
 	}
 	auditSvc := audit.NewService(auditRepo)
-	svc := NewService(autoRepo, tplRepo, auditSvc)
+	svc := NewService(autoRepo, tplRepo, nil, auditSvc)
 
 	existing := &domain.AutomationRule{
 		ID:         "rule-del-err",
@@ -1134,7 +1302,7 @@ func TestService_Audit_Privacy_NoSecretsInPayloads(t *testing.T) {
 	}
 	auditRepo := &mockActivityLogRepoForAutomation{}
 	auditSvc := audit.NewService(auditRepo)
-	svc := NewService(autoRepo, tplRepo, auditSvc)
+	svc := NewService(autoRepo, tplRepo, nil, auditSvc)
 
 	ctx := authContext("usr-admin-1", "admin")
 

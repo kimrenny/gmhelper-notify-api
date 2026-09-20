@@ -55,6 +55,39 @@ const (
 	ActionTypeSendEmail = "send_email"
 )
 
+// Supported trigger types
+const (
+	TriggerUserRegistered      = "user.registered"
+	TriggerEmailConfirmed      = "email.confirmed"
+	TriggerPasswordChanged     = "password.changed"
+	TriggerUserBlocked         = "user.blocked"
+	TriggerUserUnblocked       = "user.unblocked"
+	TriggerUserLanguageChanged = "user.language_changed"
+	TriggerUserInactive        = "user.inactive"
+)
+
+// SupportedTriggers contains all canonical trigger identifiers
+var SupportedTriggers = []string{
+	TriggerUserRegistered,
+	TriggerEmailConfirmed,
+	TriggerPasswordChanged,
+	TriggerUserBlocked,
+	TriggerUserUnblocked,
+	TriggerUserLanguageChanged,
+	TriggerUserInactive,
+}
+
+// IsSupportedTrigger checks whether a given trigger type is supported
+func IsSupportedTrigger(trigger string) bool {
+	t := strings.ToLower(strings.TrimSpace(trigger))
+	for _, st := range SupportedTriggers {
+		if st == t {
+			return true
+		}
+	}
+	return false
+}
+
 // Supported condition field names in v1
 const (
 	FieldIsBlocked        = "isBlocked"
@@ -71,6 +104,7 @@ const (
 // AutomationRuleConfig is the root configuration structure.
 type AutomationRuleConfig struct {
 	Version    int            `json:"version"`
+	Trigger    string         `json:"trigger"`
 	Schedule   ScheduleConfig `json:"schedule"`
 	Conditions ConditionGroup `json:"conditions"`
 	Action     ActionConfig   `json:"action"`
@@ -201,6 +235,14 @@ type ActionConfig struct {
 func (c *AutomationRuleConfig) Validate() error {
 	if c.Version != 1 {
 		return fmt.Errorf("%w: config version %d is not supported (expected 1)", ErrInvalidEntity, c.Version)
+	}
+
+	trigger := strings.ToLower(strings.TrimSpace(c.Trigger))
+	if trigger == "" {
+		return fmt.Errorf("%w: automation rule trigger is required", ErrInvalidEntity)
+	}
+	if !IsSupportedTrigger(trigger) {
+		return fmt.Errorf("%w: unsupported or invalid automation trigger %q", ErrInvalidEntity, c.Trigger)
 	}
 
 	if err := c.Schedule.Validate(); err != nil {

@@ -13,6 +13,7 @@ func intPtr(i int) *int {
 func TestAutomationRuleConfig_ValidMinimalRule(t *testing.T) {
 	cfg := &AutomationRuleConfig{
 		Version: 1,
+		Trigger: TriggerUserRegistered,
 		Schedule: ScheduleConfig{
 			Type:      ScheduleTypeDaily,
 			HourUTC:   intPtr(3),
@@ -44,6 +45,7 @@ func TestAutomationRuleConfig_ValidMinimalRule(t *testing.T) {
 func TestAutomationRuleConfig_MultipleAndNestedConditions(t *testing.T) {
 	cfg := &AutomationRuleConfig{
 		Version: 1,
+		Trigger: TriggerEmailConfirmed,
 		Schedule: ScheduleConfig{
 			Type:      ScheduleTypeWeekly,
 			HourUTC:   intPtr(12),
@@ -118,6 +120,7 @@ func TestAutomationRuleConfig_MultipleAndNestedConditions(t *testing.T) {
 func TestAutomationRuleConfig_JSONSerialization(t *testing.T) {
 	rawJSON := `{
 		"version": 1,
+		"trigger": "user.registered",
 		"schedule": {
 			"type": "interval_hours",
 			"intervalHours": 24
@@ -162,6 +165,10 @@ func TestAutomationRuleConfig_JSONSerialization(t *testing.T) {
 		t.Fatalf("unmarshaled config failed validation: %v", err)
 	}
 
+	if cfg.Trigger != TriggerUserRegistered {
+		t.Errorf("expected trigger %q, got %q", TriggerUserRegistered, cfg.Trigger)
+	}
+
 	if len(cfg.Conditions.Conditions) != 2 {
 		t.Fatalf("expected 2 root conditions, got %d", len(cfg.Conditions.Conditions))
 	}
@@ -204,9 +211,40 @@ func TestAutomationRuleConfig_ValidationFailures(t *testing.T) {
 		cfg  AutomationRuleConfig
 	}{
 		{
+			name: "missing trigger",
+			cfg: AutomationRuleConfig{
+				Version:  1,
+				Trigger:  "",
+				Schedule: validSchedule,
+				Conditions: ConditionGroup{
+					Operator: "all",
+					Conditions: []ConditionNode{
+						{Item: &ConditionItem{Field: FieldIsActive, Operator: OperatorEquals, Value: true}},
+					},
+				},
+				Action: validAction,
+			},
+		},
+		{
+			name: "unsupported trigger",
+			cfg: AutomationRuleConfig{
+				Version:  1,
+				Trigger:  "user.deleted",
+				Schedule: validSchedule,
+				Conditions: ConditionGroup{
+					Operator: "all",
+					Conditions: []ConditionNode{
+						{Item: &ConditionItem{Field: FieldIsActive, Operator: OperatorEquals, Value: true}},
+					},
+				},
+				Action: validAction,
+			},
+		},
+		{
 			name: "unsupported version 0",
 			cfg: AutomationRuleConfig{
 				Version:  0,
+				Trigger:  TriggerUserRegistered,
 				Schedule: validSchedule,
 				Conditions: ConditionGroup{
 					Operator: "all",
@@ -221,6 +259,7 @@ func TestAutomationRuleConfig_ValidationFailures(t *testing.T) {
 			name: "unsupported version 2",
 			cfg: AutomationRuleConfig{
 				Version:  2,
+				Trigger:  TriggerUserRegistered,
 				Schedule: validSchedule,
 				Conditions: ConditionGroup{
 					Operator: "all",
@@ -235,6 +274,7 @@ func TestAutomationRuleConfig_ValidationFailures(t *testing.T) {
 			name: "invalid schedule type",
 			cfg: AutomationRuleConfig{
 				Version: 1,
+				Trigger: TriggerUserRegistered,
 				Schedule: ScheduleConfig{
 					Type: "hourly_at_minute",
 				},
@@ -251,6 +291,7 @@ func TestAutomationRuleConfig_ValidationFailures(t *testing.T) {
 			name: "daily schedule missing hour",
 			cfg: AutomationRuleConfig{
 				Version: 1,
+				Trigger: TriggerUserRegistered,
 				Schedule: ScheduleConfig{
 					Type:      ScheduleTypeDaily,
 					MinuteUTC: intPtr(10),
@@ -268,6 +309,7 @@ func TestAutomationRuleConfig_ValidationFailures(t *testing.T) {
 			name: "daily schedule hour out of range",
 			cfg: AutomationRuleConfig{
 				Version: 1,
+				Trigger: TriggerUserRegistered,
 				Schedule: ScheduleConfig{
 					Type:      ScheduleTypeDaily,
 					HourUTC:   intPtr(24),
@@ -286,6 +328,7 @@ func TestAutomationRuleConfig_ValidationFailures(t *testing.T) {
 			name: "weekly schedule dayOfWeek out of range",
 			cfg: AutomationRuleConfig{
 				Version: 1,
+				Trigger: TriggerUserRegistered,
 				Schedule: ScheduleConfig{
 					Type:      ScheduleTypeWeekly,
 					HourUTC:   intPtr(10),
@@ -305,6 +348,7 @@ func TestAutomationRuleConfig_ValidationFailures(t *testing.T) {
 			name: "interval_hours out of range",
 			cfg: AutomationRuleConfig{
 				Version: 1,
+				Trigger: TriggerUserRegistered,
 				Schedule: ScheduleConfig{
 					Type:          ScheduleTypeIntervalHours,
 					IntervalHours: intPtr(200),
@@ -322,6 +366,7 @@ func TestAutomationRuleConfig_ValidationFailures(t *testing.T) {
 			name: "empty condition group",
 			cfg: AutomationRuleConfig{
 				Version:    1,
+				Trigger:    TriggerUserRegistered,
 				Schedule:   validSchedule,
 				Conditions: ConditionGroup{Operator: "all", Conditions: []ConditionNode{}},
 				Action:     validAction,
@@ -331,6 +376,7 @@ func TestAutomationRuleConfig_ValidationFailures(t *testing.T) {
 			name: "invalid group operator",
 			cfg: AutomationRuleConfig{
 				Version:  1,
+				Trigger:  TriggerUserRegistered,
 				Schedule: validSchedule,
 				Conditions: ConditionGroup{
 					Operator: "none",
@@ -345,6 +391,7 @@ func TestAutomationRuleConfig_ValidationFailures(t *testing.T) {
 			name: "invalid field name (unsupported field / lastLoginAt excluded in v1)",
 			cfg: AutomationRuleConfig{
 				Version:  1,
+				Trigger:  TriggerUserRegistered,
 				Schedule: validSchedule,
 				Conditions: ConditionGroup{
 					Operator: "all",
@@ -359,6 +406,7 @@ func TestAutomationRuleConfig_ValidationFailures(t *testing.T) {
 			name: "boolean field with text operator (isBlocked + contains)",
 			cfg: AutomationRuleConfig{
 				Version:  1,
+				Trigger:  TriggerUserRegistered,
 				Schedule: validSchedule,
 				Conditions: ConditionGroup{
 					Operator: "all",
@@ -373,6 +421,7 @@ func TestAutomationRuleConfig_ValidationFailures(t *testing.T) {
 			name: "boolean field with non-bool value (isBlocked + equals string)",
 			cfg: AutomationRuleConfig{
 				Version:  1,
+				Trigger:  TriggerUserRegistered,
 				Schedule: validSchedule,
 				Conditions: ConditionGroup{
 					Operator: "all",
@@ -387,6 +436,7 @@ func TestAutomationRuleConfig_ValidationFailures(t *testing.T) {
 			name: "enum field with date operator (language + older_than)",
 			cfg: AutomationRuleConfig{
 				Version:  1,
+				Trigger:  TriggerUserRegistered,
 				Schedule: validSchedule,
 				Conditions: ConditionGroup{
 					Operator: "all",
@@ -401,6 +451,7 @@ func TestAutomationRuleConfig_ValidationFailures(t *testing.T) {
 			name: "enum field with in operator but non-array value",
 			cfg: AutomationRuleConfig{
 				Version:  1,
+				Trigger:  TriggerUserRegistered,
 				Schedule: validSchedule,
 				Conditions: ConditionGroup{
 					Operator: "all",
@@ -415,6 +466,7 @@ func TestAutomationRuleConfig_ValidationFailures(t *testing.T) {
 			name: "enum field with in operator but empty array",
 			cfg: AutomationRuleConfig{
 				Version:  1,
+				Trigger:  TriggerUserRegistered,
 				Schedule: validSchedule,
 				Conditions: ConditionGroup{
 					Operator: "all",
@@ -429,6 +481,7 @@ func TestAutomationRuleConfig_ValidationFailures(t *testing.T) {
 			name: "text field with older_than (email + older_than)",
 			cfg: AutomationRuleConfig{
 				Version:  1,
+				Trigger:  TriggerUserRegistered,
 				Schedule: validSchedule,
 				Conditions: ConditionGroup{
 					Operator: "all",
@@ -443,6 +496,7 @@ func TestAutomationRuleConfig_ValidationFailures(t *testing.T) {
 			name: "date field older_than without unit",
 			cfg: AutomationRuleConfig{
 				Version:  1,
+				Trigger:  TriggerUserRegistered,
 				Schedule: validSchedule,
 				Conditions: ConditionGroup{
 					Operator: "all",
@@ -457,6 +511,7 @@ func TestAutomationRuleConfig_ValidationFailures(t *testing.T) {
 			name: "date field older_than with invalid unit",
 			cfg: AutomationRuleConfig{
 				Version:  1,
+				Trigger:  TriggerUserRegistered,
 				Schedule: validSchedule,
 				Conditions: ConditionGroup{
 					Operator: "all",
@@ -471,6 +526,7 @@ func TestAutomationRuleConfig_ValidationFailures(t *testing.T) {
 			name: "date field older_than with non-positive number",
 			cfg: AutomationRuleConfig{
 				Version:  1,
+				Trigger:  TriggerUserRegistered,
 				Schedule: validSchedule,
 				Conditions: ConditionGroup{
 					Operator: "all",
@@ -485,6 +541,7 @@ func TestAutomationRuleConfig_ValidationFailures(t *testing.T) {
 			name: "date field before with invalid date format",
 			cfg: AutomationRuleConfig{
 				Version:  1,
+				Trigger:  TriggerUserRegistered,
 				Schedule: validSchedule,
 				Conditions: ConditionGroup{
 					Operator: "all",
@@ -499,6 +556,7 @@ func TestAutomationRuleConfig_ValidationFailures(t *testing.T) {
 			name: "invalid action type",
 			cfg: AutomationRuleConfig{
 				Version:  1,
+				Trigger:  TriggerUserRegistered,
 				Schedule: validSchedule,
 				Conditions: ConditionGroup{
 					Operator: "all",
@@ -513,6 +571,7 @@ func TestAutomationRuleConfig_ValidationFailures(t *testing.T) {
 			name: "invalid negative cooldownDays",
 			cfg: AutomationRuleConfig{
 				Version:  1,
+				Trigger:  TriggerUserRegistered,
 				Schedule: validSchedule,
 				Conditions: ConditionGroup{
 					Operator: "all",
@@ -530,6 +589,7 @@ func TestAutomationRuleConfig_ValidationFailures(t *testing.T) {
 			name: "nested group is empty",
 			cfg: AutomationRuleConfig{
 				Version:  1,
+				Trigger:  TriggerUserRegistered,
 				Schedule: validSchedule,
 				Conditions: ConditionGroup{
 					Operator: "all",
@@ -555,6 +615,38 @@ func TestAutomationRuleConfig_ValidationFailures(t *testing.T) {
 			}
 			if !errors.Is(err, ErrInvalidEntity) {
 				t.Errorf("expected ErrInvalidEntity, got %v", err)
+			}
+		})
+	}
+}
+
+func TestAutomationRuleConfig_AllSupportedTriggers(t *testing.T) {
+	validSchedule := ScheduleConfig{
+		Type:      ScheduleTypeDaily,
+		HourUTC:   intPtr(4),
+		MinuteUTC: intPtr(30),
+	}
+	validAction := ActionConfig{
+		Type: ActionTypeSendEmail,
+	}
+	validConditions := ConditionGroup{
+		Operator: GroupOperatorAll,
+		Conditions: []ConditionNode{
+			{Item: &ConditionItem{Field: FieldIsActive, Operator: OperatorEquals, Value: true}},
+		},
+	}
+
+	for _, trig := range SupportedTriggers {
+		t.Run("trigger_"+trig, func(t *testing.T) {
+			cfg := AutomationRuleConfig{
+				Version:    1,
+				Trigger:    trig,
+				Schedule:   validSchedule,
+				Conditions: validConditions,
+				Action:     validAction,
+			}
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("expected trigger %q to be valid, got %v", trig, err)
 			}
 		})
 	}

@@ -38,6 +38,9 @@ func (m *mockRuleRepoForHandler) Create(ctx context.Context, rule *domain.Automa
 func (m *mockRuleRepoForHandler) Update(ctx context.Context, rule *domain.AutomationRule) error {
 	return nil
 }
+func (m *mockRuleRepoForHandler) UpdateEvaluationTimes(ctx context.Context, id string, lastEvaluatedAt, nextEvaluationAt *time.Time) error {
+	return nil
+}
 func (m *mockRuleRepoForHandler) Delete(ctx context.Context, id string) error {
 	return nil
 }
@@ -66,6 +69,10 @@ func (m *mockExecRepoForHandler) HasExecution(ctx context.Context, ruleID, event
 
 func (m *mockExecRepoForHandler) GetLastSuccessfulExecution(ctx context.Context, ruleID, recipientEmail string, externalUserID *string) (*domain.AutomationExecution, error) {
 	return nil, nil
+}
+
+func (m *mockExecRepoForHandler) ListByRuleID(ctx context.Context, ruleID string, limit, offset int) ([]*domain.AutomationExecution, int, error) {
+	return []*domain.AutomationExecution{}, 0, nil
 }
 
 func (m *mockExecRepoForHandler) ExecuteRuleAtomic(
@@ -240,6 +247,7 @@ func TestAutomationEventHandler_HandleEvent_SuccessAndExecution(t *testing.T) {
 		Enabled:    true,
 		Config: domain.AutomationRuleConfig{
 			Version: 1,
+			Trigger: domain.TriggerUserRegistered,
 			Conditions: domain.ConditionGroup{
 				Operator: domain.GroupOperatorAll,
 				Conditions: []domain.ConditionNode{
@@ -334,6 +342,7 @@ func TestAutomationEventHandler_HandleEvent_IdempotencyAndCooldownSemantics(t *t
 		Enabled:    true,
 		Config: domain.AutomationRuleConfig{
 			Version: 1,
+			Trigger: domain.TriggerUserRegistered,
 			Conditions: domain.ConditionGroup{
 				Operator: domain.GroupOperatorAll,
 				Conditions: []domain.ConditionNode{
