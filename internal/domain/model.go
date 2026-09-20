@@ -54,6 +54,7 @@ const (
 const (
 	NotificationTypeDirect        NotificationType = "direct"
 	NotificationTypeUserAgreement NotificationType = "user_agreement"
+	NotificationTypeAutomation    NotificationType = "automation"
 )
 
 const (
@@ -103,7 +104,7 @@ func (s DeliveryStatus) IsValid() bool {
 
 func (t NotificationType) IsValid() bool {
 	switch t {
-	case NotificationTypeDirect, NotificationTypeUserAgreement:
+	case NotificationTypeDirect, NotificationTypeUserAgreement, NotificationTypeAutomation:
 		return true
 	default:
 		return false
@@ -272,4 +273,16 @@ type AppSetting struct {
 	Description string    `json:"description,omitempty" db:"description"`
 	CreatedAt   time.Time `json:"createdAt" db:"created_at"`
 	UpdatedAt   time.Time `json:"updatedAt" db:"updated_at"`
+}
+
+type AutomationExecution struct {
+	ID             string    `json:"id" db:"id"`
+	RuleID         string    `json:"ruleId" db:"rule_id"`
+	EventID        string    `json:"eventId" db:"event_id"`
+	RecipientEmail string    `json:"recipientEmail" db:"recipient_email"`
+	ExternalUserID *string   `json:"externalUserId,omitempty" db:"external_user_id"`
+	NotificationID *string   `json:"notificationId,omitempty" db:"notification_id"`
+	Status         string    `json:"status" db:"status"`
+	ExecutedAt     time.Time `json:"executedAt" db:"executed_at"`
+	CreatedAt      time.Time `json:"createdAt" db:"created_at"`
 }

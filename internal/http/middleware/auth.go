@@ -116,3 +116,19 @@ func OwnerAuth(verifier auth.TokenVerifier, log logger.Logger) Middleware {
 		RequireOwnerRole(),
 	)
 }
+
+// DefaultServiceRoles lists the service role in the GMHelper ecosystem.
+var DefaultServiceRoles = []string{"service"}
+
+// RequireServiceRole restricts access strictly to principals with the service role.
+func RequireServiceRole() Middleware {
+	return RequireRole(DefaultServiceRoles...)
+}
+
+// ServiceAuth combines authentication via JWT and role-based authorization for service-only access.
+func ServiceAuth(verifier auth.TokenVerifier, log logger.Logger) Middleware {
+	return Combine(
+		Authenticate(verifier, log),
+		RequireServiceRole(),
+	)
+}

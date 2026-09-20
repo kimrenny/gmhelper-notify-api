@@ -21,6 +21,10 @@ func NewLogger(level string) (Logger, error) {
 	return cfg.Build()
 }
 
+func NewNop() Logger {
+	return zap.NewNop()
+}
+
 func parseLogLevel(level string) zapcore.Level {
 	var parsed zapcore.Level
 	if err := parsed.UnmarshalText([]byte(level)); err != nil {
@@ -51,4 +55,8 @@ func Bool(key string, value bool) Field {
 
 func Error(err error) Field {
 	return zap.Error(err)
+}
+
+func Time(key string, value time.Time) Field {
+	return zap.Time(key, value)
 }

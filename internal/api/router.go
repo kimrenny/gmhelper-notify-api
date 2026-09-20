@@ -19,6 +19,7 @@ func NewRouter(
 	agreementHandler *handlers.AgreementHandler,
 	settingsHandler *handlers.SettingsHandler,
 	activityHandler *handlers.ActivityHandler,
+	automationEventHandler *handlers.AutomationEventHandler,
 	authMiddleware middleware.Middleware,
 ) http.Handler {
 	mux := http.NewServeMux()
@@ -56,6 +57,12 @@ func NewRouter(
 		apiV1Mux.HandleFunc("POST /automation/rules", automationHandler.Create)
 		apiV1Mux.HandleFunc("PUT /automation/rules/{id}", automationHandler.Update)
 		apiV1Mux.HandleFunc("DELETE /automation/rules/{id}", automationHandler.Delete)
+	}
+
+	// Internal Automation Event Ingestion endpoint (Service role required)
+	if automationEventHandler != nil {
+		serviceOnly := middleware.RequireServiceRole()
+		apiV1Mux.Handle("POST /internal/automation/events", serviceOnly(http.HandlerFunc(automationEventHandler.HandleEvent)))
 	}
 
 	// Template endpoints

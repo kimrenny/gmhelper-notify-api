@@ -265,7 +265,7 @@ func TestRouter_HealthAndReady(t *testing.T) {
 	pinger := &dummyPinger{err: nil}
 	readiness := health.NewReadinessService(pinger)
 	healthHandler := handlers.NewHealthHandler(readiness, log)
-	router := NewRouter(healthHandler, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	router := NewRouter(healthHandler, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	// 1. GET /health
 	reqHealth := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -300,7 +300,7 @@ func TestRouter_NotFoundJSON(t *testing.T) {
 	pinger := &dummyPinger{err: nil}
 	readiness := health.NewReadinessService(pinger)
 	healthHandler := handlers.NewHealthHandler(readiness, log)
-	router := NewRouter(healthHandler, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	router := NewRouter(healthHandler, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/unknown-endpoint", nil)
 	rec := httptest.NewRecorder()
@@ -347,7 +347,7 @@ func TestRouter_DirectNotificationsRouting_AuthAndPrecedence(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.Authenticate(verifier, log)
 
-	router := NewRouter(nil, nil, nil, directHandler, nil, nil, nil, nil, nil, nil, authMw)
+	router := NewRouter(nil, nil, nil, directHandler, nil, nil, nil, nil, nil, nil, nil, authMw)
 
 	validToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -452,7 +452,7 @@ func TestRouter_AdministrativeRoutes_SecurityMatrix(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(healthHandler, templateHandler, campaignHandler, directHandler, userHandler, dashboardHandler, automationHandler, agreementHandler, settingsHandler, nil, authMw)
+	router := NewRouter(healthHandler, templateHandler, campaignHandler, directHandler, userHandler, dashboardHandler, automationHandler, agreementHandler, settingsHandler, nil, nil, authMw)
 
 	adminToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-admin", "admin", 15*time.Minute)
 	ownerToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-owner", "owner", 15*time.Minute)
@@ -690,7 +690,7 @@ func TestRouter_UserSearchRouting(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, nil, nil, userHandler, nil, nil, nil, nil, nil, authMw)
+	router := NewRouter(nil, nil, nil, nil, userHandler, nil, nil, nil, nil, nil, nil, authMw)
 
 	adminToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-admin", "admin", 15*time.Minute)
 
@@ -744,7 +744,7 @@ func TestRouter_CampaignEndpoints(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, campaignHandler, nil, nil, nil, nil, nil, nil, nil, authMw)
+	router := NewRouter(nil, nil, campaignHandler, nil, nil, nil, nil, nil, nil, nil, nil, authMw)
 
 	adminToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-admin", "admin", 15*time.Minute)
 
@@ -809,7 +809,7 @@ func TestRouter_CampaignDelete(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.Authenticate(verifier, log)
 
-	router := NewRouter(nil, nil, campaignHandler, nil, nil, nil, nil, nil, nil, nil, authMw)
+	router := NewRouter(nil, nil, campaignHandler, nil, nil, nil, nil, nil, nil, nil, nil, authMw)
 
 	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -869,7 +869,7 @@ func TestRouter_CampaignScheduleAndCancel(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, campaignHandler, nil, nil, nil, nil, nil, nil, nil, authMw)
+	router := NewRouter(nil, nil, campaignHandler, nil, nil, nil, nil, nil, nil, nil, nil, authMw)
 
 	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -973,7 +973,7 @@ func TestRouter_DashboardStats(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, nil, nil, nil, dashboardHandler, nil, nil, nil, nil, authMw)
+	router := NewRouter(nil, nil, nil, nil, nil, dashboardHandler, nil, nil, nil, nil, nil, authMw)
 
 	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -1054,7 +1054,7 @@ func TestRouter_AutomationEndpoints(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, nil, nil, nil, nil, automationHandler, nil, nil, nil, authMw)
+	router := NewRouter(nil, nil, nil, nil, nil, nil, automationHandler, nil, nil, nil, nil, authMw)
 
 	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -1205,7 +1205,7 @@ func TestRouter_AgreementEndpoints(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, nil, nil, nil, nil, nil, agreementHandler, nil, nil, authMw)
+	router := NewRouter(nil, nil, nil, nil, nil, nil, nil, agreementHandler, nil, nil, nil, authMw)
 
 	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -1299,7 +1299,7 @@ func TestRouter_SettingsEndpoints(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, nil, nil, nil, nil, nil, nil, settingsHandler, nil, authMw)
+	router := NewRouter(nil, nil, nil, nil, nil, nil, nil, nil, settingsHandler, nil, nil, authMw)
 
 	adminToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-admin", "admin", 15*time.Minute)
 	if err != nil {
@@ -1471,7 +1471,7 @@ func TestRouter_ActivityEndpoints_OwnerSecurityMatrix(t *testing.T) {
 	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
 	authMw := middleware.AdminAuth(verifier, log)
 
-	router := NewRouter(nil, nil, nil, nil, nil, nil, nil, nil, nil, activityHandler, authMw)
+	router := NewRouter(nil, nil, nil, nil, nil, nil, nil, nil, nil, activityHandler, nil, authMw)
 
 	ownerToken, err := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "user-owner", "owner", 15*time.Minute)
 	if err != nil {
@@ -1597,4 +1597,116 @@ func TestRouter_ActivityEndpoints_OwnerSecurityMatrix(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRouter_InternalAutomationEvents_SecurityMatrix(t *testing.T) {
+	log, _ := logger.NewLogger("info")
+	autoRepo := &routerMockAutomationRepo{rules: make(map[string]*domain.AutomationRule)}
+	tplRepo := &routerMockTplRepo{}
+	engine := automation.NewEngine(autoRepo, tplRepo, nil, nil, nil, nil, log)
+	eventHandler := handlers.NewAutomationEventHandler(engine, log)
+
+	verifier := auth.MustNewJWTVerifier(routerTestSecret, routerTestIssuer, routerTestAudience)
+	authMw := middleware.AdminAuth(verifier, log)
+
+	router := NewRouter(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, eventHandler, authMw)
+
+	serviceToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-svc", "service", 15*time.Minute)
+	adminToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-admin", "admin", 15*time.Minute)
+	ownerToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-owner", "owner", 15*time.Minute)
+	userToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-regular", "user", 15*time.Minute)
+	expiredToken, _ := auth.GenerateToken(routerTestSecret, routerTestIssuer, routerTestAudience, "u-svc", "service", -5*time.Minute)
+
+	validPayload := map[string]any{
+		"id":         "event-sec-1",
+		"type":       "user.registered",
+		"userId":     "user-123",
+		"occurredAt": "2026-09-19T21:00:00Z",
+	}
+	bodyBytes, _ := json.Marshal(validPayload)
+
+	// 1. Unauthenticated -> 401
+	t.Run("Unauthenticated -> 401", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/automation/events", bytes.NewReader(bodyBytes))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401 Unauthorized, got %d", rec.Code)
+		}
+	})
+
+	// 2. Expired Token -> 401
+	t.Run("ExpiredToken -> 401", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/automation/events", bytes.NewReader(bodyBytes))
+		req.Header.Set("Authorization", "Bearer "+expiredToken)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401 Unauthorized for expired token, got %d", rec.Code)
+		}
+	})
+
+	// 3. User Role -> 403
+	t.Run("UserRole -> 403", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/automation/events", bytes.NewReader(bodyBytes))
+		req.Header.Set("Authorization", "Bearer "+userToken)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("expected 403 Forbidden for role 'user', got %d", rec.Code)
+		}
+	})
+
+	// 4. Admin Role -> 403 (service-only endpoint)
+	t.Run("AdminRole -> 403", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/automation/events", bytes.NewReader(bodyBytes))
+		req.Header.Set("Authorization", "Bearer "+adminToken)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("expected 403 Forbidden for role 'admin', got %d", rec.Code)
+		}
+	})
+
+	// 5. Owner Role -> 403 (service-only endpoint)
+	t.Run("OwnerRole -> 403", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/automation/events", bytes.NewReader(bodyBytes))
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("expected 403 Forbidden for role 'owner', got %d", rec.Code)
+		}
+	})
+
+	// 6. Service Role -> 200 OK
+	t.Run("ServiceRole -> 200 OK", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/automation/events", bytes.NewReader(bodyBytes))
+		req.Header.Set("Authorization", "Bearer "+serviceToken)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected 200 OK for role 'service', got %d (body: %s)", rec.Code, rec.Body.String())
+		}
+
+		var res automation.EventExecutionResult
+		if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+			t.Fatalf("failed to unmarshal JSON response: %v", err)
+		}
+		if res.EventID != "event-sec-1" || res.EventType != "user.registered" {
+			t.Errorf("unexpected execution result: %+v", res)
+		}
+	})
 }

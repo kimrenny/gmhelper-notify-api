@@ -27,14 +27,15 @@ var (
 
 // User represents the authoritative user profile returned by gmhelper-api.
 type User struct {
-	ID               string    `json:"id"`
-	Username         string    `json:"username"`
-	Email            string    `json:"email"`
-	Role             string    `json:"role"`
-	Language         string    `json:"language"`
-	IsActive         bool      `json:"isActive"`
-	IsBlocked        bool      `json:"isBlocked"`
-	RegistrationDate time.Time `json:"registrationDate"`
+	ID               string     `json:"id"`
+	Username         string     `json:"username"`
+	Email            string     `json:"email"`
+	Role             string     `json:"role"`
+	Language         string     `json:"language"`
+	IsActive         bool       `json:"isActive"`
+	IsBlocked        bool       `json:"isBlocked"`
+	RegistrationDate time.Time  `json:"registrationDate"`
+	LastActivityAt   *time.Time `json:"lastActivityAt"`
 }
 
 // PagedUsers represents a paginated batch of user profiles returned by gmhelper-api.

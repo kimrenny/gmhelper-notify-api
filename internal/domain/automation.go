@@ -64,6 +64,8 @@ const (
 	FieldRole             = "role"
 	FieldUsername         = "username"
 	FieldRegistrationDate = "registrationDate"
+	FieldLastActivityAt   = "lastActivityAt"
+	FieldLastActivity     = "lastActivity"
 )
 
 // AutomationRuleConfig is the root configuration structure.
@@ -301,7 +303,7 @@ func (item *ConditionItem) Validate() error {
 	case FieldEmail, FieldUsername:
 		return validateTextField(field, operator, item.Value)
 
-	case FieldRegistrationDate:
+	case FieldRegistrationDate, FieldLastActivityAt, FieldLastActivity:
 		return validateDateField(field, operator, item.Value, item.Unit)
 
 	default:
