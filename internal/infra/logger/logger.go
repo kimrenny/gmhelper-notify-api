@@ -56,3 +56,7 @@ func Bool(key string, value bool) Field {
 func Error(err error) Field {
 	return zap.Error(err)
 }
+
+func Time(key string, value time.Time) Field {
+	return zap.Time(key, value)
+}

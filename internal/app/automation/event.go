@@ -8,10 +8,13 @@ import (
 
 // Supported event type constants (standard event identifiers)
 const (
-	EventUserRegistered  = "user.registered"
-	EventUserInactive    = "user.inactive"
-	EventEmailConfirmed  = "email.confirmed"
-	EventPasswordChanged = "password.changed"
+	EventUserRegistered      = "user.registered"
+	EventUserInactive        = "user.inactive"
+	EventEmailConfirmed      = "email.confirmed"
+	EventPasswordChanged     = "password.changed"
+	EventUserBlocked         = "user.blocked"
+	EventUserUnblocked       = "user.unblocked"
+	EventUserLanguageChanged = "user.language_changed"
 )
 
 // Event is the transport-agnostic internal runtime event representation.

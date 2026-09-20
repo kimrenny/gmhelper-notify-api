@@ -532,3 +532,55 @@ func TestConfigValidate_CampaignWorkerSettings(t *testing.T) {
 		t.Fatalf("expected valid config for campaign worker, got: %v", err)
 	}
 }
+
+func TestConfigValidate_AutomationScheduler(t *testing.T) {
+	validSecret := "dGVzdC1zZWNyZXQta2V5LTMyLWJ5dGVzLWxvbmchIQ=="
+
+	// 1. Scheduler enabled with non-positive interval -> error
+	cfgZeroInterval := &Config{
+		DatabaseURL:                  "postgres://localhost/test",
+		SMTPHost:                     "smtp.example.com",
+		SMTPFrom:                     "test@example.com",
+		HTTPPort:                     8080,
+		SMTPPort:                     587,
+		AuthSecret:                   validSecret,
+		AutomationSchedulerEnabled:   true,
+		AutomationSchedulerInterval:  0,
+		AutomationSchedulerBatchSize: 50,
+	}
+	if err := cfgZeroInterval.Validate(); err == nil {
+		t.Fatal("expected error when automation scheduler is enabled with zero interval, got nil")
+	}
+
+	// 2. Scheduler enabled with non-positive batch size -> error
+	cfgZeroBatch := &Config{
+		DatabaseURL:                  "postgres://localhost/test",
+		SMTPHost:                     "smtp.example.com",
+		SMTPFrom:                     "test@example.com",
+		HTTPPort:                     8080,
+		SMTPPort:                     587,
+		AuthSecret:                   validSecret,
+		AutomationSchedulerEnabled:   true,
+		AutomationSchedulerInterval:  1 * time.Hour,
+		AutomationSchedulerBatchSize: 0,
+	}
+	if err := cfgZeroBatch.Validate(); err == nil {
+		t.Fatal("expected error when automation scheduler is enabled with zero batch size, got nil")
+	}
+
+	// 3. Scheduler enabled with valid settings -> success
+	cfgValid := &Config{
+		DatabaseURL:                  "postgres://localhost/test",
+		SMTPHost:                     "smtp.example.com",
+		SMTPFrom:                     "test@example.com",
+		HTTPPort:                     8080,
+		SMTPPort:                     587,
+		AuthSecret:                   validSecret,
+		AutomationSchedulerEnabled:   true,
+		AutomationSchedulerInterval:  1 * time.Hour,
+		AutomationSchedulerBatchSize: 50,
+	}
+	if err := cfgValid.Validate(); err != nil {
+		t.Fatalf("expected valid config for automation scheduler, got: %v", err)
+	}
+}

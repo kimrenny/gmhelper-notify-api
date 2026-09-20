@@ -310,6 +310,72 @@ func TestEvaluator_DateFields(t *testing.T) {
 			ctx:      map[string]any{"registrationDate": "2026-05-10T10:00:00Z"},
 			expected: true,
 		},
+		{
+			name: "lastActivityAt 40 days ago is older_than 30 days -> true",
+			item: domain.ConditionItem{
+				Field:    domain.FieldLastActivityAt,
+				Operator: domain.OperatorOlderThan,
+				Value:    30,
+				Unit:     domain.UnitDays,
+			},
+			ctx:      map[string]any{"lastActivityAt": refTime.AddDate(0, 0, -40)},
+			expected: true,
+		},
+		{
+			name: "lastActivityAt exactly 30 days ago is older_than 30 days -> true",
+			item: domain.ConditionItem{
+				Field:    domain.FieldLastActivityAt,
+				Operator: domain.OperatorOlderThan,
+				Value:    30,
+				Unit:     domain.UnitDays,
+			},
+			ctx:      map[string]any{"lastActivityAt": refTime.AddDate(0, 0, -30)},
+			expected: true,
+		},
+		{
+			name: "lastActivityAt 29d 23h 59m 59s ago is older_than 30 days -> false",
+			item: domain.ConditionItem{
+				Field:    domain.FieldLastActivityAt,
+				Operator: domain.OperatorOlderThan,
+				Value:    30,
+				Unit:     domain.UnitDays,
+			},
+			ctx:      map[string]any{"lastActivityAt": refTime.AddDate(0, 0, -30).Add(time.Second)},
+			expected: false,
+		},
+		{
+			name: "lastActivityAt 31 days ago is older_than 30 days -> true",
+			item: domain.ConditionItem{
+				Field:    domain.FieldLastActivityAt,
+				Operator: domain.OperatorOlderThan,
+				Value:    30,
+				Unit:     domain.UnitDays,
+			},
+			ctx:      map[string]any{"lastActivityAt": refTime.AddDate(0, 0, -31)},
+			expected: true,
+		},
+		{
+			name: "lastActivityAt null is older_than 30 days -> false",
+			item: domain.ConditionItem{
+				Field:    domain.FieldLastActivityAt,
+				Operator: domain.OperatorOlderThan,
+				Value:    30,
+				Unit:     domain.UnitDays,
+			},
+			ctx:      map[string]any{"lastActivityAt": nil},
+			expected: false,
+		},
+		{
+			name: "lastActivityAt missing from context is older_than 30 days -> false",
+			item: domain.ConditionItem{
+				Field:    domain.FieldLastActivityAt,
+				Operator: domain.OperatorOlderThan,
+				Value:    30,
+				Unit:     domain.UnitDays,
+			},
+			ctx:      map[string]any{},
+			expected: false,
+		},
 	}
 
 	for _, tc := range tests {
@@ -392,5 +458,101 @@ func TestEvaluator_NestedConditionGroups(t *testing.T) {
 	matched, err = eval.Evaluate(group, map[string]any{"isBlocked": false, "role": "user"}, refTime)
 	if err != nil || matched {
 		t.Errorf("expected matched=false, got %v, err=%v", matched, err)
+	}
+}
+
+func TestEvaluator_InactivityCombinedConditions(t *testing.T) {
+	eval := NewEvaluator()
+	refTime := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+
+	// Condition: (role == "user") AND (isBlocked == false) AND (lastActivityAt older_than 30 days) AND (language == "en")
+	group := domain.ConditionGroup{
+		Operator: domain.GroupOperatorAll,
+		Conditions: []domain.ConditionNode{
+			{
+				Item: &domain.ConditionItem{
+					Field:    domain.FieldRole,
+					Operator: domain.OperatorEquals,
+					Value:    "user",
+				},
+			},
+			{
+				Item: &domain.ConditionItem{
+					Field:    domain.FieldIsBlocked,
+					Operator: domain.OperatorEquals,
+					Value:    false,
+				},
+			},
+			{
+				Item: &domain.ConditionItem{
+					Field:    domain.FieldLastActivityAt,
+					Operator: domain.OperatorOlderThan,
+					Value:    30,
+					Unit:     domain.UnitDays,
+				},
+			},
+			{
+				Item: &domain.ConditionItem{
+					Field:    domain.FieldLanguage,
+					Operator: domain.OperatorEquals,
+					Value:    "en",
+				},
+			},
+		},
+	}
+
+	// 1. Matches: unblocked english user inactive for 45 days
+	matched, err := eval.Evaluate(group, map[string]any{
+		"role":           "User",
+		"isBlocked":      false,
+		"lastActivityAt": refTime.AddDate(0, 0, -45),
+		"language":       "en",
+	}, refTime)
+	if err != nil || !matched {
+		t.Errorf("expected matched=true, got %v, err=%v", matched, err)
+	}
+
+	// 2. Fails: user active 10 days ago
+	matched, err = eval.Evaluate(group, map[string]any{
+		"role":           "user",
+		"isBlocked":      false,
+		"lastActivityAt": refTime.AddDate(0, 0, -10),
+		"language":       "en",
+	}, refTime)
+	if err != nil || matched {
+		t.Errorf("expected matched=false for active user, got %v, err=%v", matched, err)
+	}
+
+	// 3. Fails: user with null lastActivityAt
+	matched, err = eval.Evaluate(group, map[string]any{
+		"role":           "user",
+		"isBlocked":      false,
+		"lastActivityAt": nil,
+		"language":       "en",
+	}, refTime)
+	if err != nil || matched {
+		t.Errorf("expected matched=false for null lastActivityAt, got %v, err=%v", matched, err)
+	}
+
+	// 4. Fails: inactive for 45 days, but blocked
+	matched, err = eval.Evaluate(group, map[string]any{
+		"role":           "user",
+		"isBlocked":      true,
+		"lastActivityAt": refTime.AddDate(0, 0, -45),
+		"language":       "en",
+	}, refTime)
+	if err != nil || matched {
+		t.Errorf("expected matched=false for blocked user, got %v, err=%v", matched, err)
+	}
+
+	// 5. Fails: inactive for 45 days, but language is de
+	matched, err = eval.Evaluate(group, map[string]any{
+		"role":           "user",
+		"isBlocked":      false,
+		"lastActivityAt": refTime.AddDate(0, 0, -45),
+		"language":       "de",
+	}, refTime)
+	if err != nil || matched {
+		t.Errorf("expected matched=false for non-matching language, got %v, err=%v", matched, err)
 	}
 }

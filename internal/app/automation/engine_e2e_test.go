@@ -229,3 +229,125 @@ func TestEngine_E2E_FullScenarios(t *testing.T) {
 		}
 	})
 }
+
+func TestEngine_E2E_InactivityFlow(t *testing.T) {
+	ruleRepo := &mockRuleRepo{}
+	templateRepo := &engineMockTemplateRepo{
+		templates: make(map[string]*domain.EmailTemplate),
+	}
+	directRepo := &mockDirectRepo{}
+	execRepo := &mockExecRepo{directRepo: directRepo}
+	auditRepo := &mockActivityRepo{}
+	auditSvc := audit.NewService(auditRepo)
+	log := logger.NewNop()
+
+	engine := NewEngine(ruleRepo, templateRepo, directRepo, execRepo, nil, auditSvc, log)
+
+	// 1. Template
+	tpl := &domain.EmailTemplate{
+		ID:            "tpl-inactivity-e2e",
+		TemplateKey:   "tpl_key_inactivity",
+		Name:          "Inactivity Template",
+		TemplateType:  domain.TemplateTypeAutomation,
+		Status:        domain.TemplateStatusActive,
+		Subject:       "We miss you {{username}}",
+		HTMLBody:      "<p>Come back {{username}}!</p>",
+		PlainTextBody: "Come back {{username}}!",
+	}
+	templateRepo.templates["tpl-inactivity-e2e"] = tpl
+
+	// 2. Inactivity Rule (older_than 30 days, cooldown 7 days)
+	cooldownDays := 7
+	rule := createTestRule("rule-inactivity-e2e", "Inactive Users Notice", "tpl-inactivity-e2e", true, domain.ConditionGroup{
+		Operator: domain.GroupOperatorAll,
+		Conditions: []domain.ConditionNode{
+			{
+				Item: &domain.ConditionItem{
+					Field:    domain.FieldLastActivityAt,
+					Operator: domain.OperatorOlderThan,
+					Value:    30,
+					Unit:     domain.UnitDays,
+				},
+			},
+		},
+	}, &cooldownDays)
+	ruleRepo.rules = []*domain.AutomationRule{rule}
+
+	refTime := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	inactiveTime := refTime.AddDate(0, 0, -45) // 45 days ago (> 30d)
+	recentTime := refTime.AddDate(0, 0, -5)    // 5 days ago (< 30d)
+
+	userLister := &mockUserLister{
+		pages: [][]*userclient.User{
+			{
+				{ID: "user-inactive", Email: "inactive@example.com", Username: "InactiveUser", LastActivityAt: &inactiveTime, IsActive: true},
+				{ID: "user-active", Email: "active@example.com", Username: "ActiveUser", LastActivityAt: &recentTime, IsActive: true},
+				{ID: "user-null-act", Email: "nullact@example.com", Username: "NullActUser", LastActivityAt: nil, IsActive: true},
+			},
+		},
+	}
+
+	ctx := context.Background()
+
+	// -------------------------------------------------------------
+	// STEP 1: First Evaluation Pass
+	// -------------------------------------------------------------
+	summary1, err := engine.EvaluateInactivity(ctx, userLister, refTime, 50)
+	if err != nil {
+		t.Fatalf("unexpected error on first pass: %v", err)
+	}
+
+	if summary1.TotalUsersEvaluated != 3 {
+		t.Errorf("expected 3 users evaluated, got %d", summary1.TotalUsersEvaluated)
+	}
+	if summary1.ExecutedCount != 1 {
+		t.Errorf("expected 1 executed, got %d", summary1.ExecutedCount)
+	}
+	if summary1.SkippedNotMatchedCount != 2 {
+		t.Errorf("expected 2 skipped not matched, got %d", summary1.SkippedNotMatchedCount)
+	}
+	if len(directRepo.created) != 1 {
+		t.Fatalf("expected 1 direct notification created, got %d", len(directRepo.created))
+	}
+	if directRepo.created[0].RecipientEmail != "inactive@example.com" {
+		t.Errorf("expected notification recipient inactive@example.com, got %s", directRepo.created[0].RecipientEmail)
+	}
+	if directRepo.created[0].RecipientName != "InactiveUser" {
+		t.Errorf("expected recipient name InactiveUser, got %s", directRepo.created[0].RecipientName)
+	}
+
+	// -------------------------------------------------------------
+	// STEP 2: Second Evaluation Pass (Immediate / Inside 7-day cooldown)
+	// -------------------------------------------------------------
+	summary2, err := engine.EvaluateInactivity(ctx, userLister, refTime.Add(time.Hour), 50)
+	if err != nil {
+		t.Fatalf("unexpected error on second pass: %v", err)
+	}
+	if summary2.ExecutedCount != 0 {
+		t.Errorf("expected 0 executed on second pass inside cooldown, got %d", summary2.ExecutedCount)
+	}
+	if summary2.SkippedCooldownCount != 1 {
+		t.Errorf("expected 1 skipped cooldown, got %d", summary2.SkippedCooldownCount)
+	}
+	if summary2.SkippedNotMatchedCount != 2 {
+		t.Errorf("expected 2 skipped not matched, got %d", summary2.SkippedNotMatchedCount)
+	}
+	// Notification count remains exactly 1
+	if len(directRepo.created) != 1 {
+		t.Errorf("expected still 1 notification, got %d", len(directRepo.created))
+	}
+
+	// -------------------------------------------------------------
+	// STEP 3: Third Evaluation Pass (After 8 days - cooldown elapsed)
+	// -------------------------------------------------------------
+	summary3, err := engine.EvaluateInactivity(ctx, userLister, refTime.AddDate(0, 0, 8), 50)
+	if err != nil {
+		t.Fatalf("unexpected error on third pass after cooldown: %v", err)
+	}
+	if summary3.ExecutedCount != 1 {
+		t.Errorf("expected 1 executed on third pass after cooldown expired, got %d", summary3.ExecutedCount)
+	}
+	if len(directRepo.created) != 2 {
+		t.Errorf("expected 2 notifications after cooldown elapsed, got %d", len(directRepo.created))
+	}
+}

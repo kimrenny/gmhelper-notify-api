@@ -115,6 +115,157 @@ func (e *Engine) HandleEvent(ctx context.Context, event Event) (*EventExecutionR
 	return result, nil
 }
 
+// UserLister defines the client contract for retrieving paginated users.
+type UserLister interface {
+	GetUsers(ctx context.Context, page, pageSize int, activeOnly, unblockedOnly bool) (*userclient.PagedUsers, error)
+}
+
+// InactivityEvaluationSummary summarizes the outcome of an inactivity evaluation run across all users.
+type InactivityEvaluationSummary struct {
+	TotalUsersEvaluated    int `json:"totalUsersEvaluated"`
+	TotalRulesEvaluated    int `json:"totalRulesEvaluated"`
+	ExecutedCount          int `json:"executedCount"`
+	SkippedNotMatchedCount int `json:"skippedNotMatchedCount"`
+	SkippedCooldownCount   int `json:"skippedCooldownCount"`
+	SkippedDuplicateCount  int `json:"skippedDuplicateCount"`
+	FailedCount            int `json:"failedCount"`
+}
+
+// EvaluateInactivity evaluates enabled automation rules against all users fetched page-by-page.
+func (e *Engine) EvaluateInactivity(ctx context.Context, userLister UserLister, now time.Time, pageSize int) (*InactivityEvaluationSummary, error) {
+	if userLister == nil {
+		return nil, errors.New("user lister is nil")
+	}
+	if e.ruleRepo == nil {
+		return nil, errors.New("automation rule repository is nil")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if pageSize <= 0 {
+		pageSize = 250
+	}
+
+	rules, err := e.ruleRepo.ListEnabled(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list enabled automation rules: %w", err)
+	}
+	if len(rules) == 0 {
+		return &InactivityEvaluationSummary{}, nil
+	}
+
+	summary := &InactivityEvaluationSummary{
+		TotalRulesEvaluated: len(rules),
+	}
+
+	page := 1
+	for {
+		if ctx.Err() != nil {
+			return summary, ctx.Err()
+		}
+
+		pagedUsers, err := userLister.GetUsers(ctx, page, pageSize, false, false)
+		if err != nil {
+			e.logger.Error("failed to retrieve users page for inactivity evaluation",
+				logger.Int("page", page),
+				logger.Error(err),
+			)
+			return summary, fmt.Errorf("failed to retrieve users page %d: %w", page, err)
+		}
+
+		if pagedUsers == nil || len(pagedUsers.Items) == 0 {
+			break
+		}
+
+		for _, user := range pagedUsers.Items {
+			summary.TotalUsersEvaluated++
+			userCopy := user
+
+			for _, rule := range rules {
+				var eventID string
+				if rule.Config.Action.CooldownDays != nil && *rule.Config.Action.CooldownDays > 0 {
+					eventID = uuid.NewString()
+				} else {
+					eventID = fmt.Sprintf("inactivity:%s:%s", rule.ID, userCopy.ID)
+				}
+
+				event := Event{
+					ID:         eventID,
+					Type:       EventUserInactive,
+					UserID:     userCopy.ID,
+					User:       &userCopy,
+					OccurredAt: now,
+				}
+
+				contextData := buildContextData(event, &userCopy)
+				res := e.executeRule(ctx, rule, event, &userCopy, contextData)
+
+				switch res.Status {
+				case StatusExecuted:
+					summary.ExecutedCount++
+				case StatusSkippedNotMatched:
+					summary.SkippedNotMatchedCount++
+				case StatusSkippedCooldown:
+					summary.SkippedCooldownCount++
+				case StatusSkippedDuplicate:
+					summary.SkippedDuplicateCount++
+				case StatusFailed:
+					summary.FailedCount++
+				}
+			}
+		}
+
+		if !pagedUsers.HasNextPage || len(pagedUsers.Items) < pageSize {
+			break
+		}
+		page++
+	}
+
+	return summary, nil
+}
+
+// EvaluateUserInactivity evaluates all enabled automation rules against a single user at the given time.
+func (e *Engine) EvaluateUserInactivity(ctx context.Context, user *userclient.User, now time.Time) ([]RuleExecutionResult, error) {
+	if user == nil {
+		return nil, errors.New("user cannot be nil")
+	}
+	if e.ruleRepo == nil {
+		return nil, errors.New("automation rule repository is nil")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+
+	rules, err := e.ruleRepo.ListEnabled(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list enabled automation rules: %w", err)
+	}
+
+	results := make([]RuleExecutionResult, 0, len(rules))
+	for _, rule := range rules {
+		var eventID string
+		if rule.Config.Action.CooldownDays != nil && *rule.Config.Action.CooldownDays > 0 {
+			eventID = uuid.NewString()
+		} else {
+			eventID = fmt.Sprintf("inactivity:%s:%s", rule.ID, user.ID)
+		}
+
+		event := Event{
+			ID:         eventID,
+			Type:       EventUserInactive,
+			UserID:     user.ID,
+			User:       user,
+			OccurredAt: now,
+		}
+
+		contextData := buildContextData(event, user)
+		res := e.executeRule(ctx, rule, event, user, contextData)
+		results = append(results, res)
+	}
+
+	return results, nil
+}
+
 // EvaluateRule evaluates a single automation rule's conditions against a user/event context dictionary.
 func (e *Engine) EvaluateRule(
 	ctx context.Context,
@@ -412,6 +563,13 @@ func buildContextData(event Event, user *userclient.User) map[string]any {
 		ctx[domain.FieldIsActive] = user.IsActive
 		ctx[domain.FieldIsBlocked] = user.IsBlocked
 		ctx[domain.FieldRegistrationDate] = user.RegistrationDate
+		if user.LastActivityAt != nil {
+			ctx[domain.FieldLastActivityAt] = *user.LastActivityAt
+			ctx[domain.FieldLastActivity] = *user.LastActivityAt
+		} else {
+			ctx[domain.FieldLastActivityAt] = nil
+			ctx[domain.FieldLastActivity] = nil
+		}
 		ctx["userId"] = user.ID
 		ctx["id"] = user.ID
 	}

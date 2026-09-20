@@ -98,7 +98,7 @@ func evaluateItem(item domain.ConditionItem, contextData map[string]any, referen
 	case domain.FieldEmail, domain.FieldUsername:
 		return evaluateTextField(operator, item.Value, rawVal, exists)
 
-	case domain.FieldRegistrationDate:
+	case domain.FieldRegistrationDate, domain.FieldLastActivityAt, domain.FieldLastActivity:
 		return evaluateDateField(operator, item.Value, item.Unit, rawVal, exists, referenceTime)
 
 	default:
@@ -274,8 +274,8 @@ func evaluateDateField(operator string, targetVal any, unit string, actualVal an
 		}
 
 		if operator == domain.OperatorOlderThan {
-			// Older than N days/months/years means actual registration occurred BEFORE the threshold
-			return actualTime.Before(thresholdTime), nil
+			// Older than N days/months/years means actual time is at or before the threshold
+			return !actualTime.After(thresholdTime), nil
 		}
 		// Newer than N days/months/years means actual registration occurred AFTER the threshold
 		return actualTime.After(thresholdTime), nil

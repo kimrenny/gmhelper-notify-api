@@ -1012,3 +1012,249 @@ func TestEngine_IncompatibleTemplateType(t *testing.T) {
 		t.Fatalf("expected 0 notifications, got %d", len(directRepo.created))
 	}
 }
+
+type mockUserLister struct {
+	pages [][]*userclient.User
+	err   error
+}
+
+func (m *mockUserLister) GetUsers(ctx context.Context, page, pageSize int, activeOnly, unblockedOnly bool) (*userclient.PagedUsers, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	if page <= 0 || page > len(m.pages) {
+		return &userclient.PagedUsers{
+			Items:       []userclient.User{},
+			Page:        page,
+			PageSize:    pageSize,
+			TotalCount:  0,
+			HasNextPage: false,
+		}, nil
+	}
+	items := make([]userclient.User, len(m.pages[page-1]))
+	for i, u := range m.pages[page-1] {
+		if u != nil {
+			items[i] = *u
+		}
+	}
+	total := 0
+	for _, p := range m.pages {
+		total += len(p)
+	}
+	return &userclient.PagedUsers{
+		Items:       items,
+		Page:        page,
+		PageSize:    pageSize,
+		TotalCount:  total,
+		HasNextPage: page < len(m.pages),
+	}, nil
+}
+
+func TestEngine_EvaluateInactivity_SuccessAndCooldown(t *testing.T) {
+	refTime := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	cooldown := 7
+	inactiveTime := refTime.AddDate(0, 0, -45)
+	activeTime := refTime.AddDate(0, 0, -5)
+
+	rule := createTestRule("rule-inactivity", "Inactive User Rule", "tpl-1", true, domain.ConditionGroup{
+		Operator: domain.GroupOperatorAll,
+		Conditions: []domain.ConditionNode{
+			{
+				Item: &domain.ConditionItem{
+					Field:    domain.FieldLastActivityAt,
+					Operator: domain.OperatorOlderThan,
+					Value:    30,
+					Unit:     domain.UnitDays,
+				},
+			},
+		},
+	}, &cooldown)
+
+	ruleRepo := &mockRuleRepo{rules: []*domain.AutomationRule{rule}}
+	templateRepo := &engineMockTemplateRepo{
+		templates: map[string]*domain.EmailTemplate{
+			"tpl-1": {
+				ID:           "tpl-1",
+				Status:       domain.TemplateStatusActive,
+				TemplateType: domain.TemplateTypeAutomation,
+				Subject:      "We miss you {{username}}",
+				HTMLBody:     "<p>Hello {{username}}, please come back!</p>",
+			},
+		},
+	}
+	directRepo := &mockDirectRepo{}
+	execRepo := &mockExecRepo{directRepo: directRepo}
+
+	userLister := &mockUserLister{
+		pages: [][]*userclient.User{
+			{
+				{ID: "user-1", Email: "inactive@example.com", Username: "InactiveUser", LastActivityAt: &inactiveTime, IsActive: true},
+				{ID: "user-2", Email: "active@example.com", Username: "ActiveUser", LastActivityAt: &activeTime, IsActive: true},
+				{ID: "user-3", Email: "noactivity@example.com", Username: "NoActivityUser", LastActivityAt: nil, IsActive: true},
+			},
+		},
+	}
+
+	engine := NewEngine(ruleRepo, templateRepo, directRepo, execRepo, nil, nil, logger.NewNop())
+
+	// First evaluation pass
+	summary, err := engine.EvaluateInactivity(context.Background(), userLister, refTime, 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if summary.TotalUsersEvaluated != 3 {
+		t.Errorf("expected 3 users evaluated, got %d", summary.TotalUsersEvaluated)
+	}
+	if summary.TotalRulesEvaluated != 1 {
+		t.Errorf("expected 1 rule evaluated, got %d", summary.TotalRulesEvaluated)
+	}
+	if summary.ExecutedCount != 1 {
+		t.Errorf("expected 1 executed, got %d", summary.ExecutedCount)
+	}
+	if summary.SkippedNotMatchedCount != 2 {
+		t.Errorf("expected 2 skipped not matched, got %d", summary.SkippedNotMatchedCount)
+	}
+	if len(directRepo.created) != 1 {
+		t.Fatalf("expected 1 direct notification created, got %d", len(directRepo.created))
+	}
+	if directRepo.created[0].RecipientEmail != "inactive@example.com" {
+		t.Errorf("expected notification for inactive@example.com, got %s", directRepo.created[0].RecipientEmail)
+	}
+
+	// Second evaluation pass (within cooldown)
+	summary2, err := engine.EvaluateInactivity(context.Background(), userLister, refTime.Add(time.Hour), 10)
+	if err != nil {
+		t.Fatalf("unexpected error on second pass: %v", err)
+	}
+
+	if summary2.ExecutedCount != 0 {
+		t.Errorf("expected 0 executed on second pass inside cooldown, got %d", summary2.ExecutedCount)
+	}
+	if summary2.SkippedCooldownCount != 1 {
+		t.Errorf("expected 1 skipped cooldown on second pass, got %d", summary2.SkippedCooldownCount)
+	}
+	if len(directRepo.created) != 1 {
+		t.Errorf("expected still 1 notification created, got %d", len(directRepo.created))
+	}
+}
+
+func TestEngine_EvaluateInactivity_DuplicateWithoutCooldown(t *testing.T) {
+	refTime := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	inactiveTime := refTime.AddDate(0, 0, -45)
+
+	// Cooldown is nil / 0
+	rule := createTestRule("rule-inactivity-no-cd", "Inactive User Rule", "tpl-1", true, domain.ConditionGroup{
+		Operator: domain.GroupOperatorAll,
+		Conditions: []domain.ConditionNode{
+			{
+				Item: &domain.ConditionItem{
+					Field:    domain.FieldLastActivityAt,
+					Operator: domain.OperatorOlderThan,
+					Value:    30,
+					Unit:     domain.UnitDays,
+				},
+			},
+		},
+	}, nil)
+
+	ruleRepo := &mockRuleRepo{rules: []*domain.AutomationRule{rule}}
+	templateRepo := &engineMockTemplateRepo{
+		templates: map[string]*domain.EmailTemplate{
+			"tpl-1": {
+				ID:           "tpl-1",
+				Status:       domain.TemplateStatusActive,
+				TemplateType: domain.TemplateTypeAutomation,
+				Subject:      "Subject",
+				HTMLBody:     "<p>Body</p>",
+			},
+		},
+	}
+	directRepo := &mockDirectRepo{}
+	execRepo := &mockExecRepo{directRepo: directRepo}
+
+	userLister := &mockUserLister{
+		pages: [][]*userclient.User{
+			{
+				{ID: "user-1", Email: "inactive@example.com", Username: "InactiveUser", LastActivityAt: &inactiveTime, IsActive: true},
+			},
+		},
+	}
+
+	engine := NewEngine(ruleRepo, templateRepo, directRepo, execRepo, nil, nil, logger.NewNop())
+
+	// Pass 1
+	summary1, err := engine.EvaluateInactivity(context.Background(), userLister, refTime, 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if summary1.ExecutedCount != 1 {
+		t.Fatalf("expected 1 executed, got %d", summary1.ExecutedCount)
+	}
+
+	// Pass 2 (immediate or next tick) -> deterministic event ID deduplication skips it
+	summary2, err := engine.EvaluateInactivity(context.Background(), userLister, refTime.Add(time.Hour), 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if summary2.ExecutedCount != 0 {
+		t.Errorf("expected 0 executed on second pass, got %d", summary2.ExecutedCount)
+	}
+	if summary2.SkippedDuplicateCount != 1 {
+		t.Errorf("expected 1 skipped (duplicate), got %d", summary2.SkippedDuplicateCount)
+	}
+	if len(directRepo.created) != 1 {
+		t.Errorf("expected 1 direct notification, got %d", len(directRepo.created))
+	}
+}
+
+func TestEngine_EvaluateInactivity_ErrorDoesNotStopBatch(t *testing.T) {
+	refTime := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	inactiveTime := refTime.AddDate(0, 0, -45)
+
+	// Rule references non-existent template
+	rule := createTestRule("rule-inactivity-bad-tpl", "Inactive Rule", "tpl-missing", true, domain.ConditionGroup{
+		Operator: domain.GroupOperatorAll,
+		Conditions: []domain.ConditionNode{
+			{
+				Item: &domain.ConditionItem{
+					Field:    domain.FieldLastActivityAt,
+					Operator: domain.OperatorOlderThan,
+					Value:    30,
+					Unit:     domain.UnitDays,
+				},
+			},
+		},
+	}, nil)
+
+	ruleRepo := &mockRuleRepo{rules: []*domain.AutomationRule{rule}}
+	templateRepo := &engineMockTemplateRepo{templates: map[string]*domain.EmailTemplate{}}
+	directRepo := &mockDirectRepo{}
+	execRepo := &mockExecRepo{directRepo: directRepo}
+
+	userLister := &mockUserLister{
+		pages: [][]*userclient.User{
+			{
+				{ID: "user-1", Email: "inactive1@example.com", Username: "User1", LastActivityAt: &inactiveTime, IsActive: true},
+				{ID: "user-2", Email: "inactive2@example.com", Username: "User2", LastActivityAt: &inactiveTime, IsActive: true},
+			},
+		},
+	}
+
+	engine := NewEngine(ruleRepo, templateRepo, directRepo, execRepo, nil, nil, logger.NewNop())
+
+	summary, err := engine.EvaluateInactivity(context.Background(), userLister, refTime, 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if summary.TotalUsersEvaluated != 2 {
+		t.Errorf("expected 2 users evaluated, got %d", summary.TotalUsersEvaluated)
+	}
+	if summary.FailedCount != 2 {
+		t.Errorf("expected 2 failed due to missing template, got %d", summary.FailedCount)
+	}
+	if summary.ExecutedCount != 0 {
+		t.Errorf("expected 0 executed, got %d", summary.ExecutedCount)
+	}
+}

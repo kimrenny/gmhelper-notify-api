@@ -139,8 +139,8 @@ func main() {
 		auditService,
 		log,
 	)
-	_ = automationEngine
 	automationHandler := handlers.NewAutomationHandler(automationService, log)
+	automationEventHandler := handlers.NewAutomationEventHandler(automationEngine, log)
 
 	agreementService := agreement.NewService(campaignRepo, templateRepo, auditService)
 	agreementHandler := handlers.NewAgreementHandler(agreementService, log)
@@ -157,7 +157,7 @@ func main() {
 	}
 	authMiddleware := middleware.AdminAuth(jwtVerifier, log)
 
-	router := api.NewRouter(healthHandler, templateHandler, campaignHandler, directHandler, userHandler, dashboardHandler, automationHandler, agreementHandler, settingsHandler, activityHandler, authMiddleware)
+	router := api.NewRouter(healthHandler, templateHandler, campaignHandler, directHandler, userHandler, dashboardHandler, automationHandler, agreementHandler, settingsHandler, activityHandler, automationEventHandler, authMiddleware)
 
 	handler := middleware.Chain(router,
 		middleware.RequestID(),
@@ -206,6 +206,26 @@ func main() {
 		}()
 	} else {
 		log.Info("campaign delivery background worker is disabled")
+	}
+
+	// Automation background inactivity scheduler
+	if cfg.AutomationSchedulerEnabled && userHTTPClient != nil {
+		automationScheduler := automation.NewScheduler(
+			automationEngine,
+			userHTTPClient,
+			cfg.AutomationSchedulerInterval,
+			cfg.AutomationSchedulerBatchSize,
+			log,
+		)
+		workerWg.Add(1)
+		go func() {
+			defer workerWg.Done()
+			automationScheduler.Start(ctx)
+		}()
+	} else if cfg.AutomationSchedulerEnabled && userHTTPClient == nil {
+		log.Info("automation background scheduler is enabled, but gmhelper-api user client is not configured")
+	} else {
+		log.Info("automation background scheduler is disabled")
 	}
 
 	server := &http.Server{
