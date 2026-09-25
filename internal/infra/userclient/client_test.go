@@ -6,9 +6,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/gmhelper/notify-api/internal/infra/auth"
 )
 
 type fakeTokenProvider struct {
@@ -348,8 +351,28 @@ func TestHTTPClient_GetUserByID_ServerError(t *testing.T) {
 	}
 }
 
-func TestHTTPClient_GetUserByID_Non2xxUnexpected(t *testing.T) {
+func TestHTTPClient_GetUserByID_Unauthorized(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": false,
+			"message": "Authorization header is missing or invalid",
+			"data":    nil,
+		})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(server.URL, server.Client(), &fakeTokenProvider{})
+	_, err := client.GetUserByID(context.Background(), "user-id-1")
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expected ErrUnauthorized for 401, got: %v", err)
+	}
+}
+
+func TestHTTPClient_GetUserByID_Forbidden(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"success": false,
@@ -361,8 +384,191 @@ func TestHTTPClient_GetUserByID_Non2xxUnexpected(t *testing.T) {
 
 	client, _ := NewClient(server.URL, server.Client(), &fakeTokenProvider{})
 	_, err := client.GetUserByID(context.Background(), "user-id-1")
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected ErrForbidden for 403 Forbidden, got: %v", err)
+	}
+}
+
+func TestHTTPClient_GetUserByID_Non2xxUnexpected(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": false,
+			"message": "I'm a teapot",
+			"data":    nil,
+		})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(server.URL, server.Client(), &fakeTokenProvider{})
+	_, err := client.GetUserByID(context.Background(), "user-id-1")
 	if !errors.Is(err, ErrUnexpected) {
-		t.Fatalf("expected ErrUnexpected for 403 Forbidden, got: %v", err)
+		t.Fatalf("expected ErrUnexpected for 418 Teapot, got: %v", err)
+	}
+}
+
+func TestHTTPClient_GetUserByID_NullableLastActivityAt(t *testing.T) {
+	// Case 1: lastActivityAt is populated
+	activityTime := time.Date(2026, 9, 20, 14, 30, 0, 0, time.UTC)
+	serverWithActivity := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"data": map[string]any{
+				"id":               "u-1",
+				"username":         "alice",
+				"email":            "alice@example.com",
+				"role":             "User",
+				"language":         "EN",
+				"isActive":         true,
+				"isBlocked":        false,
+				"registrationDate": "2026-01-01T00:00:00Z",
+				"lastActivityAt":   "2026-09-20T14:30:00Z",
+			},
+		})
+	}))
+	defer serverWithActivity.Close()
+
+	client1, _ := NewClient(serverWithActivity.URL, serverWithActivity.Client(), &fakeTokenProvider{})
+	userWith, err := client1.GetUserByID(context.Background(), "u-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if userWith.LastActivityAt == nil {
+		t.Fatal("expected non-nil LastActivityAt")
+	}
+	if !userWith.LastActivityAt.Equal(activityTime) {
+		t.Errorf("expected %v, got %v", activityTime, *userWith.LastActivityAt)
+	}
+
+	// Case 2: lastActivityAt is null
+	serverWithoutActivity := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"data": map[string]any{
+				"id":               "u-2",
+				"username":         "bob",
+				"email":            "bob@example.com",
+				"role":             "User",
+				"language":         "RU",
+				"isActive":         true,
+				"isBlocked":        false,
+				"registrationDate": "2026-01-01T00:00:00Z",
+				"lastActivityAt":   nil,
+			},
+		})
+	}))
+	defer serverWithoutActivity.Close()
+
+	client2, _ := NewClient(serverWithoutActivity.URL, serverWithoutActivity.Client(), &fakeTokenProvider{})
+	userWithout, err := client2.GetUserByID(context.Background(), "u-2")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if userWithout.LastActivityAt != nil {
+		t.Errorf("expected nil LastActivityAt, got %v", userWithout.LastActivityAt)
+	}
+}
+
+func TestHTTPClient_GetUserByID_WithRealJWTServiceTokenProvider(t *testing.T) {
+	secret := "Z21oZWxwZXItZGVmYXVsdC1qd3Qtc2VjcmV0LTMyYiE="
+	issuer := "gmhelper-api"
+	audience := "gmhelper-notify-api"
+
+	tp, err := auth.NewServiceTokenProvider(auth.ServiceTokenProviderConfig{
+		Secret:   secret,
+		Issuer:   issuer,
+		Audience: audience,
+		TTL:      10 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("failed to create real token provider: %v", err)
+	}
+
+	verifier, err := auth.NewJWTVerifier(secret, issuer, audience)
+	if err != nil {
+		t.Fatalf("failed to create verifier: %v", err)
+	}
+
+	var verifiedRole string
+	var verifiedSub string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHdr := r.Header.Get("Authorization")
+		tokenStr := strings.TrimPrefix(authHdr, "Bearer ")
+
+		claims, err := verifier.Verify(tokenStr)
+		if err != nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "message": err.Error()})
+			return
+		}
+
+		verifiedRole = claims.Role
+		verifiedSub = claims.UserID
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"data": map[string]any{
+				"id":               "u-real",
+				"username":         "service_user",
+				"email":            "service@example.com",
+				"role":             "Service",
+				"language":         "EN",
+				"isActive":         true,
+				"isBlocked":        false,
+				"registrationDate": "2026-01-01T00:00:00Z",
+			},
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, server.Client(), tp)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	u, err := client.GetUserByID(context.Background(), "u-real")
+	if err != nil {
+		t.Fatalf("GetUserByID with real token provider failed: %v", err)
+	}
+
+	if u.ID != "u-real" {
+		t.Errorf("expected user ID u-real, got %s", u.ID)
+	}
+	if verifiedRole != "Service" {
+		t.Errorf("expected verified token role 'Service', got %s", verifiedRole)
+	}
+	if verifiedSub != "gmhelper-api" {
+		t.Errorf("expected verified token sub 'gmhelper-api', got %s", verifiedSub)
+	}
+}
+
+func TestHTTPClient_GetUserByID_TransportErrors(t *testing.T) {
+	// 1. Connection refused / closed server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	serverURL := server.URL
+	server.Close() // Close immediately
+
+	client, _ := NewClient(serverURL, &http.Client{Timeout: 500 * time.Millisecond}, &fakeTokenProvider{})
+	_, err := client.GetUserByID(context.Background(), "u-1")
+	if err == nil {
+		t.Fatal("expected transport error for closed server, got nil")
+	}
+
+	// 2. Timeout
+	slowServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer slowServer.Close()
+
+	timeoutClient, _ := NewClient(slowServer.URL, &http.Client{Timeout: 20 * time.Millisecond}, &fakeTokenProvider{})
+	_, err = timeoutClient.GetUserByID(context.Background(), "u-1")
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
 	}
 }
 
@@ -633,8 +839,20 @@ func TestHTTPClient_SearchUsers_UpstreamErrors(t *testing.T) {
 
 	client403, _ := NewClient(server403.URL, server403.Client(), &fakeTokenProvider{})
 	_, err = client403.SearchUsers(context.Background(), "alice", 20)
-	if !errors.Is(err, ErrUnexpected) {
-		t.Errorf("expected ErrUnexpected for 403, got: %v", err)
+	if !errors.Is(err, ErrForbidden) {
+		t.Errorf("expected ErrForbidden for 403, got: %v", err)
+	}
+
+	// 2b. 401 Unauthorized
+	server401 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server401.Close()
+
+	client401, _ := NewClient(server401.URL, server401.Client(), &fakeTokenProvider{})
+	_, err = client401.SearchUsers(context.Background(), "alice", 20)
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("expected ErrUnauthorized for 401, got: %v", err)
 	}
 
 	// 3. Malformed JSON

@@ -12,7 +12,7 @@ import (
 const (
 	testServiceSecret   = "dGVzdC1zZXJ2aWNlLXNlY3JldC1rZXktMzItYnl0ZXMhIQ=="
 	testServiceIssuer   = "gmhelper-api"
-	testServiceAudience = "gmhelper-api"
+	testServiceAudience = "gmhelper-notify-api"
 )
 
 func TestNewServiceTokenProvider_Validation(t *testing.T) {
@@ -119,11 +119,17 @@ func TestServiceTokenProvider_TokenGenerationAndClaims(t *testing.T) {
 		t.Fatalf("failed to parse payload JSON: %v", err)
 	}
 
-	if claims.Sub != "gmhelper-notify-api" {
-		t.Errorf("expected sub 'gmhelper-notify-api', got: %s", claims.Sub)
+	if claims.Sub != "gmhelper-api" {
+		t.Errorf("expected sub 'gmhelper-api', got: %s", claims.Sub)
 	}
-	if claims.GetUserID() != "gmhelper-notify-api" {
-		t.Errorf("expected GetUserID() 'gmhelper-notify-api', got: %s", claims.GetUserID())
+	if claims.Name != "gmhelper-api" {
+		t.Errorf("expected name 'gmhelper-api', got: %s", claims.Name)
+	}
+	if claims.SoapName != "gmhelper-api" {
+		t.Errorf("expected SoapName 'gmhelper-api', got: %s", claims.SoapName)
+	}
+	if claims.GetUserID() != "gmhelper-api" {
+		t.Errorf("expected GetUserID() 'gmhelper-api', got: %s", claims.GetUserID())
 	}
 	if claims.Role != "Service" || claims.SoapRole != "Service" {
 		t.Errorf("expected role 'Service', got role=%s soapRole=%s", claims.Role, claims.SoapRole)
@@ -151,8 +157,8 @@ func TestServiceTokenProvider_TokenGenerationAndClaims(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected JWTVerifier to verify service token, got error: %v", err)
 	}
-	if principal.UserID != "gmhelper-notify-api" {
-		t.Errorf("expected verified principal UserID 'gmhelper-notify-api', got: %s", principal.UserID)
+	if principal.UserID != "gmhelper-api" {
+		t.Errorf("expected verified principal UserID 'gmhelper-api', got: %s", principal.UserID)
 	}
 	if principal.Role != "Service" {
 		t.Errorf("expected verified principal Role 'Service', got: %s", principal.Role)
@@ -242,7 +248,10 @@ func TestServiceTokenProvider_GMHelperContractClaims(t *testing.T) {
 	if claims.Role != "Service" || claims.SoapRole != "Service" {
 		t.Errorf("expected role 'Service', got role=%s soapRole=%s", claims.Role, claims.SoapRole)
 	}
-	if claims.Sub != "gmhelper-notify-api" {
-		t.Errorf("expected sub 'gmhelper-notify-api', got '%s'", claims.Sub)
+	if claims.Sub != "gmhelper-api" {
+		t.Errorf("expected sub 'gmhelper-api', got '%s'", claims.Sub)
+	}
+	if claims.Name != "gmhelper-api" {
+		t.Errorf("expected name 'gmhelper-api', got '%s'", claims.Name)
 	}
 }

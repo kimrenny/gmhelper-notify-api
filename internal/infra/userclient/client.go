@@ -17,6 +17,8 @@ import (
 
 var (
 	ErrNotFound             = errors.New("user not found")
+	ErrUnauthorized         = errors.New("unauthorized: gmhelper-api rejected service authentication")
+	ErrForbidden            = errors.New("forbidden: caller lacks permissions for gmhelper-api")
 	ErrInvalidInput         = errors.New("invalid user id")
 	ErrServer               = errors.New("gmhelper-api server error")
 	ErrUnexpected           = errors.New("unexpected response from gmhelper-api")
@@ -145,28 +147,8 @@ func (c *HTTPClient) GetUserByID(ctx context.Context, id string) (*User, error) 
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	if resp.StatusCode == http.StatusNotFound {
-		var errEnvelope apiResponse[any]
-		if len(bodyBytes) > 0 && json.Unmarshal(bodyBytes, &errEnvelope) == nil && errEnvelope.Message != nil && *errEnvelope.Message != "" {
-			return nil, fmt.Errorf("%w: %s", ErrNotFound, *errEnvelope.Message)
-		}
-		return nil, ErrNotFound
-	}
-
-	if resp.StatusCode >= 500 {
-		var errEnvelope apiResponse[any]
-		if len(bodyBytes) > 0 && json.Unmarshal(bodyBytes, &errEnvelope) == nil && errEnvelope.Message != nil && *errEnvelope.Message != "" {
-			return nil, fmt.Errorf("%w: status %d: %s", ErrServer, resp.StatusCode, *errEnvelope.Message)
-		}
-		return nil, fmt.Errorf("%w: status %d", ErrServer, resp.StatusCode)
-	}
-
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var errEnvelope apiResponse[any]
-		if len(bodyBytes) > 0 && json.Unmarshal(bodyBytes, &errEnvelope) == nil && errEnvelope.Message != nil && *errEnvelope.Message != "" {
-			return nil, fmt.Errorf("%w: status %d: %s", ErrUnexpected, resp.StatusCode, *errEnvelope.Message)
-		}
-		return nil, fmt.Errorf("%w: status %d", ErrUnexpected, resp.StatusCode)
+		return nil, handleStatusError(resp.StatusCode, bodyBytes)
 	}
 
 	var envelope apiResponse[User]
@@ -232,20 +214,8 @@ func (c *HTTPClient) SearchUsers(ctx context.Context, query string, limit int) (
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	if resp.StatusCode >= 500 {
-		var errEnvelope apiResponse[any]
-		if len(bodyBytes) > 0 && json.Unmarshal(bodyBytes, &errEnvelope) == nil && errEnvelope.Message != nil && *errEnvelope.Message != "" {
-			return nil, fmt.Errorf("%w: status %d: %s", ErrServer, resp.StatusCode, *errEnvelope.Message)
-		}
-		return nil, fmt.Errorf("%w: status %d", ErrServer, resp.StatusCode)
-	}
-
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var errEnvelope apiResponse[any]
-		if len(bodyBytes) > 0 && json.Unmarshal(bodyBytes, &errEnvelope) == nil && errEnvelope.Message != nil && *errEnvelope.Message != "" {
-			return nil, fmt.Errorf("%w: status %d: %s", ErrUnexpected, resp.StatusCode, *errEnvelope.Message)
-		}
-		return nil, fmt.Errorf("%w: status %d", ErrUnexpected, resp.StatusCode)
+		return nil, handleStatusError(resp.StatusCode, bodyBytes)
 	}
 
 	var envelope apiResponse[[]User]
@@ -313,20 +283,8 @@ func (c *HTTPClient) GetUsers(ctx context.Context, page, pageSize int, activeOnl
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	if resp.StatusCode >= 500 {
-		var errEnvelope apiResponse[any]
-		if len(bodyBytes) > 0 && json.Unmarshal(bodyBytes, &errEnvelope) == nil && errEnvelope.Message != nil && *errEnvelope.Message != "" {
-			return nil, fmt.Errorf("%w: status %d: %s", ErrServer, resp.StatusCode, *errEnvelope.Message)
-		}
-		return nil, fmt.Errorf("%w: status %d", ErrServer, resp.StatusCode)
-	}
-
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var errEnvelope apiResponse[any]
-		if len(bodyBytes) > 0 && json.Unmarshal(bodyBytes, &errEnvelope) == nil && errEnvelope.Message != nil && *errEnvelope.Message != "" {
-			return nil, fmt.Errorf("%w: status %d: %s", ErrUnexpected, resp.StatusCode, *errEnvelope.Message)
-		}
-		return nil, fmt.Errorf("%w: status %d", ErrUnexpected, resp.StatusCode)
+		return nil, handleStatusError(resp.StatusCode, bodyBytes)
 	}
 
 	var envelope apiResponse[PagedUsers]
@@ -347,4 +305,37 @@ func (c *HTTPClient) GetUsers(ctx context.Context, page, pageSize int, activeOnl
 	}
 
 	return envelope.Data, nil
+}
+
+func handleStatusError(statusCode int, bodyBytes []byte) error {
+	var errEnvelope apiResponse[any]
+	hasMsg := len(bodyBytes) > 0 && json.Unmarshal(bodyBytes, &errEnvelope) == nil && errEnvelope.Message != nil && *errEnvelope.Message != ""
+
+	switch {
+	case statusCode == http.StatusNotFound:
+		if hasMsg {
+			return fmt.Errorf("%w: %s", ErrNotFound, *errEnvelope.Message)
+		}
+		return ErrNotFound
+	case statusCode == http.StatusUnauthorized:
+		if hasMsg {
+			return fmt.Errorf("%w: %s", ErrUnauthorized, *errEnvelope.Message)
+		}
+		return ErrUnauthorized
+	case statusCode == http.StatusForbidden:
+		if hasMsg {
+			return fmt.Errorf("%w: %s", ErrForbidden, *errEnvelope.Message)
+		}
+		return ErrForbidden
+	case statusCode >= 500:
+		if hasMsg {
+			return fmt.Errorf("%w: status %d: %s", ErrServer, statusCode, *errEnvelope.Message)
+		}
+		return fmt.Errorf("%w: status %d", ErrServer, statusCode)
+	default:
+		if hasMsg {
+			return fmt.Errorf("%w: status %d: %s", ErrUnexpected, statusCode, *errEnvelope.Message)
+		}
+		return fmt.Errorf("%w: status %d", ErrUnexpected, statusCode)
+	}
 }

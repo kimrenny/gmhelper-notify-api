@@ -12,7 +12,8 @@ import (
 
 const (
 	DefaultServiceTokenTTL = 5 * time.Minute
-	DefaultServiceSubject  = "gmhelper-notify-api"
+	DefaultServiceSubject  = "gmhelper-api"
+	DefaultServiceName     = "gmhelper-api"
 	DefaultServiceRole     = "Service"
 )
 
@@ -31,6 +32,8 @@ type ServiceTokenProviderConfig struct {
 	Secret   string
 	Issuer   string
 	Audience string
+	Subject  string
+	Name     string
 	TTL      time.Duration
 }
 
@@ -39,6 +42,8 @@ type JWTServiceTokenProvider struct {
 	secret   []byte
 	issuer   string
 	audience string
+	subject  string
+	name     string
 	ttl      time.Duration
 	nowFunc  func() time.Time
 }
@@ -60,6 +65,16 @@ func NewServiceTokenProvider(cfg ServiceTokenProviderConfig) (*JWTServiceTokenPr
 		return nil, ErrMissingAudience
 	}
 
+	subject := strings.TrimSpace(cfg.Subject)
+	if subject == "" {
+		subject = DefaultServiceSubject
+	}
+
+	name := strings.TrimSpace(cfg.Name)
+	if name == "" {
+		name = DefaultServiceName
+	}
+
 	ttl := cfg.TTL
 	if ttl <= 0 {
 		ttl = DefaultServiceTokenTTL
@@ -69,6 +84,8 @@ func NewServiceTokenProvider(cfg ServiceTokenProviderConfig) (*JWTServiceTokenPr
 		secret:   key,
 		issuer:   issuer,
 		audience: audience,
+		subject:  subject,
+		name:     name,
 		ttl:      ttl,
 		nowFunc:  time.Now,
 	}, nil
@@ -82,17 +99,19 @@ func (p *JWTServiceTokenProvider) Token(ctx context.Context) (string, error) {
 
 	now := p.nowFunc().UTC()
 	claims := Claims{
-		Sub:      DefaultServiceSubject,
-		UserID:   DefaultServiceSubject,
-		SoapName: DefaultServiceSubject,
-		Role:     DefaultServiceRole,
-		SoapRole: DefaultServiceRole,
-		Iss:      p.issuer,
-		Aud:      p.audience,
-		Exp:      now.Add(p.ttl).Unix(),
-		Iat:      now.Unix(),
-		Nbf:      now.Unix(),
-		Jti:      uuid.NewString(),
+		Sub:        p.subject,
+		UserID:     p.subject,
+		UniqueName: p.name,
+		Name:       p.name,
+		SoapName:   p.name,
+		Role:       DefaultServiceRole,
+		SoapRole:   DefaultServiceRole,
+		Iss:        p.issuer,
+		Aud:        p.audience,
+		Exp:        now.Add(p.ttl).Unix(),
+		Iat:        now.Unix(),
+		Nbf:        now.Unix(),
+		Jti:        uuid.NewString(),
 	}
 
 	return GenerateTokenWithClaims(p.secret, claims)

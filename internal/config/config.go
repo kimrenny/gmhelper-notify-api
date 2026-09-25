@@ -141,8 +141,8 @@ func Load() (*Config, error) {
 		AuthAudience:                 envOrDefault("NOTIFY_AUTH_AUDIENCE", "gmhelper-notify-api"),
 		AuthSecret:                   authSecret,
 		ServiceAuthSecret:            serviceAuthSecret,
-		ServiceAuthIssuer:            envOrDefault("NOTIFY_SERVICE_AUTH_ISSUER", envOrDefault("NOTIFY_AUTH_ISSUER", "GMHelperAPI")),
-		ServiceAuthAudience:          envOrDefault("NOTIFY_SERVICE_AUTH_AUDIENCE", "GMHelperClient"),
+		ServiceAuthIssuer:            envOrDefault("NOTIFY_SERVICE_AUTH_ISSUER", envOrDefault("NOTIFY_AUTH_ISSUER", "gmhelper-api")),
+		ServiceAuthAudience:          envOrDefault("NOTIFY_SERVICE_AUTH_AUDIENCE", envOrDefault("NOTIFY_AUTH_AUDIENCE", "gmhelper-notify-api")),
 		WorkerEnabled:                parseBoolEnv("NOTIFY_WORKER_ENABLED", true),
 		WorkerInterval:               workerInterval,
 		WorkerStaleTimeout:           workerStaleTimeout,
@@ -268,11 +268,15 @@ func (c *Config) Validate() error {
 		if strings.TrimSpace(c.AuthIssuer) != "" {
 			c.ServiceAuthIssuer = c.AuthIssuer
 		} else {
-			c.ServiceAuthIssuer = "GMHelperAPI"
+			c.ServiceAuthIssuer = "gmhelper-api"
 		}
 	}
 	if strings.TrimSpace(c.ServiceAuthAudience) == "" {
-		c.ServiceAuthAudience = "GMHelperClient"
+		if strings.TrimSpace(c.AuthAudience) != "" {
+			c.ServiceAuthAudience = c.AuthAudience
+		} else {
+			c.ServiceAuthAudience = "gmhelper-notify-api"
+		}
 	}
 	if c.Env == "production" {
 		if strings.TrimSpace(c.AuthSecret) == "" || c.AuthSecret == "Z21oZWxwZXItZGVmYXVsdC1qd3Qtc2VjcmV0LTMyYiE=" {

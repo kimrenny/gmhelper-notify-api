@@ -78,11 +78,14 @@ func (e *Engine) HandleEvent(ctx context.Context, event Event) (*EventExecutionR
 		return result, errors.New("automation rule repository is nil")
 	}
 
-	// 1. Resolve user profile if not directly attached
-	user := event.User
-	if user == nil && strings.TrimSpace(event.UserID) != "" && e.userResolver != nil {
-		resolved, err := e.userResolver.GetUserByID(ctx, event.UserID)
+	// 1. Resolve user profile if user ID is provided or userResolver is available
+	var user *userclient.User
+	var userResolveErr error
+
+	if strings.TrimSpace(event.UserID) != "" && e.userResolver != nil {
+		resolved, err := e.userResolver.GetUserByID(ctx, strings.TrimSpace(event.UserID))
 		if err != nil {
+			userResolveErr = err
 			e.logger.Warn("failed to resolve user for automation event",
 				logger.String("eventId", event.ID),
 				logger.String("userId", event.UserID),
@@ -91,6 +94,8 @@ func (e *Engine) HandleEvent(ctx context.Context, event Event) (*EventExecutionR
 		} else {
 			user = resolved
 		}
+	} else if event.User != nil {
+		user = event.User
 	}
 
 	// 2. Build unified context dictionary for condition evaluation and template rendering
@@ -118,6 +123,20 @@ func (e *Engine) HandleEvent(ctx context.Context, event Event) (*EventExecutionR
 		if !strings.EqualFold(strings.TrimSpace(rule.Config.Trigger), strings.TrimSpace(event.Type)) {
 			continue
 		}
+
+		if userResolveErr != nil {
+			errMsg := fmt.Sprintf("failed to resolve authoritative user %q: %v", event.UserID, userResolveErr)
+			ruleRes := RuleExecutionResult{
+				RuleID:   rule.ID,
+				RuleName: rule.Name,
+				Status:   StatusFailed,
+				Error:    errMsg,
+			}
+			e.recordAuditFailure(ctx, rule, event, errMsg)
+			result.Results = append(result.Results, ruleRes)
+			continue
+		}
+
 		ruleRes := e.executeRule(ctx, rule, event, user, contextData)
 		result.Results = append(result.Results, ruleRes)
 	}
@@ -592,7 +611,17 @@ func (e *Engine) recordAuditFailure(ctx context.Context, rule *domain.Automation
 func buildContextData(event Event, user *userclient.User) map[string]any {
 	ctx := make(map[string]any)
 
-	// User fields
+	// Event custom data
+	for k, v := range event.Data {
+		ctx[k] = v
+	}
+
+	// Event metadata
+	ctx["eventId"] = event.ID
+	ctx["eventType"] = event.Type
+	ctx["occurredAt"] = event.OccurredAt
+
+	// Authoritative user fields take precedence over event payload
 	if user != nil {
 		ctx[domain.FieldUsername] = user.Username
 		ctx[domain.FieldEmail] = user.Email
@@ -610,16 +639,6 @@ func buildContextData(event Event, user *userclient.User) map[string]any {
 		}
 		ctx["userId"] = user.ID
 		ctx["id"] = user.ID
-	}
-
-	// Event metadata
-	ctx["eventId"] = event.ID
-	ctx["eventType"] = event.Type
-	ctx["occurredAt"] = event.OccurredAt
-
-	// Event custom data (explicit payload overrides user defaults)
-	for k, v := range event.Data {
-		ctx[k] = v
 	}
 
 	return ctx
