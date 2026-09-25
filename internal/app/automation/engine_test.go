@@ -1777,4 +1777,3 @@ func TestHandleEvent_SkipsInactiveTriggerRules(t *testing.T) {
 		t.Fatalf("expected 0 notifications created, got %d", len(directRepo.created))
 	}
 }
-
