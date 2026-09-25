@@ -1718,3 +1718,63 @@ func TestEngine_MissingAndInvalidTriggersNeverExecute(t *testing.T) {
 		t.Errorf("expected exactly 1 execution in inactivity scheduler, got %d", summary.ExecutedCount)
 	}
 }
+
+func TestHandleEvent_SkipsInactiveTriggerRules(t *testing.T) {
+	ruleRepo := &mockRuleRepo{
+		rules: []*domain.AutomationRule{
+			{
+				ID:         "rule-inactivity-1",
+				Name:       "Inactivity Notification Rule",
+				TemplateID: "tpl-1",
+				Enabled:    true,
+				Config: domain.AutomationRuleConfig{
+					Version: 1,
+					Trigger: domain.TriggerUserInactive,
+					Conditions: domain.ConditionGroup{
+						Operator: domain.GroupOperatorAll,
+						Conditions: []domain.ConditionNode{
+							{Item: &domain.ConditionItem{Field: domain.FieldIsActive, Operator: domain.OperatorEquals, Value: true}},
+						},
+					},
+					Action: domain.ActionConfig{Type: domain.ActionTypeSendEmail},
+				},
+			},
+		},
+	}
+	templateRepo := &engineMockTemplateRepo{
+		templates: map[string]*domain.EmailTemplate{
+			"tpl-1": {
+				ID:           "tpl-1",
+				Status:       domain.TemplateStatusActive,
+				TemplateType: domain.TemplateTypeAutomation,
+				Subject:      "We miss you {{username}}",
+				HTMLBody:     "<p>Hello {{username}}</p>",
+			},
+		},
+	}
+	directRepo := &mockDirectRepo{}
+	execRepo := &mockExecRepo{}
+	engine := NewEngine(ruleRepo, templateRepo, directRepo, execRepo, nil, nil, logger.NewNop())
+
+	// Even if an external event is sent with Type == "user.inactive", HandleEvent must skip it
+	event := Event{
+		ID:         "evt-inactive-manual-1",
+		Type:       domain.TriggerUserInactive,
+		UserID:     "user-1",
+		User:       &userclient.User{ID: "user-1", Email: "test@example.com", Username: "Alice", IsActive: true},
+		OccurredAt: time.Now().UTC(),
+	}
+
+	res, err := engine.HandleEvent(context.Background(), event)
+	if err != nil {
+		t.Fatalf("unexpected error on HandleEvent: %v", err)
+	}
+
+	if len(res.Results) != 0 {
+		t.Fatalf("expected 0 executed rules for scheduled inactivity trigger via HandleEvent, got %d", len(res.Results))
+	}
+	if len(directRepo.created) != 0 {
+		t.Fatalf("expected 0 notifications created, got %d", len(directRepo.created))
+	}
+}
+

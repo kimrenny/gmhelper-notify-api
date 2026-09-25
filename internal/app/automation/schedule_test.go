@@ -484,3 +484,35 @@ func TestService_NextEvaluationAt_Lifecycle(t *testing.T) {
 			updated.NextEvaluationAt.Hour(), updated.NextEvaluationAt.Minute())
 	}
 }
+
+func TestIsDue_RespectsFutureNextEvaluationAt(t *testing.T) {
+	now := time.Date(2026, 9, 25, 14, 0, 0, 0, time.UTC)
+	futureNext := time.Date(2026, 9, 26, 9, 0, 0, 0, time.UTC)
+
+	rule := &domain.AutomationRule{
+		ID:      "rule-future-test",
+		Enabled: true,
+		Config: domain.AutomationRuleConfig{
+			Version: 1,
+			Trigger: domain.TriggerUserInactive,
+			Schedule: domain.ScheduleConfig{
+				Type:      domain.ScheduleTypeDaily,
+				HourUTC:   intPtr(9),
+				MinuteUTC: intPtr(0),
+			},
+		},
+		CreatedAt:        time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+		LastEvaluatedAt:  nil,
+		NextEvaluationAt: &futureNext,
+	}
+
+	// At 14:00 today (before futureNext tomorrow at 09:00), IsDue must return false
+	if IsDue(rule, now) {
+		t.Errorf("expected IsDue to return false when now is before NextEvaluationAt")
+	}
+
+	// When now reaches futureNext, IsDue returns true
+	if !IsDue(rule, futureNext) {
+		t.Errorf("expected IsDue to return true when now reaches NextEvaluationAt")
+	}
+}

@@ -111,6 +111,10 @@ func (e *Engine) HandleEvent(ctx context.Context, event Event) (*EventExecutionR
 		if rule == nil {
 			continue
 		}
+		// Scheduled triggers (such as user.inactive) are evaluated only by the scheduler, never by runtime events
+		if strings.EqualFold(strings.TrimSpace(rule.Config.Trigger), domain.TriggerUserInactive) {
+			continue
+		}
 		if !strings.EqualFold(strings.TrimSpace(rule.Config.Trigger), strings.TrimSpace(event.Type)) {
 			continue
 		}
