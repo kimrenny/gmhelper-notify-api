@@ -17,6 +17,7 @@ const defaultAudiencePageSize = 250
 // UserLister defines the client contract for retrieving paginated active/unblocked users.
 type UserLister interface {
 	GetUsers(ctx context.Context, page, pageSize int, activeOnly, unblockedOnly bool) (*userclient.PagedUsers, error)
+	GetUsersFiltered(ctx context.Context, page, pageSize int, activeOnly, unblockedOnly bool, filter *domain.CampaignAudienceFilter) (*userclient.PagedUsers, error)
 }
 
 // AudiencePopulator defines the interface for populating campaign recipients for a claimed campaign.
@@ -59,6 +60,11 @@ func (p *Populator) PopulateAudience(ctx context.Context, campaignID string) (in
 		return 0, errors.New("populator dependencies not configured")
 	}
 
+	var audienceFilter *domain.CampaignAudienceFilter
+	if camp, err := p.campaignRepo.GetByID(ctx, campaignID); err == nil && camp != nil {
+		audienceFilter = camp.AudienceFilter
+	}
+
 	if p.logger != nil {
 		p.logger.Info("audience population started",
 			logger.String("campaignId", campaignID),
@@ -88,7 +94,7 @@ func (p *Populator) PopulateAudience(ctx context.Context, campaignID string) (in
 			)
 		}
 
-		paged, err := p.userLister.GetUsers(ctx, page, p.pageSize, true, true)
+		paged, err := p.userLister.GetUsersFiltered(ctx, page, p.pageSize, true, true, audienceFilter)
 		if err != nil {
 			if p.logger != nil {
 				p.logger.Error("audience population failed to retrieve user page",

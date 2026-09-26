@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gmhelper/notify-api/internal/domain"
 	"github.com/gmhelper/notify-api/internal/infra/auth"
 )
 
@@ -60,6 +61,7 @@ type Client interface {
 	GetUserByID(ctx context.Context, id string) (*User, error)
 	SearchUsers(ctx context.Context, query string, limit int) ([]User, error)
 	GetUsers(ctx context.Context, page, pageSize int, activeOnly, unblockedOnly bool) (*PagedUsers, error)
+	GetUsersFiltered(ctx context.Context, page, pageSize int, activeOnly, unblockedOnly bool, filter *domain.CampaignAudienceFilter) (*PagedUsers, error)
 }
 
 // HTTPClient implements Client using HTTP requests to gmhelper-api.
@@ -240,6 +242,11 @@ func (c *HTTPClient) SearchUsers(ctx context.Context, query string, limit int) (
 
 // GetUsers queries gmhelper-api at GET /api/v1/internal/users?page={page}&pageSize={pageSize}&activeOnly={activeOnly}&unblockedOnly={unblockedOnly}.
 func (c *HTTPClient) GetUsers(ctx context.Context, page, pageSize int, activeOnly, unblockedOnly bool) (*PagedUsers, error) {
+	return c.GetUsersFiltered(ctx, page, pageSize, activeOnly, unblockedOnly, nil)
+}
+
+// GetUsersFiltered queries gmhelper-api with pagination and optional audience filters.
+func (c *HTTPClient) GetUsersFiltered(ctx context.Context, page, pageSize int, activeOnly, unblockedOnly bool, filter *domain.CampaignAudienceFilter) (*PagedUsers, error) {
 	if page < 1 {
 		return nil, fmt.Errorf("%w: page must be >= 1", ErrInvalidInput)
 	}
@@ -261,6 +268,24 @@ func (c *HTTPClient) GetUsers(ctx context.Context, page, pageSize int, activeOnl
 	params.Set("pageSize", strconv.Itoa(pageSize))
 	params.Set("activeOnly", strconv.FormatBool(activeOnly))
 	params.Set("unblockedOnly", strconv.FormatBool(unblockedOnly))
+
+	if filter != nil {
+		if filter.Role != "" {
+			params.Set("role", filter.Role)
+		}
+		if filter.Language != "" {
+			params.Set("language", filter.Language)
+		}
+		if filter.RegistrationDate != "" {
+			params.Set("registrationDate", filter.RegistrationDate)
+		}
+		if filter.EmailConfirmed != "" {
+			params.Set("emailConfirmed", filter.EmailConfirmed)
+		}
+		if filter.AccountStatus != "" {
+			params.Set("accountStatus", filter.AccountStatus)
+		}
+	}
 
 	endpoint := fmt.Sprintf("%s/api/v1/internal/users?%s", c.baseURL, params.Encode())
 

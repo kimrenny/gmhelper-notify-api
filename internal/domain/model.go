@@ -2,8 +2,10 @@ package domain
 
 import (
 	"context"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -198,17 +200,52 @@ type EmailTemplate struct {
 	UpdatedAt     time.Time      `json:"updatedAt" db:"updated_at"`
 }
 
+type CampaignAudienceFilter struct {
+	Role             string `json:"role,omitempty"`
+	RegistrationDate string `json:"registrationDate,omitempty"`
+	EmailConfirmed   string `json:"emailConfirmed,omitempty"`
+	Language         string `json:"language,omitempty"`
+	AccountStatus    string `json:"accountStatus,omitempty"`
+}
+
+func (f *CampaignAudienceFilter) Value() (driver.Value, error) {
+	if f == nil {
+		return nil, nil
+	}
+	return json.Marshal(f)
+}
+
+func (f *CampaignAudienceFilter) Scan(value interface{}) error {
+	if value == nil {
+		return nil
+	}
+	var bytes []byte
+	switch v := value.(type) {
+	case []byte:
+		bytes = v
+	case string:
+		bytes = []byte(v)
+	default:
+		return fmt.Errorf("cannot scan %T into CampaignAudienceFilter", value)
+	}
+	if len(bytes) == 0 {
+		return nil
+	}
+	return json.Unmarshal(bytes, f)
+}
+
 type NotificationCampaign struct {
-	ID           string         `json:"id" db:"id"`
-	Name         string         `json:"name" db:"name"`
-	TemplateID   string         `json:"templateId" db:"template_id"`
-	CampaignType string         `json:"campaignType" db:"campaign_type"`
-	Status       CampaignStatus `json:"status" db:"status"`
-	ScheduledAt  *time.Time     `json:"scheduledAt,omitempty" db:"scheduled_at"`
-	StartedAt    *time.Time     `json:"startedAt,omitempty" db:"started_at"`
-	CompletedAt  *time.Time     `json:"completedAt,omitempty" db:"completed_at"`
-	CreatedAt    time.Time      `json:"createdAt" db:"created_at"`
-	UpdatedAt    time.Time      `json:"updatedAt" db:"updated_at"`
+	ID             string                  `json:"id" db:"id"`
+	Name           string                  `json:"name" db:"name"`
+	TemplateID     string                  `json:"templateId" db:"template_id"`
+	CampaignType   string                  `json:"campaignType" db:"campaign_type"`
+	Status         CampaignStatus          `json:"status" db:"status"`
+	AudienceFilter *CampaignAudienceFilter `json:"audienceFilter,omitempty" db:"audience_filter"`
+	ScheduledAt    *time.Time              `json:"scheduledAt,omitempty" db:"scheduled_at"`
+	StartedAt      *time.Time              `json:"startedAt,omitempty" db:"started_at"`
+	CompletedAt    *time.Time              `json:"completedAt,omitempty" db:"completed_at"`
+	CreatedAt      time.Time               `json:"createdAt" db:"created_at"`
+	UpdatedAt      time.Time               `json:"updatedAt" db:"updated_at"`
 }
 
 type CampaignRecipient struct {

@@ -13,16 +13,24 @@ import (
 )
 
 type mockUserLister struct {
-	getUsersFunc func(ctx context.Context, page, pageSize int, activeOnly, unblockedOnly bool) (*userclient.PagedUsers, error)
-	mu           sync.Mutex
-	calls        []int
+	getUsersFunc         func(ctx context.Context, page, pageSize int, activeOnly, unblockedOnly bool) (*userclient.PagedUsers, error)
+	getUsersFilteredFunc func(ctx context.Context, page, pageSize int, activeOnly, unblockedOnly bool, filter *domain.CampaignAudienceFilter) (*userclient.PagedUsers, error)
+	mu                   sync.Mutex
+	calls                []int
 }
 
 func (m *mockUserLister) GetUsers(ctx context.Context, page, pageSize int, activeOnly, unblockedOnly bool) (*userclient.PagedUsers, error) {
+	return m.GetUsersFiltered(ctx, page, pageSize, activeOnly, unblockedOnly, nil)
+}
+
+func (m *mockUserLister) GetUsersFiltered(ctx context.Context, page, pageSize int, activeOnly, unblockedOnly bool, filter *domain.CampaignAudienceFilter) (*userclient.PagedUsers, error) {
 	m.mu.Lock()
 	m.calls = append(m.calls, page)
 	m.mu.Unlock()
 
+	if m.getUsersFilteredFunc != nil {
+		return m.getUsersFilteredFunc(ctx, page, pageSize, activeOnly, unblockedOnly, filter)
+	}
 	if m.getUsersFunc != nil {
 		return m.getUsersFunc(ctx, page, pageSize, activeOnly, unblockedOnly)
 	}
@@ -353,5 +361,68 @@ func TestAudiencePopulator_RecipientRepoError_MarksCampaignFailed(t *testing.T) 
 
 	if cRepo.campaigns[campaignID].Status != domain.CampaignStatusFailed {
 		t.Fatalf("expected campaign status failed, got %s", cRepo.campaigns[campaignID].Status)
+	}
+}
+
+func TestAudiencePopulator_WithCampaignAudienceFilter(t *testing.T) {
+	campaignID := "c-test-filtered"
+	filter := &domain.CampaignAudienceFilter{
+		Role:             "Admin",
+		Language:         "EN",
+		RegistrationDate: "last_7_days",
+		EmailConfirmed:   "confirmed",
+		AccountStatus:    "active",
+	}
+
+	var capturedFilter *domain.CampaignAudienceFilter
+	lister := &mockUserLister{
+		getUsersFilteredFunc: func(ctx context.Context, page, pageSize int, activeOnly, unblockedOnly bool, f *domain.CampaignAudienceFilter) (*userclient.PagedUsers, error) {
+			capturedFilter = f
+			return &userclient.PagedUsers{
+				Items: []userclient.User{
+					{ID: "u-admin", Username: "admin1", Email: "admin1@example.com", Role: "Admin", Language: "EN"},
+				},
+				TotalCount:  1,
+				Page:        1,
+				PageSize:    250,
+				HasNextPage: false,
+			}, nil
+		},
+	}
+
+	recRepo := newMockRecipientRepo()
+	cRepo := &mockRepo{
+		campaigns: map[string]*domain.NotificationCampaign{
+			campaignID: {
+				ID:             campaignID,
+				Status:         domain.CampaignStatusRunning,
+				AudienceFilter: filter,
+			},
+		},
+	}
+	log, _ := logger.NewLogger("error")
+
+	populator := NewAudiencePopulator(lister, recRepo, cRepo, log)
+	count, err := populator.PopulateAudience(context.Background(), campaignID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if count != 1 {
+		t.Fatalf("expected 1 recipient, got %d", count)
+	}
+
+	if capturedFilter == nil {
+		t.Fatal("expected audience filter to be passed to userclient, got nil")
+	}
+
+	if capturedFilter.Role != "Admin" || capturedFilter.Language != "EN" || capturedFilter.RegistrationDate != "last_7_days" {
+		t.Errorf("unexpected filter captured: %+v", capturedFilter)
+	}
+
+	for _, r := range recRepo.recipients {
+		if r.ExternalUserID != "u-admin" || r.RecipientEmail != "admin1@example.com" {
+			t.Errorf("unexpected recipient: %+v", r)
+		}
 	}
 }

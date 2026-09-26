@@ -20,10 +20,10 @@ func NewNotificationCampaignRepository(db *sql.DB) *NotificationCampaignReposito
 func (r *NotificationCampaignRepository) GetByID(ctx context.Context, id string) (*domain.NotificationCampaign, error) {
 	campaign := &domain.NotificationCampaign{}
 	row := r.db.QueryRowContext(ctx, `
-SELECT id, name, template_id, campaign_type, status, scheduled_at, started_at, completed_at, created_at, updated_at
+SELECT id, name, template_id, campaign_type, status, audience_filter, scheduled_at, started_at, completed_at, created_at, updated_at
 FROM notification_campaigns
 WHERE id = $1`, id)
-	if err := row.Scan(&campaign.ID, &campaign.Name, &campaign.TemplateID, &campaign.CampaignType, &campaign.Status, &campaign.ScheduledAt, &campaign.StartedAt, &campaign.CompletedAt, &campaign.CreatedAt, &campaign.UpdatedAt); err != nil {
+	if err := row.Scan(&campaign.ID, &campaign.Name, &campaign.TemplateID, &campaign.CampaignType, &campaign.Status, &campaign.AudienceFilter, &campaign.ScheduledAt, &campaign.StartedAt, &campaign.CompletedAt, &campaign.CreatedAt, &campaign.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, domain.ErrNotFound
 		}
@@ -37,8 +37,8 @@ func (r *NotificationCampaignRepository) Create(ctx context.Context, campaign *d
 		return err
 	}
 	_, err := r.db.ExecContext(ctx, `
-INSERT INTO notification_campaigns (id, name, template_id, campaign_type, status, scheduled_at, started_at, completed_at, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`, campaign.ID, campaign.Name, campaign.TemplateID, campaign.CampaignType, campaign.Status, campaign.ScheduledAt, campaign.StartedAt, campaign.CompletedAt, campaign.CreatedAt, campaign.UpdatedAt)
+INSERT INTO notification_campaigns (id, name, template_id, campaign_type, status, audience_filter, scheduled_at, started_at, completed_at, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`, campaign.ID, campaign.Name, campaign.TemplateID, campaign.CampaignType, campaign.Status, campaign.AudienceFilter, campaign.ScheduledAt, campaign.StartedAt, campaign.CompletedAt, campaign.CreatedAt, campaign.UpdatedAt)
 	return err
 }
 
@@ -48,8 +48,8 @@ func (r *NotificationCampaignRepository) Update(ctx context.Context, campaign *d
 	}
 	res, err := r.db.ExecContext(ctx, `
 UPDATE notification_campaigns
-SET name = $1, template_id = $2, campaign_type = $3, status = $4, scheduled_at = $5, updated_at = $6
-WHERE id = $7`, campaign.Name, campaign.TemplateID, campaign.CampaignType, campaign.Status, campaign.ScheduledAt, campaign.UpdatedAt, campaign.ID)
+SET name = $1, template_id = $2, campaign_type = $3, status = $4, audience_filter = $5, scheduled_at = $6, updated_at = $7
+WHERE id = $8`, campaign.Name, campaign.TemplateID, campaign.CampaignType, campaign.Status, campaign.AudienceFilter, campaign.ScheduledAt, campaign.UpdatedAt, campaign.ID)
 	if err != nil {
 		return err
 	}
@@ -91,7 +91,7 @@ WHERE id = $4`, status, startedAt, completedAt, id)
 
 func (r *NotificationCampaignRepository) ListByStatus(ctx context.Context, status domain.CampaignStatus) ([]*domain.NotificationCampaign, error) {
 	rows, err := r.db.QueryContext(ctx, `
-SELECT id, name, template_id, campaign_type, status, scheduled_at, started_at, completed_at, created_at, updated_at
+SELECT id, name, template_id, campaign_type, status, audience_filter, scheduled_at, started_at, completed_at, created_at, updated_at
 FROM notification_campaigns
 WHERE status = $1`, status)
 	if err != nil {
@@ -102,7 +102,7 @@ WHERE status = $1`, status)
 	campaigns := []*domain.NotificationCampaign{}
 	for rows.Next() {
 		campaign := &domain.NotificationCampaign{}
-		if err := rows.Scan(&campaign.ID, &campaign.Name, &campaign.TemplateID, &campaign.CampaignType, &campaign.Status, &campaign.ScheduledAt, &campaign.StartedAt, &campaign.CompletedAt, &campaign.CreatedAt, &campaign.UpdatedAt); err != nil {
+		if err := rows.Scan(&campaign.ID, &campaign.Name, &campaign.TemplateID, &campaign.CampaignType, &campaign.Status, &campaign.AudienceFilter, &campaign.ScheduledAt, &campaign.StartedAt, &campaign.CompletedAt, &campaign.CreatedAt, &campaign.UpdatedAt); err != nil {
 			return nil, err
 		}
 		campaigns = append(campaigns, campaign)
@@ -112,7 +112,7 @@ WHERE status = $1`, status)
 
 func (r *NotificationCampaignRepository) ListScheduled(ctx context.Context, after time.Time) ([]*domain.NotificationCampaign, error) {
 	rows, err := r.db.QueryContext(ctx, `
-SELECT id, name, template_id, campaign_type, status, scheduled_at, started_at, completed_at, created_at, updated_at
+SELECT id, name, template_id, campaign_type, status, audience_filter, scheduled_at, started_at, completed_at, created_at, updated_at
 FROM notification_campaigns
 WHERE scheduled_at >= $1
 ORDER BY scheduled_at ASC`, after)
@@ -124,7 +124,7 @@ ORDER BY scheduled_at ASC`, after)
 	campaigns := []*domain.NotificationCampaign{}
 	for rows.Next() {
 		campaign := &domain.NotificationCampaign{}
-		if err := rows.Scan(&campaign.ID, &campaign.Name, &campaign.TemplateID, &campaign.CampaignType, &campaign.Status, &campaign.ScheduledAt, &campaign.StartedAt, &campaign.CompletedAt, &campaign.CreatedAt, &campaign.UpdatedAt); err != nil {
+		if err := rows.Scan(&campaign.ID, &campaign.Name, &campaign.TemplateID, &campaign.CampaignType, &campaign.Status, &campaign.AudienceFilter, &campaign.ScheduledAt, &campaign.StartedAt, &campaign.CompletedAt, &campaign.CreatedAt, &campaign.UpdatedAt); err != nil {
 			return nil, err
 		}
 		campaigns = append(campaigns, campaign)
@@ -134,7 +134,7 @@ ORDER BY scheduled_at ASC`, after)
 
 func (r *NotificationCampaignRepository) List(ctx context.Context) ([]*domain.NotificationCampaign, error) {
 	rows, err := r.db.QueryContext(ctx, `
-SELECT id, name, template_id, campaign_type, status, scheduled_at, started_at, completed_at, created_at, updated_at
+SELECT id, name, template_id, campaign_type, status, audience_filter, scheduled_at, started_at, completed_at, created_at, updated_at
 FROM notification_campaigns
 ORDER BY created_at DESC`)
 	if err != nil {
@@ -145,7 +145,7 @@ ORDER BY created_at DESC`)
 	campaigns := []*domain.NotificationCampaign{}
 	for rows.Next() {
 		campaign := &domain.NotificationCampaign{}
-		if err := rows.Scan(&campaign.ID, &campaign.Name, &campaign.TemplateID, &campaign.CampaignType, &campaign.Status, &campaign.ScheduledAt, &campaign.StartedAt, &campaign.CompletedAt, &campaign.CreatedAt, &campaign.UpdatedAt); err != nil {
+		if err := rows.Scan(&campaign.ID, &campaign.Name, &campaign.TemplateID, &campaign.CampaignType, &campaign.Status, &campaign.AudienceFilter, &campaign.ScheduledAt, &campaign.StartedAt, &campaign.CompletedAt, &campaign.CreatedAt, &campaign.UpdatedAt); err != nil {
 			return nil, err
 		}
 		campaigns = append(campaigns, campaign)
@@ -158,7 +158,7 @@ func (r *NotificationCampaignRepository) ListDue(ctx context.Context, dueBefore 
 		limit = 10
 	}
 	rows, err := r.db.QueryContext(ctx, `
-SELECT id, name, template_id, campaign_type, status, scheduled_at, started_at, completed_at, created_at, updated_at
+SELECT id, name, template_id, campaign_type, status, audience_filter, scheduled_at, started_at, completed_at, created_at, updated_at
 FROM notification_campaigns
 WHERE status = $1
   AND scheduled_at IS NOT NULL
@@ -173,7 +173,7 @@ LIMIT $3`, domain.CampaignStatusScheduled, dueBefore, limit)
 	campaigns := []*domain.NotificationCampaign{}
 	for rows.Next() {
 		campaign := &domain.NotificationCampaign{}
-		if err := rows.Scan(&campaign.ID, &campaign.Name, &campaign.TemplateID, &campaign.CampaignType, &campaign.Status, &campaign.ScheduledAt, &campaign.StartedAt, &campaign.CompletedAt, &campaign.CreatedAt, &campaign.UpdatedAt); err != nil {
+		if err := rows.Scan(&campaign.ID, &campaign.Name, &campaign.TemplateID, &campaign.CampaignType, &campaign.Status, &campaign.AudienceFilter, &campaign.ScheduledAt, &campaign.StartedAt, &campaign.CompletedAt, &campaign.CreatedAt, &campaign.UpdatedAt); err != nil {
 			return nil, err
 		}
 		campaigns = append(campaigns, campaign)
@@ -188,10 +188,10 @@ UPDATE notification_campaigns
 SET status = $1, updated_at = now()
 WHERE id = $2
   AND status = $3
-RETURNING id, name, template_id, campaign_type, status, scheduled_at, started_at, completed_at, created_at, updated_at`,
+RETURNING id, name, template_id, campaign_type, status, audience_filter, scheduled_at, started_at, completed_at, created_at, updated_at`,
 		domain.CampaignStatusRunning, id, domain.CampaignStatusScheduled)
 
-	if err := row.Scan(&campaign.ID, &campaign.Name, &campaign.TemplateID, &campaign.CampaignType, &campaign.Status, &campaign.ScheduledAt, &campaign.StartedAt, &campaign.CompletedAt, &campaign.CreatedAt, &campaign.UpdatedAt); err != nil {
+	if err := row.Scan(&campaign.ID, &campaign.Name, &campaign.TemplateID, &campaign.CampaignType, &campaign.Status, &campaign.AudienceFilter, &campaign.ScheduledAt, &campaign.StartedAt, &campaign.CompletedAt, &campaign.CreatedAt, &campaign.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, domain.ErrNotFound
 		}
