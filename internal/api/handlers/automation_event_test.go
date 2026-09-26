@@ -55,8 +55,9 @@ func (m *mockRuleRepoForHandler) ListEnabled(ctx context.Context) ([]*domain.Aut
 }
 
 type mockExecRepoForHandler struct {
-	status string
-	err    error
+	directRepo *mockDirectRepoForHandler
+	status     string
+	err        error
 }
 
 func (m *mockExecRepoForHandler) RecordExecution(ctx context.Context, exec *domain.AutomationExecution) error {
@@ -88,6 +89,9 @@ func (m *mockExecRepoForHandler) ExecuteRuleAtomic(
 ) (string, error) {
 	if m.err != nil {
 		return "", m.err
+	}
+	if m.directRepo != nil && notif != nil {
+		_ = m.directRepo.Create(ctx, notif)
 	}
 	if m.status != "" {
 		return m.status, nil
@@ -550,5 +554,288 @@ func TestAutomationEventHandler_ServiceAuthIntegration(t *testing.T) {
 	mux.ServeHTTP(rec4, req4)
 	if rec4.Code != http.StatusOK {
 		t.Errorf("expected 200 OK for role 'service', got %d (body: %s)", rec4.Code, rec4.Body.String())
+	}
+}
+
+type mockDirectRepoForHandler struct {
+	created []*domain.DirectNotification
+}
+
+func (m *mockDirectRepoForHandler) GetByID(ctx context.Context, id string) (*domain.DirectNotification, error) {
+	for _, n := range m.created {
+		if n.ID == id {
+			return n, nil
+		}
+	}
+	return nil, domain.ErrNotFound
+}
+
+func (m *mockDirectRepoForHandler) Create(ctx context.Context, notification *domain.DirectNotification) error {
+	m.created = append(m.created, notification)
+	return nil
+}
+
+func (m *mockDirectRepoForHandler) CreateWithInitialAttempt(ctx context.Context, notification *domain.DirectNotification, attempt *domain.DeliveryAttempt) error {
+	m.created = append(m.created, notification)
+	return nil
+}
+
+func (m *mockDirectRepoForHandler) ListPending(ctx context.Context) ([]*domain.DirectNotification, error) {
+	return nil, nil
+}
+
+func (m *mockDirectRepoForHandler) ClaimPending(ctx context.Context, limit int, maxAttempts int) ([]*domain.DirectNotification, error) {
+	return nil, nil
+}
+
+func (m *mockDirectRepoForHandler) RecoverStaleSending(ctx context.Context, olderThan time.Duration, maxAttempts int) (int64, error) {
+	return 0, nil
+}
+
+func (m *mockDirectRepoForHandler) UpdateStatus(ctx context.Context, id string, status domain.DeliveryStatus, attempts int, lastAttemptAt, sentAt *time.Time, errorMessage string) error {
+	return nil
+}
+
+type mockUserResolverForHandler struct {
+	users map[string]*userclient.User
+}
+
+func (m *mockUserResolverForHandler) GetUserByID(ctx context.Context, id string) (*userclient.User, error) {
+	if u, ok := m.users[id]; ok {
+		return u, nil
+	}
+	return nil, userclient.ErrNotFound
+}
+
+func TestAutomationEventHandler_EndToEnd_SupportedLifecycleEvents(t *testing.T) {
+	log, _ := logger.NewLogger("info")
+	secret := "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI="
+	issuer := "gmhelper-api"
+	audience := "gmhelper-notify-api"
+
+	events := []struct {
+		eventType string
+		ruleID    string
+		tplID     string
+	}{
+		{eventType: "user.registered", ruleID: "rule-reg", tplID: "tpl-reg"},
+		{eventType: "email.confirmed", ruleID: "rule-emc", tplID: "tpl-emc"},
+		{eventType: "password.changed", ruleID: "rule-pwd", tplID: "tpl-pwd"},
+		{eventType: "user.blocked", ruleID: "rule-blk", tplID: "tpl-blk"},
+		{eventType: "user.unblocked", ruleID: "rule-unb", tplID: "tpl-unb"},
+		{eventType: "user.language_changed", ruleID: "rule-lng", tplID: "tpl-lng"},
+	}
+
+	for _, tc := range events {
+		t.Run(tc.eventType, func(t *testing.T) {
+			ruleRepo := &mockRuleRepoForHandler{
+				rules: []*domain.AutomationRule{
+					{
+						ID:         tc.ruleID,
+						Name:       tc.eventType + " Rule",
+						TemplateID: tc.tplID,
+						Enabled:    true,
+						Config: domain.AutomationRuleConfig{
+							Version: 1,
+							Trigger: tc.eventType,
+							Conditions: domain.ConditionGroup{
+								Operator: domain.GroupOperatorAll,
+								Conditions: []domain.ConditionNode{
+									{
+										Item: &domain.ConditionItem{
+											Field:    domain.FieldRole,
+											Operator: domain.OperatorEquals,
+											Value:    "User",
+										},
+									},
+								},
+							},
+							Action: domain.ActionConfig{
+								Type: domain.ActionTypeSendEmail,
+							},
+						},
+					},
+				},
+			}
+
+			tplRepo := &mockTemplateRepoForHandler{
+				templates: map[string]*domain.EmailTemplate{
+					tc.tplID: {
+						ID:            tc.tplID,
+						Status:        domain.TemplateStatusActive,
+						TemplateType:  domain.TemplateTypeAutomation,
+						Subject:       "Event " + tc.eventType + " for {{username}}",
+						HTMLBody:      "<p>Hello {{username}}, event {{eventType}} occurred.</p>",
+						PlainTextBody: "Hello {{username}}, event {{eventType}} occurred.",
+					},
+				},
+			}
+
+			directRepo := &mockDirectRepoForHandler{}
+			execRepo := &mockExecRepoForHandler{directRepo: directRepo}
+			userResolver := &mockUserResolverForHandler{
+				users: map[string]*userclient.User{
+					"usr-101": {
+						ID:        "usr-101",
+						Username:  "alex_authoritative",
+						Email:     "authoritative.alex@example.com",
+						Role:      "User",
+						Language:  "EN",
+						IsActive:  true,
+						IsBlocked: false,
+					},
+				},
+			}
+
+			engine := automation.NewEngine(ruleRepo, tplRepo, directRepo, execRepo, userResolver, nil, log)
+			eventHandler := NewAutomationEventHandler(engine, log)
+
+			verifier := auth.MustNewJWTVerifier(secret, issuer, audience)
+			serviceAuthMw := middleware.ServiceAuth(verifier, log)
+
+			mux := http.NewServeMux()
+			mux.Handle("POST /api/v1/internal/automation/events", serviceAuthMw(http.HandlerFunc(eventHandler.HandleEvent)))
+
+			serviceToken, _ := auth.GenerateToken(secret, issuer, audience, "gmhelper-api", "service", 15*time.Minute)
+
+			now := time.Now().UTC()
+			reqPayload := AutomationEventRequest{
+				ID:         "evt-e2e-" + tc.eventType,
+				Type:       tc.eventType,
+				UserID:     "usr-101",
+				OccurredAt: &now,
+			}
+			bodyBytes, _ := json.Marshal(reqPayload)
+
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/automation/events", bytes.NewReader(bodyBytes))
+			req.Header.Set("Authorization", "Bearer "+serviceToken)
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200 OK, got %d (body: %s)", rec.Code, rec.Body.String())
+			}
+
+			var execResult automation.EventExecutionResult
+			if err := json.Unmarshal(rec.Body.Bytes(), &execResult); err != nil {
+				t.Fatalf("failed to decode response: %v", err)
+			}
+
+			if len(execResult.Results) != 1 {
+				t.Fatalf("expected 1 rule execution result, got %d", len(execResult.Results))
+			}
+			if execResult.Results[0].Status != automation.StatusExecuted {
+				t.Fatalf("expected StatusExecuted, got %s (err: %s)", execResult.Results[0].Status, execResult.Results[0].Error)
+			}
+
+			// Verify direct notification created with authoritative email
+			if len(directRepo.created) != 1 {
+				t.Fatalf("expected 1 notification created, got %d", len(directRepo.created))
+			}
+			notif := directRepo.created[0]
+			if notif.RecipientEmail != "authoritative.alex@example.com" {
+				t.Errorf("expected authoritative recipient email 'authoritative.alex@example.com', got %q", notif.RecipientEmail)
+			}
+			if notif.RecipientName != "alex_authoritative" {
+				t.Errorf("expected authoritative recipient name 'alex_authoritative', got %q", notif.RecipientName)
+			}
+		})
+	}
+}
+
+func TestAutomationEventHandler_EndToEnd_UserInactiveTriggerIgnored(t *testing.T) {
+	log, _ := logger.NewLogger("info")
+	secret := "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI="
+	issuer := "gmhelper-api"
+	audience := "gmhelper-notify-api"
+
+	ruleRepo := &mockRuleRepoForHandler{
+		rules: []*domain.AutomationRule{
+			{
+				ID:         "rule-inactive",
+				Name:       "Inactivity Rule",
+				TemplateID: "tpl-inact",
+				Enabled:    true,
+				Config: domain.AutomationRuleConfig{
+					Version: 1,
+					Trigger: domain.TriggerUserInactive,
+					Conditions: domain.ConditionGroup{
+						Operator: domain.GroupOperatorAll,
+					},
+					Action: domain.ActionConfig{
+						Type: domain.ActionTypeSendEmail,
+					},
+				},
+			},
+		},
+	}
+
+	tplRepo := &mockTemplateRepoForHandler{
+		templates: map[string]*domain.EmailTemplate{
+			"tpl-inact": {
+				ID:           "tpl-inact",
+				Status:       domain.TemplateStatusActive,
+				TemplateType: domain.TemplateTypeAutomation,
+				Subject:      "Miss you",
+				HTMLBody:     "<p>Miss you</p>",
+			},
+		},
+	}
+
+	directRepo := &mockDirectRepoForHandler{}
+	execRepo := &mockExecRepoForHandler{directRepo: directRepo}
+	userResolver := &mockUserResolverForHandler{
+		users: map[string]*userclient.User{
+			"usr-101": {
+				ID:       "usr-101",
+				Username: "alex",
+				Email:    "alex@example.com",
+				IsActive: true,
+			},
+		},
+	}
+
+	engine := automation.NewEngine(ruleRepo, tplRepo, directRepo, execRepo, userResolver, nil, log)
+	eventHandler := NewAutomationEventHandler(engine, log)
+
+	verifier := auth.MustNewJWTVerifier(secret, issuer, audience)
+	serviceAuthMw := middleware.ServiceAuth(verifier, log)
+
+	mux := http.NewServeMux()
+	mux.Handle("POST /api/v1/internal/automation/events", serviceAuthMw(http.HandlerFunc(eventHandler.HandleEvent)))
+
+	serviceToken, _ := auth.GenerateToken(secret, issuer, audience, "gmhelper-api", "service", 15*time.Minute)
+
+	now := time.Now().UTC()
+	reqPayload := AutomationEventRequest{
+		ID:         "evt-inact-1",
+		Type:       domain.TriggerUserInactive,
+		UserID:     "usr-101",
+		OccurredAt: &now,
+	}
+	bodyBytes, _ := json.Marshal(reqPayload)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/automation/events", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer "+serviceToken)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", rec.Code)
+	}
+
+	var execResult automation.EventExecutionResult
+	_ = json.Unmarshal(rec.Body.Bytes(), &execResult)
+
+	// user.inactive must be ignored by the event ingestion path (0 rules executed)
+	if len(execResult.Results) != 0 {
+		t.Errorf("expected 0 executed rules for user.inactive via event path, got %d", len(execResult.Results))
+	}
+	if len(directRepo.created) != 0 {
+		t.Errorf("expected 0 notifications created, got %d", len(directRepo.created))
 	}
 }

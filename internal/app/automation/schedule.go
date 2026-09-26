@@ -17,6 +17,10 @@ func IsDue(rule *domain.AutomationRule, now time.Time) bool {
 	}
 	now = now.UTC()
 
+	if rule.NextEvaluationAt != nil && now.Before(rule.NextEvaluationAt.UTC()) {
+		return false
+	}
+
 	switch rule.Config.Schedule.Type {
 	case domain.ScheduleTypeDaily:
 		return isDailyDue(rule, now)

@@ -385,8 +385,8 @@ func TestConfigValidate_ServiceAuthSettings(t *testing.T) {
 	if cfgDefault.ServiceAuthIssuer != "GMHelperAPI" {
 		t.Errorf("expected ServiceAuthIssuer 'GMHelperAPI', got '%s'", cfgDefault.ServiceAuthIssuer)
 	}
-	if cfgDefault.ServiceAuthAudience != "GMHelperClient" {
-		t.Errorf("expected ServiceAuthAudience 'GMHelperClient', got '%s'", cfgDefault.ServiceAuthAudience)
+	if cfgDefault.ServiceAuthAudience != "gmhelper-notify-api" {
+		t.Errorf("expected ServiceAuthAudience 'gmhelper-notify-api', got '%s'", cfgDefault.ServiceAuthAudience)
 	}
 
 	// 2. Custom values preserved

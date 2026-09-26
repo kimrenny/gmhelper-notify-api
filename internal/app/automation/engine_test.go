@@ -2,6 +2,8 @@ package automation
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -317,7 +319,16 @@ func TestEngine_SingleMatchingRule(t *testing.T) {
 	}
 	directRepo := &mockDirectRepo{}
 	execRepo := &mockExecRepo{directRepo: directRepo}
-	userResolver := &mockUserResolver{}
+	userResolver := &mockUserResolver{
+		users: map[string]*userclient.User{
+			"u-1": {
+				ID:       "u-1",
+				Username: "alice",
+				Email:    "alice@example.com",
+				IsActive: true,
+			},
+		},
+	}
 	activityRepo := &mockActivityRepo{}
 	auditSvc := audit.NewService(activityRepo)
 
@@ -1716,5 +1727,480 @@ func TestEngine_MissingAndInvalidTriggersNeverExecute(t *testing.T) {
 	}
 	if summary.ExecutedCount != 1 {
 		t.Errorf("expected exactly 1 execution in inactivity scheduler, got %d", summary.ExecutedCount)
+	}
+}
+
+func TestHandleEvent_SkipsInactiveTriggerRules(t *testing.T) {
+	ruleRepo := &mockRuleRepo{
+		rules: []*domain.AutomationRule{
+			{
+				ID:         "rule-inactivity-1",
+				Name:       "Inactivity Notification Rule",
+				TemplateID: "tpl-1",
+				Enabled:    true,
+				Config: domain.AutomationRuleConfig{
+					Version: 1,
+					Trigger: domain.TriggerUserInactive,
+					Conditions: domain.ConditionGroup{
+						Operator: domain.GroupOperatorAll,
+						Conditions: []domain.ConditionNode{
+							{Item: &domain.ConditionItem{Field: domain.FieldIsActive, Operator: domain.OperatorEquals, Value: true}},
+						},
+					},
+					Action: domain.ActionConfig{Type: domain.ActionTypeSendEmail},
+				},
+			},
+		},
+	}
+	templateRepo := &engineMockTemplateRepo{
+		templates: map[string]*domain.EmailTemplate{
+			"tpl-1": {
+				ID:           "tpl-1",
+				Status:       domain.TemplateStatusActive,
+				TemplateType: domain.TemplateTypeAutomation,
+				Subject:      "We miss you {{username}}",
+				HTMLBody:     "<p>Hello {{username}}</p>",
+			},
+		},
+	}
+	directRepo := &mockDirectRepo{}
+	execRepo := &mockExecRepo{}
+	engine := NewEngine(ruleRepo, templateRepo, directRepo, execRepo, nil, nil, logger.NewNop())
+
+	// Even if an external event is sent with Type == "user.inactive", HandleEvent must skip it
+	event := Event{
+		ID:         "evt-inactive-manual-1",
+		Type:       domain.TriggerUserInactive,
+		UserID:     "user-1",
+		User:       &userclient.User{ID: "user-1", Email: "test@example.com", Username: "Alice", IsActive: true},
+		OccurredAt: time.Now().UTC(),
+	}
+
+	res, err := engine.HandleEvent(context.Background(), event)
+	if err != nil {
+		t.Fatalf("unexpected error on HandleEvent: %v", err)
+	}
+
+	if len(res.Results) != 0 {
+		t.Fatalf("expected 0 executed rules for scheduled inactivity trigger via HandleEvent, got %d", len(res.Results))
+	}
+	if len(directRepo.created) != 0 {
+		t.Fatalf("expected 0 notifications created, got %d", len(directRepo.created))
+	}
+}
+
+func TestEngine_AuthoritativeUserResolution_EventExecution(t *testing.T) {
+	ruleRepo := &mockRuleRepo{}
+	templateRepo := &engineMockTemplateRepo{
+		templates: map[string]*domain.EmailTemplate{
+			"tpl-auth": {
+				ID:           "tpl-auth",
+				Status:       domain.TemplateStatusActive,
+				TemplateType: domain.TemplateTypeAutomation,
+				Subject:      "Welcome {{username}} - Role: {{role}}",
+				HTMLBody:     "<p>Hello {{username}}, your email is {{email}} and role is {{role}}.</p>",
+			},
+		},
+	}
+	directRepo := &mockDirectRepo{}
+	execRepo := &mockExecRepo{directRepo: directRepo}
+
+	regTime := time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC)
+	actTime := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+
+	authoritativeUser := &userclient.User{
+		ID:               "usr-authoritative-1",
+		Username:         "auth_alice",
+		Email:            "authoritative.alice@example.com",
+		Role:             "Admin",
+		Language:         "EN",
+		IsActive:         true,
+		IsBlocked:        false,
+		RegistrationDate: regTime,
+		LastActivityAt:   &actTime,
+	}
+
+	userResolver := &mockUserResolver{
+		users: map[string]*userclient.User{
+			"usr-authoritative-1": authoritativeUser,
+		},
+	}
+
+	rule := createTestRule("rule-auth-1", "Authoritative Role & Language Rule", "tpl-auth", true, domain.ConditionGroup{
+		Operator: domain.GroupOperatorAll,
+		Conditions: []domain.ConditionNode{
+			{Item: &domain.ConditionItem{Field: domain.FieldRole, Operator: domain.OperatorEquals, Value: "Admin"}},
+			{Item: &domain.ConditionItem{Field: domain.FieldLanguage, Operator: domain.OperatorEquals, Value: "EN"}},
+			{Item: &domain.ConditionItem{Field: domain.FieldIsActive, Operator: domain.OperatorEquals, Value: true}},
+			{Item: &domain.ConditionItem{Field: domain.FieldIsBlocked, Operator: domain.OperatorEquals, Value: false}},
+			{Item: &domain.ConditionItem{Field: domain.FieldEmail, Operator: domain.OperatorEquals, Value: "authoritative.alice@example.com"}},
+			{Item: &domain.ConditionItem{Field: domain.FieldUsername, Operator: domain.OperatorEquals, Value: "auth_alice"}},
+		},
+	}, nil)
+	ruleRepo.rules = []*domain.AutomationRule{rule}
+
+	engine := NewEngine(ruleRepo, templateRepo, directRepo, execRepo, userResolver, nil, logger.NewNop())
+
+	event := Event{
+		ID:         "evt-reg-authoritative",
+		Type:       EventUserRegistered,
+		UserID:     "usr-authoritative-1",
+		OccurredAt: time.Now().UTC(),
+	}
+
+	res, err := engine.HandleEvent(context.Background(), event)
+	if err != nil {
+		t.Fatalf("unexpected HandleEvent error: %v", err)
+	}
+
+	if len(res.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(res.Results))
+	}
+	if res.Results[0].Status != StatusExecuted {
+		t.Fatalf("expected StatusExecuted, got %s (err: %s)", res.Results[0].Status, res.Results[0].Error)
+	}
+
+	// Verify that the notification used the authoritative email and username
+	if len(directRepo.created) != 1 {
+		t.Fatalf("expected 1 created notification, got %d", len(directRepo.created))
+	}
+	notif := directRepo.created[0]
+	if notif.RecipientEmail != "authoritative.alice@example.com" {
+		t.Errorf("expected authoritative email 'authoritative.alice@example.com', got %q", notif.RecipientEmail)
+	}
+	if notif.RecipientName != "auth_alice" {
+		t.Errorf("expected authoritative username 'auth_alice', got %q", notif.RecipientName)
+	}
+	if notif.ExternalUserID != "usr-authoritative-1" {
+		t.Errorf("expected ExternalUserID 'usr-authoritative-1', got %q", notif.ExternalUserID)
+	}
+}
+
+func TestEngine_AuthoritativeUserResolution_Failures(t *testing.T) {
+	ruleRepo := &mockRuleRepo{
+		rules: []*domain.AutomationRule{
+			createTestRule("rule-1", "Active User Rule", "tpl-1", true, domain.ConditionGroup{
+				Operator: domain.GroupOperatorAll,
+				Conditions: []domain.ConditionNode{
+					{Item: &domain.ConditionItem{Field: domain.FieldIsActive, Operator: domain.OperatorEquals, Value: true}},
+				},
+			}, nil),
+		},
+	}
+	templateRepo := &engineMockTemplateRepo{
+		templates: map[string]*domain.EmailTemplate{
+			"tpl-1": {
+				ID:           "tpl-1",
+				Status:       domain.TemplateStatusActive,
+				TemplateType: domain.TemplateTypeAutomation,
+				Subject:      "Hi",
+				HTMLBody:     "<p>Hi</p>",
+			},
+		},
+	}
+
+	tests := []struct {
+		name        string
+		resolverErr error
+		expectedErr string
+	}{
+		{
+			name:        "User Not Found",
+			resolverErr: userclient.ErrNotFound,
+			expectedErr: "user not found",
+		},
+		{
+			name:        "Unauthorized 401",
+			resolverErr: userclient.ErrUnauthorized,
+			expectedErr: "unauthorized",
+		},
+		{
+			name:        "Forbidden 403",
+			resolverErr: userclient.ErrForbidden,
+			expectedErr: "forbidden",
+		},
+		{
+			name:        "Server Error 500",
+			resolverErr: userclient.ErrServer,
+			expectedErr: "server error",
+		},
+		{
+			name:        "Transport / Timeout Error",
+			resolverErr: context.DeadlineExceeded,
+			expectedErr: "context deadline exceeded",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			directRepo := &mockDirectRepo{}
+			execRepo := &mockExecRepo{directRepo: directRepo}
+
+			failingResolver := &mockFailingUserResolver{err: tt.resolverErr}
+			engine := NewEngine(ruleRepo, templateRepo, directRepo, execRepo, failingResolver, nil, logger.NewNop())
+
+			event := Event{
+				ID:         "evt-fail-test",
+				Type:       EventUserRegistered,
+				UserID:     "non-existent-or-failing-user",
+				OccurredAt: time.Now().UTC(),
+			}
+
+			res, err := engine.HandleEvent(context.Background(), event)
+			if err != nil {
+				t.Fatalf("unexpected HandleEvent error: %v", err)
+			}
+
+			if len(res.Results) != 1 {
+				t.Fatalf("expected 1 result, got %d", len(res.Results))
+			}
+			if res.Results[0].Status != StatusFailed {
+				t.Errorf("expected StatusFailed, got %s", res.Results[0].Status)
+			}
+			if !strings.Contains(strings.ToLower(res.Results[0].Error), strings.ToLower(tt.expectedErr)) {
+				t.Errorf("expected error containing %q, got %q", tt.expectedErr, res.Results[0].Error)
+			}
+			if len(directRepo.created) != 0 {
+				t.Errorf("expected 0 notifications created on user resolution failure, got %d", len(directRepo.created))
+			}
+		})
+	}
+}
+
+type mockFailingUserResolver struct {
+	err error
+}
+
+func (m *mockFailingUserResolver) GetUserByID(ctx context.Context, id string) (*userclient.User, error) {
+	return nil, m.err
+}
+
+func TestEngine_InactivityEvaluation_AuthoritativeLastActivityAtSemantics(t *testing.T) {
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+
+	// Rule: Inactive for >= 30 days
+	rule := createTestRule("rule-inactivity-30d", "Inactive 30 Days", "tpl-inactivity", true, domain.ConditionGroup{
+		Operator: domain.GroupOperatorAll,
+		Conditions: []domain.ConditionNode{
+			{Item: &domain.ConditionItem{
+				Field:    domain.FieldLastActivityAt,
+				Operator: domain.OperatorOlderThan,
+				Value:    30,
+				Unit:     "days",
+			}},
+		},
+	}, nil)
+	rule.Config.Trigger = domain.TriggerUserInactive
+
+	ruleRepo := &mockRuleRepo{rules: []*domain.AutomationRule{rule}}
+	templateRepo := &engineMockTemplateRepo{
+		templates: map[string]*domain.EmailTemplate{
+			"tpl-inactivity": {
+				ID:           "tpl-inactivity",
+				Status:       domain.TemplateStatusActive,
+				TemplateType: domain.TemplateTypeAutomation,
+				Subject:      "We miss you",
+				HTMLBody:     "<p>Come back!</p>",
+			},
+		},
+	}
+
+	activity35DaysAgo := now.AddDate(0, 0, -35)
+	activity30DaysAgo := now.AddDate(0, 0, -30)
+	activity10DaysAgo := now.AddDate(0, 0, -10)
+	reg60DaysAgo := now.AddDate(0, 0, -60)
+
+	users := []userclient.User{
+		// 1. LastActivityAt == nil -> NOT inactive (even if registration date was 60 days ago)
+		{
+			ID:               "u-nil-activity",
+			Username:         "bob_nil",
+			Email:            "bob_nil@example.com",
+			RegistrationDate: reg60DaysAgo,
+			LastActivityAt:   nil,
+		},
+		// 2. LastActivityAt 35 days ago -> Inactive (>= 30 days)
+		{
+			ID:               "u-35d-activity",
+			Username:         "alice_35d",
+			Email:            "alice_35d@example.com",
+			RegistrationDate: reg60DaysAgo,
+			LastActivityAt:   &activity35DaysAgo,
+		},
+		// 3. LastActivityAt exactly 30 days ago -> Inactive (boundary)
+		{
+			ID:               "u-30d-activity",
+			Username:         "charlie_30d",
+			Email:            "charlie_30d@example.com",
+			RegistrationDate: reg60DaysAgo,
+			LastActivityAt:   &activity30DaysAgo,
+		},
+		// 4. LastActivityAt 10 days ago -> NOT inactive (< 30 days)
+		{
+			ID:               "u-10d-activity",
+			Username:         "david_10d",
+			Email:            "david_10d@example.com",
+			RegistrationDate: reg60DaysAgo,
+			LastActivityAt:   &activity10DaysAgo,
+		},
+	}
+
+	directRepo := &mockDirectRepo{}
+	execRepo := &mockExecRepo{directRepo: directRepo}
+	engine := NewEngine(ruleRepo, templateRepo, directRepo, execRepo, nil, nil, logger.NewNop())
+
+	userLister := &mockStaticUserLister{users: users}
+	summary, err := engine.EvaluateInactivity(context.Background(), userLister, now, 50)
+	if err != nil {
+		t.Fatalf("unexpected EvaluateInactivity error: %v", err)
+	}
+
+	if summary.TotalUsersEvaluated != 4 {
+		t.Errorf("expected 4 evaluated users, got %d", summary.TotalUsersEvaluated)
+	}
+	// Exactly 2 users should match inactivity (35 days ago and 30 days ago)
+	if summary.ExecutedCount != 2 {
+		t.Errorf("expected 2 executed rules for inactive users, got %d", summary.ExecutedCount)
+	}
+	if summary.SkippedNotMatchedCount != 2 {
+		t.Errorf("expected 2 skipped non-matching users, got %d", summary.SkippedNotMatchedCount)
+	}
+
+	// Verify created notifications
+	if len(directRepo.created) != 2 {
+		t.Fatalf("expected 2 created notifications, got %d", len(directRepo.created))
+	}
+	emails := map[string]bool{
+		directRepo.created[0].RecipientEmail: true,
+		directRepo.created[1].RecipientEmail: true,
+	}
+	if !emails["alice_35d@example.com"] || !emails["charlie_30d@example.com"] {
+		t.Errorf("expected notifications sent to alice_35d and charlie_30d, got: %+v", directRepo.created)
+	}
+}
+
+type mockStaticUserLister struct {
+	users []userclient.User
+}
+
+func (m *mockStaticUserLister) GetUsers(ctx context.Context, page, pageSize int, activeOnly, unblockedOnly bool) (*userclient.PagedUsers, error) {
+	if page > 1 {
+		return &userclient.PagedUsers{Items: []userclient.User{}, HasNextPage: false}, nil
+	}
+	return &userclient.PagedUsers{
+		Items:       m.users,
+		TotalCount:  len(m.users),
+		Page:        1,
+		PageSize:    pageSize,
+		HasNextPage: false,
+	}, nil
+}
+
+func TestEngine_AuthoritativeUserPrecedenceOverEventPayload(t *testing.T) {
+	ruleRepo := &mockRuleRepo{}
+	templateRepo := &engineMockTemplateRepo{
+		templates: map[string]*domain.EmailTemplate{
+			"tpl-prec": {
+				ID:           "tpl-prec",
+				Status:       domain.TemplateStatusActive,
+				TemplateType: domain.TemplateTypeAutomation,
+				Subject:      "Welcome {{username}}",
+				HTMLBody:     "<p>Email: {{email}}, Role: {{role}}, Language: {{language}}</p>",
+			},
+		},
+	}
+
+	// Rule matches role = "moderator" (authoritative) and isBlocked = false (authoritative)
+	rule := createTestRule("rule-prec", "Precedence Check", "tpl-prec", true, domain.ConditionGroup{
+		Operator: domain.GroupOperatorAll,
+		Conditions: []domain.ConditionNode{
+			{
+				Item: &domain.ConditionItem{
+					Field:    domain.FieldRole,
+					Operator: domain.OperatorEquals,
+					Value:    "moderator",
+				},
+			},
+			{
+				Item: &domain.ConditionItem{
+					Field:    domain.FieldIsBlocked,
+					Operator: domain.OperatorEquals,
+					Value:    false,
+				},
+			},
+		},
+	}, nil)
+	ruleRepo.rules = []*domain.AutomationRule{rule}
+
+	directRepo := &mockDirectRepo{}
+	execRepo := &mockExecRepo{directRepo: directRepo}
+
+	// Authoritative user resolver returns: role="moderator", isBlocked=false, email="auth@example.com", username="authuser"
+	userResolver := &mockUserResolver{
+		users: map[string]*userclient.User{
+			"u-prec-1": {
+				ID:        "u-prec-1",
+				Username:  "authuser",
+				Email:     "auth@example.com",
+				Role:      "moderator",
+				Language:  "en",
+				IsActive:  true,
+				IsBlocked: false,
+			},
+		},
+	}
+
+	engine := NewEngine(ruleRepo, templateRepo, directRepo, execRepo, userResolver, nil, logger.NewNop())
+
+	// Event payload maliciously/stale-ly claims: role="player", isBlocked=true, email="fake@example.com", username="fakeuser"
+	// but also provides event-specific field "orderId" = "order-123"
+	event := Event{
+		ID:     "evt-prec-1",
+		Type:   EventUserRegistered,
+		UserID: "u-prec-1",
+		Data: map[string]any{
+			"role":      "player", // conflicting stale data
+			"isBlocked": true,     // conflicting stale data
+			"email":     "fake@example.com",
+			"username":  "fakeuser",
+			"orderId":   "order-123", // custom event-specific data
+		},
+	}
+
+	result, err := engine.HandleEvent(context.Background(), event)
+	if err != nil {
+		t.Fatalf("unexpected HandleEvent error: %v", err)
+	}
+
+	if len(result.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(result.Results))
+	}
+	if result.Results[0].Status != StatusExecuted {
+		t.Fatalf("expected rule to execute based on authoritative role=moderator and isBlocked=false, got status %s (err: %s)", result.Results[0].Status, result.Results[0].Error)
+	}
+
+	if len(directRepo.created) != 1 {
+		t.Fatalf("expected 1 direct notification created, got %d", len(directRepo.created))
+	}
+
+	notif := directRepo.created[0]
+	// Verify authoritative recipient and user fields were used
+	if notif.RecipientEmail != "auth@example.com" {
+		t.Errorf("expected recipient email to be authoritative 'auth@example.com', got %q", notif.RecipientEmail)
+	}
+	if notif.RecipientName != "authuser" {
+		t.Errorf("expected recipient name to be authoritative 'authuser', got %q", notif.RecipientName)
+	}
+
+	// Verify custom event payload was preserved
+	var payloadData map[string]any
+	if err := json.Unmarshal(notif.Payload, &payloadData); err != nil {
+		t.Fatalf("failed to unmarshal payload: %v", err)
+	}
+	if payloadData["orderId"] != "order-123" {
+		t.Errorf("expected payload to contain custom event data 'orderId' = 'order-123', got %v", payloadData["orderId"])
+	}
+	if payloadData["role"] != "moderator" {
+		t.Errorf("expected payload 'role' to be authoritative 'moderator', got %v", payloadData["role"])
 	}
 }

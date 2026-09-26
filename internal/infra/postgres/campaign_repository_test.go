@@ -26,25 +26,28 @@ func TestNotificationCampaignRepository_CreateAndGet(t *testing.T) {
 		TemplateID:   "f7ba18f7-4c2a-4b77-8565-1e1e5d64047f",
 		CampaignType: "broadcast",
 		Status:       domain.CampaignStatusDraft,
-		ScheduledAt:  &now,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		AudienceFilter: &domain.CampaignAudienceFilter{
+			Role: "admin",
+		},
+		ScheduledAt: &now,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 
-	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO notification_campaigns (id, name, template_id, campaign_type, status, scheduled_at, started_at, completed_at, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`)).
-		WithArgs(campaign.ID, campaign.Name, campaign.TemplateID, campaign.CampaignType, campaign.Status, campaign.ScheduledAt, campaign.StartedAt, campaign.CompletedAt, campaign.CreatedAt, campaign.UpdatedAt).
+	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO notification_campaigns (id, name, template_id, campaign_type, status, audience_filter, scheduled_at, started_at, completed_at, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`)).
+		WithArgs(campaign.ID, campaign.Name, campaign.TemplateID, campaign.CampaignType, campaign.Status, campaign.AudienceFilter, campaign.ScheduledAt, campaign.StartedAt, campaign.CompletedAt, campaign.CreatedAt, campaign.UpdatedAt).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	if err := repo.Create(context.Background(), campaign); err != nil {
 		t.Fatalf("failed to create campaign: %v", err)
 	}
 
-	rows := sqlmock.NewRows([]string{"id", "name", "template_id", "campaign_type", "status", "scheduled_at", "started_at", "completed_at", "created_at", "updated_at"}).
-		AddRow(campaign.ID, campaign.Name, campaign.TemplateID, campaign.CampaignType, campaign.Status, campaign.ScheduledAt, campaign.StartedAt, campaign.CompletedAt, campaign.CreatedAt, campaign.UpdatedAt)
+	rows := sqlmock.NewRows([]string{"id", "name", "template_id", "campaign_type", "status", "audience_filter", "scheduled_at", "started_at", "completed_at", "created_at", "updated_at"}).
+		AddRow(campaign.ID, campaign.Name, campaign.TemplateID, campaign.CampaignType, campaign.Status, `{"role":"admin"}`, campaign.ScheduledAt, campaign.StartedAt, campaign.CompletedAt, campaign.CreatedAt, campaign.UpdatedAt)
 
 	mock.ExpectQuery(regexp.QuoteMeta(`
-SELECT id, name, template_id, campaign_type, status, scheduled_at, started_at, completed_at, created_at, updated_at
+SELECT id, name, template_id, campaign_type, status, audience_filter, scheduled_at, started_at, completed_at, created_at, updated_at
 FROM notification_campaigns
 WHERE id = $1`)).
 		WithArgs(campaign.ID).
@@ -56,6 +59,9 @@ WHERE id = $1`)).
 	}
 	if fetched.Name != campaign.Name {
 		t.Fatalf("expected campaign name %s, got %s", campaign.Name, fetched.Name)
+	}
+	if fetched.AudienceFilter == nil || fetched.AudienceFilter.Role != "admin" {
+		t.Fatalf("expected audience filter role 'admin', got %+v", fetched.AudienceFilter)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -73,30 +79,31 @@ func TestNotificationCampaignRepository_CreateAndGet_Unscheduled(t *testing.T) {
 	repo := NewNotificationCampaignRepository(db)
 	now := time.Now().UTC()
 	campaign := &domain.NotificationCampaign{
-		ID:           "a1b2c3d4-e5f6-7890-abcd-ef1234567891",
-		Name:         "Draft Unscheduled Campaign",
-		TemplateID:   "f7ba18f7-4c2a-4b77-8565-1e1e5d64047f",
-		CampaignType: "broadcast",
-		Status:       domain.CampaignStatusDraft,
-		ScheduledAt:  nil,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:             "a1b2c3d4-e5f6-7890-abcd-ef1234567891",
+		Name:           "Draft Unscheduled Campaign",
+		TemplateID:     "f7ba18f7-4c2a-4b77-8565-1e1e5d64047f",
+		CampaignType:   "broadcast",
+		Status:         domain.CampaignStatusDraft,
+		AudienceFilter: nil,
+		ScheduledAt:    nil,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 
-	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO notification_campaigns (id, name, template_id, campaign_type, status, scheduled_at, started_at, completed_at, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`)).
-		WithArgs(campaign.ID, campaign.Name, campaign.TemplateID, campaign.CampaignType, campaign.Status, nil, campaign.StartedAt, campaign.CompletedAt, campaign.CreatedAt, campaign.UpdatedAt).
+	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO notification_campaigns (id, name, template_id, campaign_type, status, audience_filter, scheduled_at, started_at, completed_at, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`)).
+		WithArgs(campaign.ID, campaign.Name, campaign.TemplateID, campaign.CampaignType, campaign.Status, nil, nil, campaign.StartedAt, campaign.CompletedAt, campaign.CreatedAt, campaign.UpdatedAt).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	if err := repo.Create(context.Background(), campaign); err != nil {
 		t.Fatalf("failed to create unscheduled campaign: %v", err)
 	}
 
-	rows := sqlmock.NewRows([]string{"id", "name", "template_id", "campaign_type", "status", "scheduled_at", "started_at", "completed_at", "created_at", "updated_at"}).
-		AddRow(campaign.ID, campaign.Name, campaign.TemplateID, campaign.CampaignType, campaign.Status, nil, campaign.StartedAt, campaign.CompletedAt, campaign.CreatedAt, campaign.UpdatedAt)
+	rows := sqlmock.NewRows([]string{"id", "name", "template_id", "campaign_type", "status", "audience_filter", "scheduled_at", "started_at", "completed_at", "created_at", "updated_at"}).
+		AddRow(campaign.ID, campaign.Name, campaign.TemplateID, campaign.CampaignType, campaign.Status, nil, nil, campaign.StartedAt, campaign.CompletedAt, campaign.CreatedAt, campaign.UpdatedAt)
 
 	mock.ExpectQuery(regexp.QuoteMeta(`
-SELECT id, name, template_id, campaign_type, status, scheduled_at, started_at, completed_at, created_at, updated_at
+SELECT id, name, template_id, campaign_type, status, audience_filter, scheduled_at, started_at, completed_at, created_at, updated_at
 FROM notification_campaigns
 WHERE id = $1`)).
 		WithArgs(campaign.ID).
@@ -108,6 +115,9 @@ WHERE id = $1`)).
 	}
 	if fetched.ScheduledAt != nil {
 		t.Fatalf("expected nil scheduledAt, got %v", fetched.ScheduledAt)
+	}
+	if fetched.AudienceFilter != nil {
+		t.Fatalf("expected nil AudienceFilter, got %v", fetched.AudienceFilter)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -130,15 +140,18 @@ func TestNotificationCampaignRepository_Update(t *testing.T) {
 		TemplateID:   "f7ba18f7-4c2a-4b77-8565-1e1e5d64047f",
 		CampaignType: "broadcast",
 		Status:       domain.CampaignStatusScheduled,
-		ScheduledAt:  &now,
-		UpdatedAt:    now,
+		AudienceFilter: &domain.CampaignAudienceFilter{
+			Language: "tr",
+		},
+		ScheduledAt: &now,
+		UpdatedAt:   now,
 	}
 
 	// 1. Successful Update
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE notification_campaigns
-SET name = $1, template_id = $2, campaign_type = $3, status = $4, scheduled_at = $5, updated_at = $6
-WHERE id = $7`)).
-		WithArgs(campaign.Name, campaign.TemplateID, campaign.CampaignType, campaign.Status, campaign.ScheduledAt, campaign.UpdatedAt, campaign.ID).
+SET name = $1, template_id = $2, campaign_type = $3, status = $4, audience_filter = $5, scheduled_at = $6, updated_at = $7
+WHERE id = $8`)).
+		WithArgs(campaign.Name, campaign.TemplateID, campaign.CampaignType, campaign.Status, campaign.AudienceFilter, campaign.ScheduledAt, campaign.UpdatedAt, campaign.ID).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	if err := repo.Update(context.Background(), campaign); err != nil {
@@ -147,9 +160,9 @@ WHERE id = $7`)).
 
 	// 2. Not Found Update (0 rows affected)
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE notification_campaigns
-SET name = $1, template_id = $2, campaign_type = $3, status = $4, scheduled_at = $5, updated_at = $6
-WHERE id = $7`)).
-		WithArgs(campaign.Name, campaign.TemplateID, campaign.CampaignType, campaign.Status, campaign.ScheduledAt, campaign.UpdatedAt, campaign.ID).
+SET name = $1, template_id = $2, campaign_type = $3, status = $4, audience_filter = $5, scheduled_at = $6, updated_at = $7
+WHERE id = $8`)).
+		WithArgs(campaign.Name, campaign.TemplateID, campaign.CampaignType, campaign.Status, campaign.AudienceFilter, campaign.ScheduledAt, campaign.UpdatedAt, campaign.ID).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
 	errNotFound := repo.Update(context.Background(), campaign)
@@ -198,10 +211,10 @@ func TestNotificationCampaignRepository_ListByStatus(t *testing.T) {
 	repo := NewNotificationCampaignRepository(db)
 	now := time.Now().UTC()
 
-	rows := sqlmock.NewRows([]string{"id", "name", "template_id", "campaign_type", "status", "scheduled_at", "started_at", "completed_at", "created_at", "updated_at"}).
-		AddRow("camp-1", "Scheduled Camp", "tpl-1", "broadcast", domain.CampaignStatusScheduled, &now, nil, nil, now, now)
+	rows := sqlmock.NewRows([]string{"id", "name", "template_id", "campaign_type", "status", "audience_filter", "scheduled_at", "started_at", "completed_at", "created_at", "updated_at"}).
+		AddRow("camp-1", "Scheduled Camp", "tpl-1", "broadcast", domain.CampaignStatusScheduled, nil, &now, nil, nil, now, now)
 
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id, name, template_id, campaign_type, status, scheduled_at, started_at, completed_at, created_at, updated_at
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id, name, template_id, campaign_type, status, audience_filter, scheduled_at, started_at, completed_at, created_at, updated_at
 FROM notification_campaigns
 WHERE status = $1`)).
 		WithArgs(domain.CampaignStatusScheduled).
@@ -230,10 +243,10 @@ func TestNotificationCampaignRepository_ListScheduled(t *testing.T) {
 	repo := NewNotificationCampaignRepository(db)
 	now := time.Now().UTC()
 
-	rows := sqlmock.NewRows([]string{"id", "name", "template_id", "campaign_type", "status", "scheduled_at", "started_at", "completed_at", "created_at", "updated_at"}).
-		AddRow("camp-1", "Scheduled Camp", "tpl-1", "broadcast", domain.CampaignStatusScheduled, &now, nil, nil, now, now)
+	rows := sqlmock.NewRows([]string{"id", "name", "template_id", "campaign_type", "status", "audience_filter", "scheduled_at", "started_at", "completed_at", "created_at", "updated_at"}).
+		AddRow("camp-1", "Scheduled Camp", "tpl-1", "broadcast", domain.CampaignStatusScheduled, nil, &now, nil, nil, now, now)
 
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id, name, template_id, campaign_type, status, scheduled_at, started_at, completed_at, created_at, updated_at
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id, name, template_id, campaign_type, status, audience_filter, scheduled_at, started_at, completed_at, created_at, updated_at
 FROM notification_campaigns
 WHERE scheduled_at >= $1
 ORDER BY scheduled_at ASC`)).
@@ -299,12 +312,12 @@ func TestNotificationCampaignRepository_ListDue(t *testing.T) {
 	schedTime1 := now.Add(-10 * time.Minute)
 	schedTime2 := now.Add(-5 * time.Minute)
 
-	rows := sqlmock.NewRows([]string{"id", "name", "template_id", "campaign_type", "status", "scheduled_at", "started_at", "completed_at", "created_at", "updated_at"}).
-		AddRow("camp-1", "Due Camp 1", "tpl-1", "broadcast", domain.CampaignStatusScheduled, &schedTime1, nil, nil, now, now).
-		AddRow("camp-2", "Due Camp 2", "tpl-1", "broadcast", domain.CampaignStatusScheduled, &schedTime2, nil, nil, now, now)
+	rows := sqlmock.NewRows([]string{"id", "name", "template_id", "campaign_type", "status", "audience_filter", "scheduled_at", "started_at", "completed_at", "created_at", "updated_at"}).
+		AddRow("camp-1", "Due Camp 1", "tpl-1", "broadcast", domain.CampaignStatusScheduled, nil, &schedTime1, nil, nil, now, now).
+		AddRow("camp-2", "Due Camp 2", "tpl-1", "broadcast", domain.CampaignStatusScheduled, nil, &schedTime2, nil, nil, now, now)
 
 	mock.ExpectQuery(regexp.QuoteMeta(`
-SELECT id, name, template_id, campaign_type, status, scheduled_at, started_at, completed_at, created_at, updated_at
+SELECT id, name, template_id, campaign_type, status, audience_filter, scheduled_at, started_at, completed_at, created_at, updated_at
 FROM notification_campaigns
 WHERE status = $1
   AND scheduled_at IS NOT NULL
@@ -342,15 +355,15 @@ func TestNotificationCampaignRepository_Claim(t *testing.T) {
 	campaignID := "camp-due-1"
 
 	// 1. Successful Claim
-	rows := sqlmock.NewRows([]string{"id", "name", "template_id", "campaign_type", "status", "scheduled_at", "started_at", "completed_at", "created_at", "updated_at"}).
-		AddRow(campaignID, "Due Camp 1", "tpl-1", "broadcast", domain.CampaignStatusRunning, &now, nil, nil, now, now)
+	rows := sqlmock.NewRows([]string{"id", "name", "template_id", "campaign_type", "status", "audience_filter", "scheduled_at", "started_at", "completed_at", "created_at", "updated_at"}).
+		AddRow(campaignID, "Due Camp 1", "tpl-1", "broadcast", domain.CampaignStatusRunning, nil, &now, nil, nil, now, now)
 
 	mock.ExpectQuery(regexp.QuoteMeta(`
 UPDATE notification_campaigns
 SET status = $1, updated_at = now()
 WHERE id = $2
   AND status = $3
-RETURNING id, name, template_id, campaign_type, status, scheduled_at, started_at, completed_at, created_at, updated_at`)).
+RETURNING id, name, template_id, campaign_type, status, audience_filter, scheduled_at, started_at, completed_at, created_at, updated_at`)).
 		WithArgs(domain.CampaignStatusRunning, campaignID, domain.CampaignStatusScheduled).
 		WillReturnRows(rows)
 
@@ -368,9 +381,9 @@ UPDATE notification_campaigns
 SET status = $1, updated_at = now()
 WHERE id = $2
   AND status = $3
-RETURNING id, name, template_id, campaign_type, status, scheduled_at, started_at, completed_at, created_at, updated_at`)).
+RETURNING id, name, template_id, campaign_type, status, audience_filter, scheduled_at, started_at, completed_at, created_at, updated_at`)).
 		WithArgs(domain.CampaignStatusRunning, campaignID, domain.CampaignStatusScheduled).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "template_id", "campaign_type", "status", "scheduled_at", "started_at", "completed_at", "created_at", "updated_at"}))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "template_id", "campaign_type", "status", "audience_filter", "scheduled_at", "started_at", "completed_at", "created_at", "updated_at"}))
 
 	_, errConflict := repo.Claim(context.Background(), campaignID)
 	if !errors.Is(errConflict, domain.ErrNotFound) {

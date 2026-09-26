@@ -19,37 +19,40 @@ var (
 )
 
 type CreateInput struct {
-	Name         string
-	TemplateID   string
-	CampaignType string
-	Status       string
-	ScheduledAt  *time.Time
+	Name           string
+	TemplateID     string
+	CampaignType   string
+	Status         string
+	AudienceFilter *domain.CampaignAudienceFilter
+	ScheduledAt    *time.Time
 }
 
 type UpdateInput struct {
-	Name         *string
-	TemplateID   *string
-	CampaignType *string
-	Status       *string
-	ScheduledAt  *time.Time
+	Name           *string
+	TemplateID     *string
+	CampaignType   *string
+	Status         *string
+	AudienceFilter *domain.CampaignAudienceFilter
+	ScheduledAt    *time.Time
 }
 
 type campaignCreatedDetails struct {
-	CampaignID      string                `json:"campaignId"`
-	CampaignName    string                `json:"campaignName"`
-	CampaignType    string                `json:"campaignType"`
-	TemplateID      string                `json:"templateId"`
-	TemplateKey     string                `json:"templateKey,omitempty"`
-	TemplateName    string                `json:"templateName,omitempty"`
-	TemplateLocale  string                `json:"templateLocale,omitempty"`
-	TemplateVersion int                   `json:"templateVersion,omitempty"`
-	Subject         string                `json:"subject,omitempty"`
-	BodyHTML        string                `json:"bodyHtml,omitempty"`
-	BodyPlain       string                `json:"bodyPlain,omitempty"`
-	Locale          string                `json:"locale,omitempty"`
-	InitialStatus   domain.CampaignStatus `json:"initialStatus"`
-	Status          domain.CampaignStatus `json:"status"`
-	ScheduledAt     *time.Time            `json:"scheduledAt,omitempty"`
+	CampaignID      string                         `json:"campaignId"`
+	CampaignName    string                         `json:"campaignName"`
+	CampaignType    string                         `json:"campaignType"`
+	TemplateID      string                         `json:"templateId"`
+	TemplateKey     string                         `json:"templateKey,omitempty"`
+	TemplateName    string                         `json:"templateName,omitempty"`
+	TemplateLocale  string                         `json:"templateLocale,omitempty"`
+	TemplateVersion int                            `json:"templateVersion,omitempty"`
+	Subject         string                         `json:"subject,omitempty"`
+	BodyHTML        string                         `json:"bodyHtml,omitempty"`
+	BodyPlain       string                         `json:"bodyPlain,omitempty"`
+	Locale          string                         `json:"locale,omitempty"`
+	InitialStatus   domain.CampaignStatus          `json:"initialStatus"`
+	Status          domain.CampaignStatus          `json:"status"`
+	AudienceFilter  *domain.CampaignAudienceFilter `json:"audienceFilter,omitempty"`
+	ScheduledAt     *time.Time                     `json:"scheduledAt,omitempty"`
 }
 
 type campaignScheduledDetails struct {
@@ -132,14 +135,15 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*domain.Notifi
 	}
 
 	campaign := &domain.NotificationCampaign{
-		ID:           uuid.NewString(),
-		Name:         name,
-		TemplateID:   templateID,
-		CampaignType: campaignType,
-		Status:       status,
-		ScheduledAt:  scheduledAt,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:             uuid.NewString(),
+		Name:           name,
+		TemplateID:     templateID,
+		CampaignType:   campaignType,
+		Status:         status,
+		AudienceFilter: input.AudienceFilter,
+		ScheduledAt:    scheduledAt,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 
 	if err := s.repo.Create(ctx, campaign); err != nil {
@@ -192,6 +196,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*domain.Notifi
 				Locale:          tplLocale,
 				InitialStatus:   campaign.Status,
 				Status:          campaign.Status,
+				AudienceFilter:  campaign.AudienceFilter,
 				ScheduledAt:     campaign.ScheduledAt,
 			},
 		})
@@ -243,6 +248,10 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (*do
 		if statusStr != string(existing.Status) {
 			return nil, ErrInvalidInput
 		}
+	}
+
+	if input.AudienceFilter != nil {
+		existing.AudienceFilter = input.AudienceFilter
 	}
 
 	if input.ScheduledAt != nil {

@@ -14,19 +14,21 @@ import (
 )
 
 type CreateCampaignRequest struct {
-	Name         string     `json:"name"`
-	TemplateID   string     `json:"templateId"`
-	CampaignType string     `json:"campaignType,omitempty"`
-	Status       string     `json:"status,omitempty"`
-	ScheduledAt  *time.Time `json:"scheduledAt,omitempty"`
+	Name           string                         `json:"name"`
+	TemplateID     string                         `json:"templateId"`
+	CampaignType   string                         `json:"campaignType,omitempty"`
+	Status         string                         `json:"status,omitempty"`
+	AudienceFilter *domain.CampaignAudienceFilter `json:"audienceFilter,omitempty"`
+	ScheduledAt    *time.Time                     `json:"scheduledAt,omitempty"`
 }
 
 type UpdateCampaignRequest struct {
-	Name         *string    `json:"name,omitempty"`
-	TemplateID   *string    `json:"templateId,omitempty"`
-	CampaignType *string    `json:"campaignType,omitempty"`
-	Status       *string    `json:"status,omitempty"`
-	ScheduledAt  *time.Time `json:"scheduledAt,omitempty"`
+	Name           *string                        `json:"name,omitempty"`
+	TemplateID     *string                        `json:"templateId,omitempty"`
+	CampaignType   *string                        `json:"campaignType,omitempty"`
+	Status         *string                        `json:"status,omitempty"`
+	AudienceFilter *domain.CampaignAudienceFilter `json:"audienceFilter,omitempty"`
+	ScheduledAt    *time.Time                     `json:"scheduledAt,omitempty"`
 }
 
 type ScheduleCampaignRequest struct {
@@ -34,16 +36,17 @@ type ScheduleCampaignRequest struct {
 }
 
 type CampaignResponse struct {
-	ID           string     `json:"id"`
-	Name         string     `json:"name"`
-	TemplateID   string     `json:"templateId"`
-	CampaignType string     `json:"campaignType"`
-	Status       string     `json:"status"`
-	ScheduledAt  *time.Time `json:"scheduledAt,omitempty"`
-	StartedAt    *time.Time `json:"startedAt,omitempty"`
-	CompletedAt  *time.Time `json:"completedAt,omitempty"`
-	CreatedAt    time.Time  `json:"createdAt"`
-	UpdatedAt    time.Time  `json:"updatedAt"`
+	ID             string                         `json:"id"`
+	Name           string                         `json:"name"`
+	TemplateID     string                         `json:"templateId"`
+	CampaignType   string                         `json:"campaignType"`
+	Status         string                         `json:"status"`
+	AudienceFilter *domain.CampaignAudienceFilter `json:"audienceFilter,omitempty"`
+	ScheduledAt    *time.Time                     `json:"scheduledAt,omitempty"`
+	StartedAt      *time.Time                     `json:"startedAt,omitempty"`
+	CompletedAt    *time.Time                     `json:"completedAt,omitempty"`
+	CreatedAt      time.Time                      `json:"createdAt"`
+	UpdatedAt      time.Time                      `json:"updatedAt"`
 }
 
 type CampaignHandler struct {
@@ -107,11 +110,12 @@ func (h *CampaignHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	input := campaign.CreateInput{
-		Name:         req.Name,
-		TemplateID:   req.TemplateID,
-		CampaignType: req.CampaignType,
-		Status:       req.Status,
-		ScheduledAt:  req.ScheduledAt,
+		Name:           req.Name,
+		TemplateID:     req.TemplateID,
+		CampaignType:   req.CampaignType,
+		Status:         req.Status,
+		AudienceFilter: req.AudienceFilter,
+		ScheduledAt:    req.ScheduledAt,
 	}
 
 	c, err := h.service.Create(r.Context(), input)
@@ -142,11 +146,12 @@ func (h *CampaignHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	input := campaign.UpdateInput{
-		Name:         req.Name,
-		TemplateID:   req.TemplateID,
-		CampaignType: req.CampaignType,
-		Status:       req.Status,
-		ScheduledAt:  req.ScheduledAt,
+		Name:           req.Name,
+		TemplateID:     req.TemplateID,
+		CampaignType:   req.CampaignType,
+		Status:         req.Status,
+		AudienceFilter: req.AudienceFilter,
+		ScheduledAt:    req.ScheduledAt,
 	}
 
 	c, err := h.service.Update(r.Context(), id, input)
@@ -254,15 +259,16 @@ func (h *CampaignHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 func toCampaignResponse(c *domain.NotificationCampaign) CampaignResponse {
 	return CampaignResponse{
-		ID:           c.ID,
-		Name:         c.Name,
-		TemplateID:   c.TemplateID,
-		CampaignType: c.CampaignType,
-		Status:       string(c.Status),
-		ScheduledAt:  c.ScheduledAt,
-		StartedAt:    c.StartedAt,
-		CompletedAt:  c.CompletedAt,
-		CreatedAt:    c.CreatedAt,
-		UpdatedAt:    c.UpdatedAt,
+		ID:             c.ID,
+		Name:           c.Name,
+		TemplateID:     c.TemplateID,
+		CampaignType:   c.CampaignType,
+		Status:         string(c.Status),
+		AudienceFilter: c.AudienceFilter,
+		ScheduledAt:    c.ScheduledAt,
+		StartedAt:      c.StartedAt,
+		CompletedAt:    c.CompletedAt,
+		CreatedAt:      c.CreatedAt,
+		UpdatedAt:      c.UpdatedAt,
 	}
 }
