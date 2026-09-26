@@ -27,6 +27,20 @@ func (m *mockTemplateRepo) GetByID(ctx context.Context, id string) (*domain.Emai
 }
 
 func (m *mockTemplateRepo) GetByKey(ctx context.Context, templateKey string) (*domain.EmailTemplate, error) {
+	for _, t := range m.templates {
+		if t.TemplateKey == templateKey {
+			return t, nil
+		}
+	}
+	return nil, domain.ErrNotFound
+}
+
+func (m *mockTemplateRepo) GetByKeyAndLocale(ctx context.Context, templateKey, locale string) (*domain.EmailTemplate, error) {
+	for _, t := range m.templates {
+		if t.TemplateKey == templateKey && (t.Locale == locale || locale == "") {
+			return t, nil
+		}
+	}
 	return nil, domain.ErrNotFound
 }
 
@@ -970,5 +984,219 @@ func TestDirectService_Audit_Create_AuditFailure_PropagatesError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "audit table write failed") {
 		t.Errorf("expected audit table write failed message, got: %v", err)
+	}
+}
+
+func TestDirectService_SendNotification_Success(t *testing.T) {
+	tplRepo := &mockTemplateRepo{
+		templates: map[string]*domain.EmailTemplate{
+			"tpl-pw-en": {
+				ID:           "tpl-pw-en",
+				TemplateKey:  "auth.password_recovery",
+				Name:         "Password Recovery (EN)",
+				TemplateType: domain.TemplateTypeDirect,
+				Subject:      "Password Recovery",
+				HTMLBody:     "<p>Reset link: {{ recoveryLink }}</p>",
+				Locale:       "en",
+				Status:       domain.TemplateStatusActive,
+			},
+			"tpl-pw-ru": {
+				ID:           "tpl-pw-ru",
+				TemplateKey:  "auth.password_recovery",
+				Name:         "Password Recovery (RU)",
+				TemplateType: domain.TemplateTypeDirect,
+				Subject:      "Восстановление пароля",
+				HTMLBody:     "<p>Ссылка: {{ recoveryLink }}</p>",
+				Locale:       "ru",
+				Status:       domain.TemplateStatusActive,
+			},
+		},
+	}
+	directRepo := &mockDirectRepo{
+		notifications: make(map[string]*domain.DirectNotification),
+		attempts:      make(map[string]*domain.DeliveryAttempt),
+	}
+	auditRepo := &mockActivityLogRepoForDirect{}
+	auditSvc := audit.NewService(auditRepo)
+	svc := NewService(tplRepo, directRepo, &mockUserResolver{}, auditSvc)
+
+	ctx := authContext("svc-gmhelper-api", "Service")
+	res, err := svc.SendNotification(ctx, SendNotificationInput{
+		TemplateKey:    "auth.password_recovery",
+		Locale:         "ru",
+		ExternalUserID: "user-123",
+		RecipientEmail: "user@example.com",
+		RecipientName:  "Test User",
+		Variables: map[string]any{
+			"recoveryLink": "https://gmhelper.com/recover?token=secret123",
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if res.Notification == nil {
+		t.Fatal("expected notification to be returned")
+	}
+	if res.Notification.DeliveryStatus != domain.DeliveryStatusPending {
+		t.Errorf("expected status 'pending', got '%s'", res.Notification.DeliveryStatus)
+	}
+	if res.Notification.RecipientEmail != "user@example.com" {
+		t.Errorf("expected email 'user@example.com', got '%s'", res.Notification.RecipientEmail)
+	}
+	if res.Notification.ExternalUserID != "user-123" {
+		t.Errorf("expected externalUserId 'user-123', got '%s'", res.Notification.ExternalUserID)
+	}
+	if res.Rendered.Subject != "Восстановление пароля" {
+		t.Errorf("expected rendered subject 'Восстановление пароля', got '%s'", res.Rendered.Subject)
+	}
+
+	// Verify persistence in directRepo
+	saved, ok := directRepo.notifications[res.Notification.ID]
+	if !ok {
+		t.Fatal("expected notification to be saved in repository")
+	}
+	if saved.DeliveryStatus != domain.DeliveryStatusPending {
+		t.Errorf("expected saved status 'pending', got '%s'", saved.DeliveryStatus)
+	}
+
+	// Verify initial attempt
+	if len(directRepo.attempts) != 1 {
+		t.Errorf("expected 1 delivery attempt, got %d", len(directRepo.attempts))
+	}
+
+	// Verify security: Audit details should NOT leak secret token in rendered body
+	if len(auditRepo.recordedLogs) != 1 {
+		t.Fatalf("expected 1 audit log entry, got %d", len(auditRepo.recordedLogs))
+	}
+	logEntry := auditRepo.recordedLogs[0]
+	if strings.Contains(string(logEntry.Details), "secret123") {
+		t.Errorf("audit log leaked sensitive token in body: %s", string(logEntry.Details))
+	}
+}
+
+func TestDirectService_SendNotification_ValidationErrors(t *testing.T) {
+	tplRepo := &mockTemplateRepo{
+		templates: map[string]*domain.EmailTemplate{
+			"tpl-reg-en": {
+				ID:           "tpl-reg-en",
+				TemplateKey:  "auth.register_code",
+				Name:         "Registration Code",
+				TemplateType: domain.TemplateTypeDirect,
+				Subject:      "Your Code",
+				HTMLBody:     "<p>Code: {{ code }}</p>",
+				Locale:       "en",
+				Status:       domain.TemplateStatusActive,
+			},
+			"tpl-inactive": {
+				ID:           "tpl-inactive",
+				TemplateKey:  "auth.inactive_tpl",
+				Name:         "Inactive",
+				TemplateType: domain.TemplateTypeDirect,
+				Subject:      "Inactive",
+				HTMLBody:     "<p>Inactive</p>",
+				Locale:       "en",
+				Status:       domain.TemplateStatusDraft,
+			},
+		},
+	}
+	directRepo := &mockDirectRepo{
+		notifications: make(map[string]*domain.DirectNotification),
+		attempts:      make(map[string]*domain.DeliveryAttempt),
+	}
+	svc := NewService(tplRepo, directRepo, &mockUserResolver{}, nil)
+	ctx := context.Background()
+
+	// Missing templateKey
+	_, err := svc.SendNotification(ctx, SendNotificationInput{
+		RecipientEmail: "user@example.com",
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput for missing templateKey, got %v", err)
+	}
+
+	// Missing recipientEmail
+	_, err = svc.SendNotification(ctx, SendNotificationInput{
+		TemplateKey: "auth.register_code",
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput for missing recipientEmail, got %v", err)
+	}
+
+	// Invalid email
+	_, err = svc.SendNotification(ctx, SendNotificationInput{
+		TemplateKey:    "auth.register_code",
+		RecipientEmail: "not-an-email",
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput for invalid email, got %v", err)
+	}
+
+	// Unknown template
+	_, err = svc.SendNotification(ctx, SendNotificationInput{
+		TemplateKey:    "non.existent",
+		RecipientEmail: "user@example.com",
+	})
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("expected ErrNotFound for non-existent template, got %v", err)
+	}
+
+	// Inactive template
+	_, err = svc.SendNotification(ctx, SendNotificationInput{
+		TemplateKey:    "auth.inactive_tpl",
+		RecipientEmail: "user@example.com",
+	})
+	if !errors.Is(err, ErrTemplateInactive) {
+		t.Errorf("expected ErrTemplateInactive for draft template, got %v", err)
+	}
+
+	// Missing required variable
+	_, err = svc.SendNotification(ctx, SendNotificationInput{
+		TemplateKey:    "auth.register_code",
+		RecipientEmail: "user@example.com",
+		Variables:      map[string]any{}, // missing "code"
+	})
+	if !errors.Is(err, ErrMissingVariable) {
+		t.Errorf("expected ErrMissingVariable when required placeholder is missing, got %v", err)
+	}
+}
+
+func TestDirectService_SendNotification_DefaultLocaleAndWithoutExternalUserID(t *testing.T) {
+	tplRepo := &mockTemplateRepo{
+		templates: map[string]*domain.EmailTemplate{
+			"tpl-reg-en": {
+				ID:           "tpl-reg-en",
+				TemplateKey:  "auth.register_code",
+				Name:         "Registration Code",
+				TemplateType: domain.TemplateTypeDirect,
+				Subject:      "Your Code",
+				HTMLBody:     "<p>Code: {{ code }}</p>",
+				Locale:       "en",
+				Status:       domain.TemplateStatusActive,
+			},
+		},
+	}
+	directRepo := &mockDirectRepo{
+		notifications: make(map[string]*domain.DirectNotification),
+		attempts:      make(map[string]*domain.DeliveryAttempt),
+	}
+	svc := NewService(tplRepo, directRepo, &mockUserResolver{}, nil)
+
+	res, err := svc.SendNotification(context.Background(), SendNotificationInput{
+		TemplateKey:    "auth.register_code",
+		Locale:         "", // empty, should default to "en"
+		RecipientEmail: "newuser@example.com",
+		Variables: map[string]any{
+			"code": "123456",
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Notification.TemplateID != "tpl-reg-en" {
+		t.Errorf("expected template ID 'tpl-reg-en', got '%s'", res.Notification.TemplateID)
+	}
+	if res.Notification.ExternalUserID != "" {
+		t.Errorf("expected empty ExternalUserID for registration, got '%s'", res.Notification.ExternalUserID)
 	}
 }

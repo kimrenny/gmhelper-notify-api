@@ -171,6 +171,19 @@ func (m *mockDirectTplRepo) GetByID(ctx context.Context, id string) (*domain.Ema
 	return t, nil
 }
 func (m *mockDirectTplRepo) GetByKey(ctx context.Context, key string) (*domain.EmailTemplate, error) {
+	for _, t := range m.templates {
+		if t.TemplateKey == key {
+			return t, nil
+		}
+	}
+	return nil, domain.ErrNotFound
+}
+func (m *mockDirectTplRepo) GetByKeyAndLocale(ctx context.Context, key, locale string) (*domain.EmailTemplate, error) {
+	for _, t := range m.templates {
+		if t.TemplateKey == key && (t.Locale == locale || locale == "") {
+			return t, nil
+		}
+	}
 	return nil, domain.ErrNotFound
 }
 func (m *mockDirectTplRepo) Create(ctx context.Context, t *domain.EmailTemplate) error { return nil }
@@ -210,6 +223,7 @@ func setupDirectTestRouter() (http.Handler, *mockDirectRepo, *mockDirectAttemptR
 	mux.HandleFunc("GET /api/v1/notifications/direct/pending", handler.ListPending)
 	mux.HandleFunc("GET /api/v1/notifications/direct/{id}", handler.GetByID)
 	mux.HandleFunc("POST /api/v1/notifications/direct/{id}/deliver", handler.Deliver)
+	mux.HandleFunc("POST /api/v1/internal/notifications/send", handler.SendInternal)
 
 	return mux, directRepo, attemptRepo, tplRepo, sender
 }
@@ -586,5 +600,151 @@ func TestDirectNotificationHandler_Create_AuthenticatedPrincipalOverridesBodyUse
 	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 	if resp.ExternalUserID != "verified-auth-user-999" {
 		t.Errorf("expected ExternalUserID 'verified-auth-user-999', got '%s'", resp.ExternalUserID)
+	}
+}
+
+func TestDirectNotificationHandler_SendInternal_Success(t *testing.T) {
+	router, _, _, tplRepo, _ := setupDirectTestRouter()
+
+	activeTpl := &domain.EmailTemplate{
+		ID:           "tpl-auth-reg-en",
+		TemplateKey:  "auth.register_code",
+		Name:         "Register Code",
+		TemplateType: domain.TemplateTypeDirect,
+		Subject:      "Your Code: {{ code }}",
+		HTMLBody:     "<p>Code is {{ code }}</p>",
+		Locale:       "en",
+		Status:       domain.TemplateStatusActive,
+		Version:      1,
+	}
+	tplRepo.templates[activeTpl.ID] = activeTpl
+
+	reqBody := SendInternalNotificationRequest{
+		TemplateKey:    "auth.register_code",
+		Locale:         "en",
+		ExternalUserID: "user-ext-1",
+		RecipientEmail: "recipient@example.com",
+		RecipientName:  "Test Recipient",
+		Variables: map[string]any{
+			"code": "884422",
+		},
+	}
+	raw, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/notifications/send", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected HTTP 202 Accepted, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp DirectNotificationResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.ID == "" {
+		t.Error("expected non-empty notification ID")
+	}
+	if resp.DeliveryStatus != string(domain.DeliveryStatusPending) {
+		t.Errorf("expected delivery status 'pending', got '%s'", resp.DeliveryStatus)
+	}
+	if resp.RecipientEmail != "recipient@example.com" {
+		t.Errorf("expected recipientEmail 'recipient@example.com', got '%s'", resp.RecipientEmail)
+	}
+	if resp.ExternalUserID != "user-ext-1" {
+		t.Errorf("expected externalUserId 'user-ext-1', got '%s'", resp.ExternalUserID)
+	}
+}
+
+func TestDirectNotificationHandler_SendInternal_ValidationErrors(t *testing.T) {
+	router, _, _, tplRepo, _ := setupDirectTestRouter()
+
+	activeTpl := &domain.EmailTemplate{
+		ID:           "tpl-auth-reg-en",
+		TemplateKey:  "auth.register_code",
+		Name:         "Register Code",
+		TemplateType: domain.TemplateTypeDirect,
+		Subject:      "Your Code: {{ code }}",
+		HTMLBody:     "<p>Code is {{ code }}</p>",
+		Locale:       "en",
+		Status:       domain.TemplateStatusActive,
+		Version:      1,
+	}
+	tplRepo.templates[activeTpl.ID] = activeTpl
+
+	cases := []struct {
+		name       string
+		body       any
+		rawBody    string
+		wantStatus int
+	}{
+		{
+			name:       "invalid JSON",
+			rawBody:    "{invalid-json",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name: "missing templateKey",
+			body: SendInternalNotificationRequest{
+				RecipientEmail: "user@example.com",
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name: "missing recipientEmail",
+			body: SendInternalNotificationRequest{
+				TemplateKey: "auth.register_code",
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name: "invalid recipientEmail",
+			body: SendInternalNotificationRequest{
+				TemplateKey:    "auth.register_code",
+				RecipientEmail: "not-an-email",
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name: "unknown templateKey",
+			body: SendInternalNotificationRequest{
+				TemplateKey:    "non.existent",
+				RecipientEmail: "user@example.com",
+			},
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name: "missing required variable",
+			body: SendInternalNotificationRequest{
+				TemplateKey:    "auth.register_code",
+				RecipientEmail: "user@example.com",
+				Variables:      map[string]any{},
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var bodyReader *bytes.Reader
+			if tc.rawBody != "" {
+				bodyReader = bytes.NewReader([]byte(tc.rawBody))
+			} else {
+				raw, _ := json.Marshal(tc.body)
+				bodyReader = bytes.NewReader(raw)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/notifications/send", bodyReader)
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Errorf("expected status %d, got %d (body: %s)", tc.wantStatus, rec.Code, rec.Body.String())
+			}
+		})
 	}
 }

@@ -133,8 +133,24 @@ func (m *routerMockTplRepo) GetByKey(ctx context.Context, templateKey string) (*
 		Name:         "Welcome Email",
 		TemplateType: domain.TemplateTypeCampaign,
 		Subject:      "Welcome",
-		HTMLBody:     "<h1>Welcome</h1>",
+		HTMLBody:     "<h1>Welcome!</h1>",
 		Locale:       "en",
+		Status:       domain.TemplateStatusActive,
+		Version:      1,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}, nil
+}
+
+func (m *routerMockTplRepo) GetByKeyAndLocale(ctx context.Context, templateKey, locale string) (*domain.EmailTemplate, error) {
+	return &domain.EmailTemplate{
+		ID:           "tpl-1",
+		TemplateKey:  templateKey,
+		Name:         "Welcome Email",
+		TemplateType: domain.TemplateTypeCampaign,
+		Subject:      "Welcome",
+		HTMLBody:     "<h1>Welcome!</h1>",
+		Locale:       locale,
 		Status:       domain.TemplateStatusActive,
 		Version:      1,
 		CreatedAt:    time.Now(),

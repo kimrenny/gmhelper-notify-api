@@ -192,6 +192,16 @@ func (m *workerMockTplRepo) GetByID(ctx context.Context, id string) (*domain.Ema
 func (m *workerMockTplRepo) GetByKey(ctx context.Context, key string) (*domain.EmailTemplate, error) {
 	return nil, domain.ErrNotFound
 }
+func (m *workerMockTplRepo) GetByKeyAndLocale(ctx context.Context, key, locale string) (*domain.EmailTemplate, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range m.templates {
+		if t.TemplateKey == key && (t.Locale == locale || locale == "") {
+			return t, nil
+		}
+	}
+	return nil, domain.ErrNotFound
+}
 func (m *workerMockTplRepo) Create(ctx context.Context, t *domain.EmailTemplate) error {
 	return nil
 }

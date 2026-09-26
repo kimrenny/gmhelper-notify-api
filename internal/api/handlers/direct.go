@@ -24,6 +24,15 @@ type CreateDirectNotificationRequest struct {
 	Payload          map[string]any `json:"payload,omitempty"`
 }
 
+type SendInternalNotificationRequest struct {
+	TemplateKey    string         `json:"templateKey"`
+	Locale         string         `json:"locale"`
+	ExternalUserID string         `json:"externalUserId,omitempty"`
+	RecipientEmail string         `json:"recipientEmail"`
+	RecipientName  string         `json:"recipientName,omitempty"`
+	Variables      map[string]any `json:"variables,omitempty"`
+}
+
 type DirectNotificationResponse struct {
 	ID               string          `json:"id"`
 	TemplateID       string          `json:"templateId"`
@@ -115,6 +124,59 @@ func (h *DirectNotificationHandler) Create(w http.ResponseWriter, r *http.Reques
 	}
 
 	response.JSON(w, http.StatusCreated, toDirectNotificationResponse(res.Notification))
+}
+
+func (h *DirectNotificationHandler) SendInternal(w http.ResponseWriter, r *http.Request) {
+	if r.Body == nil {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "request body cannot be empty")
+		return
+	}
+
+	var req SendInternalNotificationRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		if errors.Is(err, io.EOF) {
+			response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "request body cannot be empty")
+			return
+		}
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "malformed JSON payload")
+		return
+	}
+
+	input := direct.SendNotificationInput{
+		TemplateKey:    req.TemplateKey,
+		Locale:         req.Locale,
+		ExternalUserID: req.ExternalUserID,
+		RecipientEmail: req.RecipientEmail,
+		RecipientName:  req.RecipientName,
+		Variables:      req.Variables,
+	}
+
+	res, err := h.directService.SendNotification(r.Context(), input)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			response.Error(w, http.StatusNotFound, "NOT_FOUND", "template not found")
+			return
+		}
+		if errors.Is(err, direct.ErrTemplateInactive) {
+			response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "template is not active for delivery")
+			return
+		}
+		if errors.Is(err, direct.ErrMissingVariable) {
+			response.Error(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+			return
+		}
+		if errors.Is(err, direct.ErrInvalidInput) || errors.Is(err, domain.ErrInvalidEntity) {
+			response.Error(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+			return
+		}
+		h.logger.Error("failed to process internal notification request", logger.Error(err))
+		response.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to process internal notification request")
+		return
+	}
+
+	response.JSON(w, http.StatusAccepted, toDirectNotificationResponse(res.Notification))
 }
 
 func (h *DirectNotificationHandler) GetByID(w http.ResponseWriter, r *http.Request) {

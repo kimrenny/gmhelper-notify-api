@@ -48,6 +48,23 @@ LIMIT 1`, templateKey)
 	return template, nil
 }
 
+func (r *EmailTemplateRepository) GetByKeyAndLocale(ctx context.Context, templateKey, locale string) (*domain.EmailTemplate, error) {
+	template := &domain.EmailTemplate{}
+	row := r.db.QueryRowContext(ctx, `
+SELECT id, template_key, name, template_type, subject, html_body, plain_text_body, locale, status, version, created_at, updated_at
+FROM email_templates
+WHERE template_key = $1 AND locale = $2
+ORDER BY version DESC
+LIMIT 1`, templateKey, locale)
+	if err := row.Scan(&template.ID, &template.TemplateKey, &template.Name, &template.TemplateType, &template.Subject, &template.HTMLBody, &template.PlainTextBody, &template.Locale, &template.Status, &template.Version, &template.CreatedAt, &template.UpdatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, domain.ErrNotFound
+		}
+		return nil, err
+	}
+	return template, nil
+}
+
 func (r *EmailTemplateRepository) Create(ctx context.Context, template *domain.EmailTemplate) error {
 	if err := template.Validate(ctx); err != nil {
 		return err

@@ -94,6 +94,10 @@ func NewRouter(
 		apiV1Mux.HandleFunc("GET /notifications/direct/pending", directHandler.ListPending)
 		apiV1Mux.HandleFunc("GET /notifications/direct/{id}", directHandler.GetByID)
 		apiV1Mux.HandleFunc("POST /notifications/direct/{id}/deliver", directHandler.Deliver)
+
+		// Internal Notification Dispatch endpoint (Service role required)
+		serviceOnly := middleware.RequireServiceRole()
+		apiV1Mux.Handle("POST /internal/notifications/send", serviceOnly(http.HandlerFunc(directHandler.SendInternal)))
 	}
 
 	// User resolution & search endpoints

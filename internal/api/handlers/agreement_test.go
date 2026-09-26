@@ -29,6 +29,10 @@ func (m *agreementHandlerMockTemplateRepo) GetByKey(ctx context.Context, key str
 	return nil, domain.ErrNotFound
 }
 
+func (m *agreementHandlerMockTemplateRepo) GetByKeyAndLocale(ctx context.Context, key, locale string) (*domain.EmailTemplate, error) {
+	return nil, domain.ErrNotFound
+}
+
 func (m *agreementHandlerMockTemplateRepo) Create(ctx context.Context, template *domain.EmailTemplate) error {
 	m.templates[template.ID] = template
 	return nil

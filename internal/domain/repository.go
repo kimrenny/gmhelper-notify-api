@@ -19,6 +19,7 @@ func (e errorString) Error() string {
 type EmailTemplateRepository interface {
 	GetByID(ctx context.Context, id string) (*EmailTemplate, error)
 	GetByKey(ctx context.Context, templateKey string) (*EmailTemplate, error)
+	GetByKeyAndLocale(ctx context.Context, templateKey, locale string) (*EmailTemplate, error)
 	Create(ctx context.Context, template *EmailTemplate) error
 	Update(ctx context.Context, template *EmailTemplate) error
 	Delete(ctx context.Context, id string) error

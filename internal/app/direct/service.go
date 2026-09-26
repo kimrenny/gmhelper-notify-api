@@ -37,6 +37,15 @@ type CreateInput struct {
 	Payload          map[string]any          `json:"payload,omitempty"`
 }
 
+type SendNotificationInput struct {
+	TemplateKey    string         `json:"templateKey"`
+	Locale         string         `json:"locale"`
+	ExternalUserID string         `json:"externalUserId,omitempty"`
+	RecipientEmail string         `json:"recipientEmail"`
+	RecipientName  string         `json:"recipientName,omitempty"`
+	Variables      map[string]any `json:"variables,omitempty"`
+}
+
 type CreateResult struct {
 	Notification *domain.DirectNotification
 	Rendered     *RenderedEmail
@@ -221,6 +230,118 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*CreateResult,
 		Notification: notification,
 		Rendered:     rendered,
 		ResolvedUser: resolvedUser,
+	}, nil
+}
+
+func (s *Service) SendNotification(ctx context.Context, input SendNotificationInput) (*CreateResult, error) {
+	templateKey := strings.TrimSpace(input.TemplateKey)
+	locale := strings.TrimSpace(input.Locale)
+	recipientEmail := strings.TrimSpace(input.RecipientEmail)
+	recipientName := strings.TrimSpace(input.RecipientName)
+	externalUserID := strings.TrimSpace(input.ExternalUserID)
+
+	if templateKey == "" || recipientEmail == "" {
+		return nil, fmt.Errorf("%w: templateKey and recipientEmail are required", ErrInvalidInput)
+	}
+
+	if !isValidEmail(recipientEmail) {
+		return nil, fmt.Errorf("%w: invalid recipient email address '%s'", ErrInvalidInput, recipientEmail)
+	}
+
+	if locale == "" {
+		locale = "en"
+	}
+
+	// 1. Resolve template by key + locale
+	tpl, err := s.templateRepo.GetByKeyAndLocale(ctx, templateKey, locale)
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. Validate template status for delivery
+	if tpl.Status != domain.TemplateStatusActive {
+		return nil, fmt.Errorf("%w: template '%s' has status '%s'", ErrTemplateInactive, tpl.ID, tpl.Status)
+	}
+
+	// 3. Render email content with variables for validation
+	rendered, err := RenderEmail(tpl.Subject, tpl.HTMLBody, tpl.PlainTextBody, input.Variables)
+	if err != nil {
+		return nil, err
+	}
+
+	var payloadBytes json.RawMessage
+	if input.Variables != nil {
+		bytes, err := json.Marshal(input.Variables)
+		if err != nil {
+			return nil, fmt.Errorf("%w: failed to serialize variables: %v", ErrInvalidInput, err)
+		}
+		payloadBytes = bytes
+	}
+
+	now := time.Now().UTC()
+	notification := &domain.DirectNotification{
+		ID:               uuid.NewString(),
+		TemplateID:       tpl.ID,
+		ExternalUserID:   externalUserID,
+		RecipientEmail:   recipientEmail,
+		RecipientName:    recipientName,
+		NotificationType: domain.NotificationTypeDirect,
+		DeliveryStatus:   domain.DeliveryStatusPending,
+		AttemptsCount:    0,
+		Payload:          payloadBytes,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+
+	attempt := &domain.DeliveryAttempt{
+		ID:            uuid.NewString(),
+		TargetType:    domain.DeliveryTargetDirectNotification,
+		TargetID:      notification.ID,
+		Status:        domain.DeliveryStatusPending,
+		AttemptNumber: 1,
+		ErrorMessage:  "",
+		AttemptedAt:   now,
+		CreatedAt:     now,
+	}
+
+	// 4. Atomically persist notification and initial attempt
+	if err := s.directRepo.CreateWithInitialAttempt(ctx, notification, attempt); err != nil {
+		return nil, err
+	}
+
+	if s.audit != nil {
+		actor, err := audit.ActorFromContext(ctx, nil)
+		if err != nil || actor.Type == "" {
+			svcName := "gmhelper-api"
+			actor = audit.ServiceActor(&svcName)
+		}
+
+		summary := fmt.Sprintf("Created internal direct notification to %s for template %s", notification.RecipientEmail, tpl.TemplateKey)
+		_, _ = s.audit.Record(ctx, audit.RecordInput{
+			EventType:  domain.EventDirectCreated,
+			Actor:      actor,
+			TargetType: domain.TargetTypeDirectNotification,
+			TargetID:   notification.ID,
+			TargetName: &notification.RecipientEmail,
+			Status:     domain.ActivityStatusSuccess,
+			Summary:    summary,
+			Details: directMessageDetails{
+				ID:               notification.ID,
+				TemplateID:       tpl.ID,
+				TemplateKey:      tpl.TemplateKey,
+				TemplateName:     tpl.Name,
+				ExternalUserID:   externalUserID,
+				RecipientEmail:   recipientEmail,
+				RecipientName:    recipientName,
+				NotificationType: domain.NotificationTypeDirect,
+				Subject:          rendered.Subject,
+			},
+		})
+	}
+
+	return &CreateResult{
+		Notification: notification,
+		Rendered:     rendered,
 	}, nil
 }
 

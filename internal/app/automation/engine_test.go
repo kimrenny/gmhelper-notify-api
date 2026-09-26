@@ -82,6 +82,19 @@ func (m *engineMockTemplateRepo) GetByID(ctx context.Context, id string) (*domai
 	return nil, domain.ErrNotFound
 }
 func (m *engineMockTemplateRepo) GetByKey(ctx context.Context, templateKey string) (*domain.EmailTemplate, error) {
+	for _, tpl := range m.templates {
+		if tpl.TemplateKey == templateKey {
+			return tpl, nil
+		}
+	}
+	return nil, domain.ErrNotFound
+}
+func (m *engineMockTemplateRepo) GetByKeyAndLocale(ctx context.Context, templateKey, locale string) (*domain.EmailTemplate, error) {
+	for _, tpl := range m.templates {
+		if tpl.TemplateKey == templateKey && (tpl.Locale == locale || locale == "") {
+			return tpl, nil
+		}
+	}
 	return nil, domain.ErrNotFound
 }
 func (m *engineMockTemplateRepo) Create(ctx context.Context, tpl *domain.EmailTemplate) error {

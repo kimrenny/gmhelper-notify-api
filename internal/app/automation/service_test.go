@@ -171,6 +171,19 @@ func (m *mockTemplateRepo) GetByKey(ctx context.Context, templateKey string) (*d
 	return nil, nil
 }
 
+func (m *mockTemplateRepo) GetByKeyAndLocale(ctx context.Context, templateKey, locale string) (*domain.EmailTemplate, error) {
+	if m.getErr != nil {
+		return nil, m.getErr
+	}
+	for _, tpl := range m.templates {
+		if tpl.TemplateKey == templateKey && (tpl.Locale == locale || locale == "") {
+			cp := *tpl
+			return &cp, nil
+		}
+	}
+	return nil, domain.ErrNotFound
+}
+
 func (m *mockTemplateRepo) Create(ctx context.Context, template *domain.EmailTemplate) error {
 	return nil
 }
